@@ -115,14 +115,18 @@ describe('DSH Desktop client slot occupants', () => {
     const sidebarMark = registrations.find(
       ({ config }) => config.name === 'sidebar.brand.mark'
     )!.component({ size: 24 }) as { type: unknown; props: Record<string, unknown> }
-    expect(sidebarMark.type).toBe('span')
-    expect(sidebarMark.props.children).toEqual(['鹏'])
+    expect(sidebarMark.type).toBe('img')
+    expect(sidebarMark.props.src).toBe('dsh-desktop://desktop/pengbao-b2-mark.png')
+    expect(sidebarMark.props.width).toBe(24)
+    expect(sidebarMark.props.height).toBe(24)
     expect(sidebarMark.props['aria-hidden']).toBe(true)
 
     const heroMark = registrations.find(
       ({ config }) => config.name === 'conversation.hero.brand.mark'
     )!.component({ size: 48 }) as { type: unknown; props: Record<string, unknown> }
-    expect(heroMark.type).toBeDefined()
-    expect(heroMark.props.children).toEqual([])
+    expect(typeof heroMark.type).toBe('function')
+    const renderedHeroMark = (heroMark.type as (props: Record<string, unknown>) => { type: unknown; props: Record<string, unknown> })({ size: 48 })
+    expect(renderedHeroMark.type).toBe('img')
+    expect(renderedHeroMark.props.src).toBe('dsh-desktop://desktop/pengbao-b2-mark.png')
   })
 })

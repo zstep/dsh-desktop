@@ -113,7 +113,7 @@ describe('boot cover lifecycle', () => {
     expect(harness.doc.querySelectorAll(`#${BOOT_COVER_ID}`)).toHaveLength(1)
     expect(repeat).toBe(harness.cover)
     const shadow = first?.shadowRoot
-    expect(shadow?.querySelector('h1')?.textContent).toBe('Starting DSH Desktop')
+    expect(shadow?.querySelector('h1')?.textContent).toBe('Starting Pengbao AI')
     expect(shadow?.querySelector('img.markLight')?.getAttribute('src')).toBe(BOOT_COVER_LIGHT_MARK_URL)
     expect(shadow?.querySelector('img.markDark')?.getAttribute('src')).toBe(BOOT_COVER_DARK_MARK_URL)
     expect(shadow?.querySelector('.markFrame')?.getAttribute('aria-hidden')).toBe('true')
@@ -137,7 +137,7 @@ describe('boot cover lifecycle', () => {
     })
     expect(doc.body).toBeNull()
     const painted = doc.getElementById(BOOT_COVER_ID)
-    expect(painted?.shadowRoot?.querySelector('h1')?.textContent).toBe('正在启动 DSH Desktop')
+    expect(painted?.shadowRoot?.querySelector('h1')?.textContent).toBe('正在启动鹏宝 AI')
     expect(painted?.shadowRoot?.querySelector('img.markLight')?.getAttribute('src')).toBe(BOOT_COVER_LIGHT_MARK_URL)
     expect(doc.getElementById(BOOT_COVER_STYLE_ID)?.textContent).toContain('body, body *')
 
@@ -158,7 +158,7 @@ describe('boot cover lifecycle', () => {
 
   it('uses the Chinese startup copy', () => {
     const { doc, cover } = mountHarnessCover({ locale: 'zh' })
-    expect(doc.getElementById(BOOT_COVER_ID)?.shadowRoot?.querySelector('h1')?.textContent).toBe('正在启动 DSH Desktop')
+    expect(doc.getElementById(BOOT_COVER_ID)?.shadowRoot?.querySelector('h1')?.textContent).toBe('正在启动鹏宝 AI')
     cover?.dispose()
   })
 

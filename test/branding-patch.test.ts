@@ -15,6 +15,19 @@ const sharp = require('sharp') as (input: string) => {
 
 describe('DSH Desktop sidebar branding', () => {
 
+  it('uses Pengbao copy and mark in the running status indicator', async () => {
+    const client = await readFile(
+      path.join(projectRoot, 'node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js'),
+      'utf8'
+    )
+
+    expect(client).toContain('src: "dsh-desktop://desktop/pengbao-b2-mark.png"')
+    expect(client).toContain('"chat.deepDiving": "鹏宝 AI 思考中"')
+    expect(client).toContain('"chat.deepDivingFor": "鹏宝 AI 思考中，用时 {duration} ···"')
+    expect(client).toContain('"chat.deepDiving": "Pengbao AI is thinking"')
+    expect(client).toContain('"chat.deepDivingFor": "Pengbao AI is thinking for {duration} ···"')
+  })
+
   it('uses upstream platform-aware collapsed titlebar spacing', async () => {
     const client = await readFile(
       path.join(projectRoot, 'node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js'),
