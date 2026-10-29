@@ -108,6 +108,7 @@ export function windowsMenuTemplate(
     command('check-for-updates', '检查更新…', 'Check for Updates…', 'Ctrl+U'),
     command('about', '关于鹏宝 AI', 'About Pengbao AI'),
     { type: 'separator' },
+    command('switch-account', '切换账号…', 'Switch Account…'),
     command('quit', '退出', 'Exit')
   ]
 }

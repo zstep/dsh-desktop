@@ -45,6 +45,26 @@ Harness UI → 本地 Harness Agent → pi-ai → main 中受限模型代理
 - 已重新生成 `dist-dev/pengbao-ai-dev-mac-x64.dmg` 和 `.zip`，打包资源、原生依赖及 Office 转换检查通过，仍为未签名开发包。新打包版真实界面复验通过：同一模型携带 46 个工具、15 条消息，上游约 3.5 秒返回 200，界面约 4 秒完成并显示 `OK`。应用保留运行；旧会话中的历史失败记录未删除。
 - 后端源码未发现针对非空 tools 的固定 15 秒超时；显式 `tools: []` 和非空 tools 均跳过网页工具解析。部署的实际 aiohttp timeout、模型通道和前置网关策略尚未核验，未修改远端部署；桌面错误分类修复不等于服务端超时根因修复。
 
+### 2026-10-29 Windows x64 开发包
+
+- 已在原生 Windows x64 上生成 `0.12.1` NSIS 安装器：`dist-dev/pengbao-ai-dev-windows-x64-setup.exe`，284,487,799 字节（271.31 MiB），SHA-256 为 `c095427a8c20fa43a0d1c89b27f16ef34fc3367f1e58337406f4004520cea51a`。产品名为 `Pengbao AI Dev`，应用 ID 为 `net.ecombus.pengbao.desktop.dev`；Authenticode 检查确认未签名，未上传或正式发布。
+- 修复 Windows 构建中的图标生成：保留 macOS 原生工具路径，Windows 使用现有 sharp 依赖生成 ICO，并增加尺寸、透明度、目录偏移和源文件不变的行为测试。
+- 修复 Word worker 清理环境后导致 ACL runner 回退到系统目录的问题：Windows 仅额外保留 `TMP` / `TEMP`，不恢复凭据或其他环境变量；沙箱限制和 afterPack 门禁保持启用。环境白名单测试覆盖凭据及 `NODE_OPTIONS` 清除。
+- `npm ci`（含 postinstall 补丁重放）、`verify-target win32 x64`、`npm run build`、`npm run typecheck` 和 `git diff --check` 通过。包内 Harness、认证 HTML/bootstrap 执行注册、原生模块、终端、692 份依赖清单、PPT 门禁及 Office 原生 Word 工作流、Python 依赖检查、DOCX/PPTX/XLSX 转 PDF 门禁全部通过。
+- 定向回归包括鹏宝/启动/图标等 13 文件 117 项通过、1 项跳过；Windows 专项 7 文件 29 项通过；Safe Mode/插件启动 4 文件 22 项通过。Word 原生沙箱回归在应用自带 Electron 43.0.0 / Node 24.17.0 下 14 项全部通过；系统 Node 22.16.0 下其中 11 项因 Windows Job runner 错误失败，不将该执行报告为通过。另一次图标、环境和 Office 打包门禁定向执行 4 项通过、19 项未选中。
+- 完整 Windows 回归 `CI=true npm test -- --reporter=dot` 已完成：284 文件中 257 通过、22 失败、5 跳过；2892 项中 2805 通过、70 失败、17 跳过。失败包含系统 `python3` 缺失、symlink 权限、系统 Node 下的 Windows Job runner，以及手机桥接、图片生成、发布脚本和工作台契约等尚未逐项归因的问题；不将全部失败笼统认定为环境问题，完整回归未通过。该轮测试在下述账号窗口修复前启动，不替代该修复的定向验证。
+- 用户提供 Windows 实际截图：主工作区已显示，但账号窗口残留在“已登录，正在打开工作区”。已补充主工作区成功连接且导航仍有效后销毁账号窗口；失败/过期导航不关闭，保留原窗口聚焦策略，并防止延迟的 `ready-to-show` 操作已销毁窗口。新增 `test/pengbao-account-window.test.ts` 行为回归，与账号 controller/IPC、窗口聚焦共 4 文件 30 项通过；类型检查、构建、差异检查通过。独立临时 userData 下的真实 Electron 账号页面交互及窗口销毁验证通过，但不是生产账号端到端登录复验。
+- 含账号窗口修复的新安装器已生成：`dist-dev/account-window-fix/pengbao-ai-dev-windows-x64-setup.exe`，284,487,690 字节（271.31 MiB），SHA-256 为 `89f8ecd082fc6c6759be3703f8cb6535d66d7bc458fe6441cbde18f635624273`。原生目标检查和全部 afterPack 门禁通过，Authenticode 确认未签名；未上传或正式发布。原 `win-unpacked` 目录被占用，因此改用独立输出目录，未强制关闭用户应用或删除原包。上列原安装器及其 SHA-256 不包含此修复。尚未完成 Windows 安装器的安装/升级、生产账号登录后的窗口关闭及模型工具闭环验收；包内门禁通过不替代这些验收。macOS 图标路径本次未复验。
+
+### 2026-10-29 Windows 启动恢复页与账号切换
+
+- 用户安装目录中的实际启动日志连续多次显示：后端 `ready` 后又发生一次 `launch requested (web profile)`，随后首页 IPC 报 `Harness page boot was superseded`，进入未知插件恢复流程。源码确认 `bootstrapHarnessAfterVerifiedHandoff()` 已负责首次普通／Safe Mode 启动，`activateAccount()` 返回前又调用一次 `launchHarness()`。已删除第二次启动，保留真实后端／客户端失败的原恢复路径，不清空用户 Profile 或修改插件启用状态。
+- 当前版本没有可达的鹏宝退出入口；新增中英文“切换账号…”原生命令，覆盖 Windows 标题栏“应用”菜单、托盘及原生应用菜单。先确认停止任务，再调用现有 controller 注销；只有最终本地状态为 `signed-out` 才请求应用重启。远端注销未确认会提示，本地清理失败则阻止重启并允许重试。原凭据 IPC 仍只允许专用账号窗口调用，不向 Harness renderer 暴露 JWT。
+- 切换期间抑制销毁最后窗口触发的提前退出、旧恢复页的退出动作及重新启动；将 gateway 停止纳入 15 秒清理上限，失败保留停止句柄供重试。正常“退出应用”仍保留登录，不等同于“切换账号”。账号本地会话、配置和项目文件不删除。
+- 新增 `test/pengbao-startup.test.ts`、`test/pengbao-account-switch.test.ts` 和 `test/pengbao-account-teardown.test.ts`，并更新账号窗口测试的导航上下文。最终定向验证 10 文件 71 项通过、1 项跳过；类型检查及 `git diff --check` 通过。未重跑完整测试套件，上节记录的完整 Windows 回归失败仍适用。
+- 最终构建在独立临时 appData/userData 下，真实 Windows Electron + Harness 的普通 Profile 与 Safe Mode 均完成已保存测试账号恢复、bootstrap/UI 挂载、取消切换保留登录、确认切换停止子进程并清除本机测试登录信息；两轮均无 renderer error，已查看实际截图。普通模式截图仍显示工作台加载提示，不将其记为全部工作台就绪。认证为注入的测试响应，实际 `app.relaunch` 被观察而未执行第二进程，因此不替代生产账号 A→B→A、安装升级及重启后登录页验收。未停止或注销用户正在运行的应用，未清除其数据。
+- 含本节启动与账号切换修复的新安装器：`dist-dev/startup-account-fix/pengbao-ai-dev-windows-x64-setup.exe`，284,571,926 字节（271.39 MiB），SHA-256 为 `b5c09b6b8fcdfe7f3384bd55327ad36ccfb616ca63d4a1e062225ffffbb1787f`。`verify-target win32 x64`、最终构建、包内 Harness/bootstrap/原生模块/终端及 692 份依赖清单、Office 文档编写和 DOCX/PPTX/XLSX 转 PDF 门禁全部通过。下载 Electron 时曾遇 HTTPS 超时，最终使用已锁定且目标检查通过的本地 Electron 43.0.0 分发目录打包，未跳过 afterPack。Authenticode 确认未签名，未上传或发布；上节两个旧安装器均不含本节修复。
+
 ## 实施顺序
 
 ### 1. 固定协议与产品配置

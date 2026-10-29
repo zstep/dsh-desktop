@@ -73,7 +73,8 @@ describe('Pengbao session store', () => {
     expect(await store.load('https://pengbao.ecombus.net')).toBe('jwt')
     expect(await store.load('https://other.example')).toBeUndefined()
     expect((await readFile(path, 'utf8')).includes('jwt')).toBe(false)
-    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    // Windows uses inherited ACLs and does not expose POSIX owner-only mode bits.
+    if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600)
     await store.clear('https://other.example')
     expect(await store.load('https://pengbao.ecombus.net')).toBe('jwt')
     await store.clear('https://pengbao.ecombus.net')

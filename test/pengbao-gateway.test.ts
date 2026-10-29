@@ -180,11 +180,15 @@ describe('Pengbao gateway', () => {
   })
 
   it('limits bodies, invalid JSON, concurrency, and request duration', async () => {
-    const gateway = await gatewayFor((_req, _res) => {}, { maxBodyBytes: 64, maxConcurrent: 1, timeoutMs: 200 })
+    let markStarted: () => void = () => { throw new Error('request gate not initialized') }
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const gateway = await gatewayFor(() => { markStarted() }, { maxBodyBytes: 64, maxConcurrent: 1, timeoutMs: 1000 })
     expect((await request(gateway, chat({ model: 'm', messages: [], padding: 'x'.repeat(100) }))).status).toBe(413)
     expect((await request(gateway, { method: 'POST', path: '/v1/chat/completions', body: '{' })).status).toBe(400)
     const pending = request(gateway)
-    await vi.waitFor(async () => { expect((await request(gateway)).status).toBe(429) })
+    // Wait until the first request owns the slot instead of racing two connections.
+    await started
+    expect((await request(gateway)).status).toBe(429)
     expect((await pending).status).toBe(504)
   })
 

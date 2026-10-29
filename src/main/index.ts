@@ -223,8 +223,9 @@ import { randomUUID } from 'node:crypto'
 import { loadDesktopWindowAfterStop } from './desktop-window-load'
 import { PengbaoClient, type PengbaoModel, type PengbaoSession } from './enterprise/client'
 import { PengbaoAccountController } from './enterprise/account-controller'
+import { createAccountSwitchMenu } from './enterprise/account-switch-menu'
 import { registerPengbaoAccountIpc } from './enterprise/account-ipc'
-import { createPengbaoAccountWindow } from './enterprise/account-window'
+import { closePengbaoAccountWindow, createPengbaoAccountWindow } from './enterprise/account-window'
 import { PENGBAO_PRODUCT, pengbaoAccountPaths } from './enterprise/config'
 import type { PengbaoGateway } from './enterprise/gateway'
 import {
@@ -268,6 +269,25 @@ let accountGateway: PengbaoGateway | undefined
 let accountModels: readonly PengbaoModel[] = []
 let activeAccount: ReturnType<typeof pengbaoAccountPaths> | undefined
 let accountCleanupBlocked = false
+let accountSwitching = false
+
+const requestAccountSwitch = createAccountSwitchMenu({
+  controller: () => accountController,
+  locale: () => harnessLocale(),
+  quitting: () => quitting,
+  setSwitching: value => {
+    accountSwitching = value
+    if (!value && !quitting && !mainWindow) showAccountWindow()
+  },
+  restart: () => {
+    app.relaunch()
+    quitting = true
+    accountQuitReady = true
+    desktopDiagnostics?.markCleanExit()
+    app.quit()
+  }
+})
+
 let mobileWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let runtime: HarnessRuntime
@@ -657,14 +677,13 @@ function showAccountWindow(): void {
   })
   accountWindow = window
   window.on('closed', () => { if (accountWindow === window) accountWindow = undefined })
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => { if (!window.isDestroyed()) window.show() })
 }
 
 async function deactivateAccount(): Promise<void> {
   accountCleanupBlocked = true
   // Revoke the capability before waiting on any child process or page.
   const gateway = accountGateway
-  accountGateway = undefined
   const home = activeAccount?.home
   accountModels = []
   clearProfileBootConfirmation()
@@ -672,9 +691,9 @@ async function deactivateAccount(): Promise<void> {
   // Do not allow another identity after a stalled gateway, child, or bridge shutdown.
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
-    await Promise.all([gateway?.stop(), home ? removePengbaoProviderOverlay(home) : Promise.resolve()])
     await Promise.race([
       (async () => {
+        await Promise.all([gateway?.stop(), home ? removePengbaoProviderOverlay(home) : Promise.resolve()])
         await harnessLaunchOperation
         await runtime?.stop()
         await mobileBridge?.stop()
@@ -686,6 +705,7 @@ async function deactivateAccount(): Promise<void> {
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+  accountGateway = undefined
   harnessShell?.reset()
   desktopStorageManager?.flushSync()
   desktopStorageManager = undefined
@@ -697,7 +717,7 @@ async function deactivateAccount(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
   activeAccount = undefined
   accountCleanupBlocked = false
-  if (!quitting) showAccountWindow()
+  if (!quitting && !accountSwitching) showAccountWindow()
 }
 
 /**
@@ -722,8 +742,9 @@ async function activateAccount(session: PengbaoSession): Promise<void> {
   accountModels = await accountClient!.models()
   assertServableModels(accountModels)
   await removePengbaoProviderOverlay(activeAccount.home)
+  // Bootstrap owns the initial normal/Safe Mode launch. Starting again here
+  // supersedes the prepared page's pending boot IPC after the backend is ready.
   await bootstrapHarnessAfterVerifiedHandoff()
-  await launchHarness()
 }
 
 function configureAppIdentity(): void {
@@ -1219,6 +1240,7 @@ function ensureTray(): void {
     Menu.buildFromTemplate([
       { label: locale === 'zh' ? '显示鹏宝 AI' : 'Show Pengbao AI', click: restoreMainWindow },
       { type: 'separator' },
+      { label: locale === 'zh' ? '切换账号…' : 'Switch Account…', click: requestAccountSwitch },
       { label: locale === 'zh' ? '退出' : 'Exit', click: () => app.quit() }
     ])
   )
@@ -1341,7 +1363,7 @@ async function openHarness(
   url: string,
   focusIntent: WindowFocusIntent = 'automatic'
 ): Promise<void> {
-  if (processRecovery.blocked || quitting || gpuFallbackRelaunching || applicationRollbackVisible) return
+  if (processRecovery.blocked || quitting || accountSwitching || gpuFallbackRelaunching || applicationRollbackVisible) return
   if (!safeModeVisible && returnToNormalAfterRepair) {
     returnToNormalAfterRepair = false
     try {
@@ -1386,6 +1408,7 @@ async function openHarness(
   markHarnessRendered()
   await syncNativeTheme(window)
   if (!stillCurrent()) return
+  closePengbaoAccountWindow(accountWindow)
   raiseWindowWithoutStealingFocus(
     window,
     process.platform,
@@ -1467,7 +1490,7 @@ async function showWebHomeImport(
 }
 
 async function showSplash(): Promise<void> {
-  if (processRecovery.blocked || quitting || gpuFallbackRelaunching || applicationRollbackVisible) return
+  if (processRecovery.blocked || quitting || accountSwitching || gpuFallbackRelaunching || applicationRollbackVisible) return
   clearProfileBootConfirmation()
   const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow()
   const navigationVersion = ++mainWindowNavigationVersion
@@ -1672,7 +1695,7 @@ async function enterMigrationSafeRecovery(
 
 function launchHarness(): Promise<void> {
   accountRequired()
-  if (processRecovery.blocked) return Promise.resolve()
+  if (processRecovery.blocked || accountSwitching) return Promise.resolve()
   if (harnessLaunchOperation) return harnessLaunchOperation
 
   harnessLaunchOperation = (async () => {
@@ -1814,7 +1837,7 @@ function launchHarness(): Promise<void> {
 
 function launchSafeHarness(): Promise<void> {
   accountRequired()
-  if (processRecovery.blocked) return Promise.resolve()
+  if (processRecovery.blocked || accountSwitching) return Promise.resolve()
   if (harnessLaunchOperation) return harnessLaunchOperation
 
   harnessLaunchOperation = (async () => {
@@ -2199,6 +2222,9 @@ async function executeDesktopMenuCommand(command: DesktopMenuCommand): Promise<n
   const contents = window.webContents
 
   switch (command) {
+    case 'switch-account':
+      requestAccountSwitch()
+      break
     case 'connect-phone':
       await showMobilePairing()
       break
@@ -2282,7 +2308,7 @@ async function waitForPluginRecoveryAction(options: {
   rollbackSimulation?: boolean
   rollbackUnavailableReason?: string
 }): Promise<PluginRecoveryAction> {
-  if (quitting || gpuFallbackRelaunching) return 'quit'
+  if (quitting || accountSwitching || gpuFallbackRelaunching) return 'quit'
   const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow()
   const state = buildPluginRecoveryViewModel({
     ...options,
@@ -2353,7 +2379,7 @@ async function showPluginRecovery(options?: {
   logs?: readonly string[]
   followRendererLogs?: boolean
 }): Promise<void> {
-  if (processRecovery.blocked || failureRecoveryVisible || quitting) return
+  if (processRecovery.blocked || failureRecoveryVisible || quitting || accountSwitching) return
   failureRecoveryVisible = true
 
   const dshHome = accountHome()
@@ -2721,7 +2747,7 @@ async function showPluginRecovery(options?: {
         queueMicrotask(() => void showSafeMode().catch(showUnexpectedError))
         return
       } else {
-        app.quit()
+        if (!accountSwitching) app.quit()
         return
       }
     }
@@ -2730,7 +2756,7 @@ async function showPluginRecovery(options?: {
   } finally {
     failureRecoveryVisible = false
     const pending = takePendingFrontendPluginRecovery()
-    if (pending.pending && !quitting) {
+    if (pending.pending && !quitting && !accountSwitching) {
       queueMicrotask(() => {
         void showPluginRecovery({
           message: pending.message,
@@ -2773,6 +2799,7 @@ async function waitForSafeModeAction(options: {
   notice?: string
   noticeTone?: 'success' | 'error'
 }): Promise<SafeModeAction> {
+  if (quitting || accountSwitching) return { type: 'quit' }
   const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow()
   const window = safeModeManager && !safeModeManager.isDestroyed()
     ? safeModeManager
@@ -3098,7 +3125,7 @@ async function showSafeModeManager(initial?: {
       noticeTone = undefined
 
       if (action.type === 'quit') {
-        app.quit()
+        if (!accountSwitching) app.quit()
         return
       }
       if (action.type === 'agent') {
@@ -3430,6 +3457,10 @@ function installMenu(): void {
               accelerator: 'CmdOrCtrl+U',
               click: () => void checkForUpdates(true).catch(showUnexpectedError)
             },
+            {
+              label: isChinese ? '切换账号…' : 'Switch Account…',
+              click: requestAccountSwitch
+            },
             { type: 'separator' as const },
             // Role titles stay in Electron's English and can be rewritten to the
             // machine language. These labels follow the language chosen in Desktop.
@@ -3491,7 +3522,10 @@ function installMenu(): void {
           ]),
         ...(process.platform === 'darwin'
           ? []
-          : [{ type: 'separator' as const }, { role: 'quit' as const }])
+          : [
+            { label: isChinese ? '切换账号…' : 'Switch Account…', click: requestAccountSwitch },
+            { type: 'separator' as const }, { role: 'quit' as const }
+          ])
       ]
     },
     {
@@ -4156,11 +4190,12 @@ if (isDaemonLaunch(process.env, process.platform)) {
       }
     })
     app.on('window-all-closed', () => {
-      if (process.platform !== 'darwin') app.quit()
+      if (process.platform !== 'darwin' && !accountSwitching) app.quit()
     })
     app.on('will-quit', () => { applicationRollbackFlow.abort(); applicationRollbackVisible = false })
     app.on('before-quit', (event) => {
       if (accountQuitReady) return
+      if (accountSwitching) { event.preventDefault(); return }
       if (quitting) { event.preventDefault(); return }
       if (!runtime && !accountGateway && !activeAccount && !accountCleanupBlocked) {
         desktopDiagnostics?.markCleanExit()

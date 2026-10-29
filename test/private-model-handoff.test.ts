@@ -40,7 +40,7 @@ async function fixture(): Promise<{ root: string; cli: string; output: string }>
   // unreadable from outside the module.
   const scopedModules = join(root, 'node_modules', '@deepseek-ai')
   await mkdir(scopedModules, { recursive: true })
-  await symlink(join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh-llm-pi-ai'), join(scopedModules, 'dsh-llm-pi-ai'), 'dir')
+  await symlink(join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh-llm-pi-ai'), join(scopedModules, 'dsh-llm-pi-ai'), process.platform === 'win32' ? 'junction' : 'dir')
   const cli = join(root, 'cli.mjs')
   const output = join(root, 'child-report.json')
   await writeFile(cli, `

@@ -66,6 +66,16 @@ it('keeps the Word worker off the Windows confinement command line', () => {
   expect(docxWorkerPython('runtime', 'win32')).toBe(join('runtime', 'primary-runtime/dependencies/python', 'pythonw.exe'))
   expect(docxWorkerPython('runtime', 'darwin')).toBe(join('runtime', 'primary-runtime/dependencies/python', 'bin/python3'))
 })
+it('preserves only Windows system and temp paths for ACL runner initialization', () => {
+  const inherited = { SystemRoot: 'C:\\Windows', TMP: 'C:\\Temp\\acl-runner', TEMP: 'C:\\Temp\\acl-runner',
+    SECRET: 'secret', PENGBAO_TOKEN: 'token', NODE_OPTIONS: '--inspect', PATH: 'untrusted-bin' }
+  const env = docxWorkerEnvironment({ env: inherited, platform: 'win32', versions: {} })
+  expect(Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined))).toEqual({
+    SystemRoot: inherited.SystemRoot, TMP: inherited.TMP, TEMP: inherited.TEMP
+  })
+  const other = docxWorkerEnvironment({ env: inherited, platform: 'darwin', versions: {} })
+  expect(Object.values(other).every(value => value === undefined)).toBe(true)
+})
 it('returns Chinese layout JSON when the Windows code page is charmap', async () => {
   const { spawn } = await import('node:child_process')
   const python = resolve('.build/office-runtime/primary-runtime/dependencies/python', process.platform === 'win32' ? 'python.exe' : 'bin/python3')

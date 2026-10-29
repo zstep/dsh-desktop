@@ -30,7 +30,8 @@ describe('Pengbao account IPC input validation', () => {
     const page = readFileSync(new URL('../build/pengbao-account.html', import.meta.url), 'utf8')
     const script = page.match(/<script>([\s\S]*?)<\/script>/)?.[1]
     expect(script).toBeDefined()
-    const digest = createHash('sha256').update(script!).digest('base64')
+    // HTML parsing normalizes CRLF before CSP hashes are checked in the browser.
+    const digest = createHash('sha256').update(script!.replace(/\r\n?/g, '\n')).digest('base64')
     expect(page).toContain(`script-src 'sha256-${digest}'`)
   })
 })

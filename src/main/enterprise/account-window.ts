@@ -7,6 +7,13 @@ export interface PengbaoAccountWindowOptions {
   parent?: BrowserWindow
 }
 
+/** Dismiss only after the main workspace has connected, not merely after authentication. */
+export function closePengbaoAccountWindow(window: BrowserWindow | undefined): boolean {
+  if (!window || window.isDestroyed()) return false
+  window.destroy()
+  return true
+}
+
 /** Creates the isolated, local-only account surface. IPC handlers belong to the controller. */
 export function createPengbaoAccountWindow(options: PengbaoAccountWindowOptions): BrowserWindow {
   const pageUrl = pathToFileURL(options.htmlPath).href
