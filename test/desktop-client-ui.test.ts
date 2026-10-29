@@ -11,7 +11,7 @@ interface Registration {
 }
 
 describe('DSH Desktop client slot occupants', () => {
-  it('registers one occupant per brand seat and keeps the official name mark-free', async () => {
+  it('registers one occupant per brand seat with Pengbao identity', async () => {
     const source = await readFile(
       path.join(projectRoot, 'packages', 'dsh-desktop-client-ui', 'client.js'),
       'utf8'
@@ -26,6 +26,7 @@ describe('DSH Desktop client slot occupants', () => {
     const removeStyle = vi.fn()
     let disposeStyle: (() => void) | undefined
     const document = {
+      documentElement: { lang: 'en-US' },
       getElementById: vi.fn(() => null),
       createElement: vi.fn(() => ({ id: '', dataset: {}, textContent: '', remove: removeStyle })),
       head: { appendChild: (node: { textContent?: string }) => appended.push(node) }
@@ -51,8 +52,8 @@ describe('DSH Desktop client slot occupants', () => {
       type,
       props: { ...props, children }
     })
-    const BrandWordmark = vi.fn()
-    const FishLogo = vi.fn()
+    const MenuItemButton = vi.fn()
+    const Tooltip = vi.fn()
     const plugin = definition!.factory((id) => {
       if (id === 'react') {
         return {
@@ -62,7 +63,7 @@ describe('DSH Desktop client slot occupants', () => {
         }
       }
       if (id === '@deepseek-ai/dsh-client-ui-primitives') {
-        return { BrandWordmark, FishLogo }
+        return { MenuItemButton, Tooltip }
       }
       throw new Error(`Unexpected client dependency: ${id}`)
     })
@@ -88,7 +89,6 @@ describe('DSH Desktop client slot occupants', () => {
 
     expect(plugin.inject).toEqual(['locale', 'slots', 'remote.session', 'sessions', 'uiWorkspace'])
     expect(registrations.map(({ config }) => config.name)).toEqual([
-      'settings.sidebar.footer',
       'sidebar.settings.action',
       'conversation.input.dock',
       'sidebar.brand.mark',
@@ -99,14 +99,7 @@ describe('DSH Desktop client slot occupants', () => {
       'sidebar.workspaces.session.menu.item',
       'sidebar.workspaces.session.menu.item'
     ])
-    const enterprise = registrations.find(({ config }) => config.name === 'settings.sidebar.footer')
-    expect(enterprise?.config.id).toBe('desktop-enterprise-entry')
-    const entry = enterprise!.component({ t: () => '了解企业版' }) as { type: unknown; props: Record<string, unknown> }
-    expect(entry.type).toBe('a')
-    expect(entry.props.href).toBe('https://dshdesktop.com/zh/enterprise/')
-    expect(entry.props.target).toBe('_blank')
-    expect(entry.props.rel).toBe('noopener noreferrer')
-    expect(entry.props.children).toContain('了解企业版')
+    expect(registrations.some(({ config }) => config.name === 'settings.sidebar.footer')).toBe(false)
     // Desktop toolbar styles have an owned lifetime; branding stays in currentColor.
     expect(appended).toHaveLength(1)
     expect(appended[0]?.textContent).toContain("[data-dsh-preset-search]")
@@ -116,23 +109,20 @@ describe('DSH Desktop client slot occupants', () => {
     const sidebarName = registrations.find(
       ({ config }) => config.name === 'sidebar.brand.name'
     )!.component({}) as { type: unknown; props: Record<string, unknown> }
-    expect(sidebarName.type).toBe(BrandWordmark)
-    expect(sidebarName.props.includeMark).toBe(false)
+    expect(sidebarName.type).toBe('span')
+    expect(sidebarName.props.children).toEqual(['Pengbao AI'])
 
     const sidebarMark = registrations.find(
       ({ config }) => config.name === 'sidebar.brand.mark'
     )!.component({ size: 24 }) as { type: unknown; props: Record<string, unknown> }
-    expect(sidebarMark.type).toBe('svg')
-    expect(sidebarMark.props.height).toBe(17)
-    const [markPath] = sidebarMark.props.children as Array<{ type: unknown; props: Record<string, unknown> }>
-    if (!markPath) throw new Error('Expected the sidebar brand SVG path')
-    expect(markPath.type).toBe('path')
-    expect(markPath.props.fill).toBe('currentColor')
+    expect(sidebarMark.type).toBe('span')
+    expect(sidebarMark.props.children).toEqual(['鹏'])
+    expect(sidebarMark.props['aria-hidden']).toBe(true)
 
     const heroMark = registrations.find(
       ({ config }) => config.name === 'conversation.hero.brand.mark'
     )!.component({ size: 48 }) as { type: unknown; props: Record<string, unknown> }
-    expect(heroMark.type).toBe(FishLogo)
-    expect(heroMark.props.size).toBe(48)
+    expect(heroMark.type).toBeDefined()
+    expect(heroMark.props.children).toEqual([])
   })
 })

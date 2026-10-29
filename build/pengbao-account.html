@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-nqrb/s2lQV3H1+iH9Vj6MqfSY4uQXpyDyE27gIodfu8='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; connect-src 'none';">
+  <title>Pengbao account</title>
+  <style>
+    :root { color-scheme: light; --paper:#f5f1e9; --ink:#17352f; --muted:#66736e; --line:#d5d8ce; --card:#fffdf8; --accent:#e2643c; --accent-dark:#b94324; --soft:#e7eee6; --focus:#26776a; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme:dark; --paper:#14221f; --ink:#f2f0e7; --muted:#a7b4ad; --line:#354944; --card:#1b2c28; --accent:#f17b51; --accent-dark:#ff9a76; --soft:#263d36; --focus:#84d7bf; } }
+    :root[data-theme="dark"] { color-scheme:dark; --paper:#14221f; --ink:#f2f0e7; --muted:#a7b4ad; --line:#354944; --card:#1b2c28; --accent:#f17b51; --accent-dark:#ff9a76; --soft:#263d36; --focus:#84d7bf; }
+    * { box-sizing:border-box; } body { margin:0; min-height:100vh; background:var(--paper); color:var(--ink); font-family: Georgia, 'Times New Roman', serif; }
+    body:before { content:""; position:fixed; inset:0; opacity:.22; pointer-events:none; background-image:radial-gradient(#8c9a8f 0.6px, transparent .6px); background-size:13px 13px; }
+    main { position:relative; max-width:460px; min-height:100vh; margin:auto; padding:42px 28px 28px; display:flex; flex-direction:column; }
+    header { display:flex; justify-content:space-between; align-items:start; margin-bottom:42px; }
+    .mark { display:flex; align-items:center; gap:10px; font:700 15px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing:.12em; text-transform:uppercase; }
+    .mark i { width:24px; height:24px; display:block; border:2px solid var(--accent); border-radius:50% 50% 50% 8px; transform:rotate(-45deg); }
+    .locale { border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:99px; padding:7px 10px; font:12px ui-monospace, monospace; cursor:pointer; }
+    .eyebrow { margin:0 0 12px; color:var(--accent-dark); font:700 11px ui-monospace, monospace; letter-spacing:.16em; text-transform:uppercase; }
+    h1 { margin:0; font-size:clamp(34px, 9vw, 46px); line-height:.98; letter-spacing:-.055em; font-weight:500; max-width:340px; }
+    .lead { margin:18px 0 30px; color:var(--muted); font:15px/1.55 ui-sans-serif, system-ui, sans-serif; max-width:340px; }
+    .card { padding:24px 20px 20px; background:var(--card); border:1px solid var(--line); border-radius:4px; box-shadow:8px 8px 0 var(--soft); }
+    label { display:block; margin:0 0 7px; color:var(--muted); font:11px ui-monospace, monospace; letter-spacing:.08em; text-transform:uppercase; }
+    input { width:100%; margin-bottom:18px; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:10px 2px; outline:0; background:transparent; color:var(--ink); font:17px Georgia, serif; }
+    input:focus { border-color:var(--focus); box-shadow:0 2px 0 var(--focus); } input:disabled { opacity:.55; }
+    button { font:700 13px ui-sans-serif, system-ui, sans-serif; cursor:pointer; } button:focus-visible { outline:3px solid color-mix(in srgb, var(--focus), transparent 45%); outline-offset:3px; }
+    .submit { width:100%; border:0; border-radius:2px; padding:14px; background:var(--accent); color:#fffaf2; transition:transform .15s, background .15s; } .submit:hover:not(:disabled) { background:var(--accent-dark); transform:translateY(-1px); } button:disabled { cursor:not-allowed; opacity:.58; }
+    .secondary { border:0; background:none; color:var(--accent-dark); padding:10px 0; text-decoration:underline; text-underline-offset:3px; }
+    .status { min-height:24px; margin:16px 0 0; color:var(--muted); font:13px/1.4 ui-sans-serif, system-ui, sans-serif; } .status.error { color:#ba3c32; }
+    .notice { margin:22px 0 0; padding:12px 14px; border-left:3px solid var(--accent); background:var(--soft); color:var(--muted); font:12px/1.5 ui-sans-serif, system-ui, sans-serif; }
+    .foot { margin-top:auto; padding-top:34px; color:var(--muted); font:11px/1.5 ui-monospace, monospace; }
+    .hidden { display:none; } .fade { animation:rise .45s ease both; } @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } } @media (prefers-reduced-motion:reduce) { .fade { animation:none; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><div class="mark"><i aria-hidden="true"></i> Pengbao</div><button class="locale" id="locale" type="button">中文</button></header>
+  <section class="fade"><p class="eyebrow" id="eyebrow">Local account</p><h1 id="title">Bring your work back into focus.</h1><p class="lead" id="lead">Sign in to continue with your Pengbao workspace.</p></section>
+  <section class="card fade" aria-live="polite">
+    <form id="login-form">
+      <label for="email" id="email-label">Email</label><input id="email" name="email" type="email" autocomplete="username" required>
+      <label for="password" id="password-label">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button class="submit" id="submit" type="submit">Continue</button>
+    </form>
+    <form id="mfa-form" class="hidden">
+      <label for="code" id="code-label">Verification code</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+      <button class="submit" id="verify" type="submit">Verify</button>
+      <button class="secondary" id="recovery" type="button">Use a recovery code</button>
+    </form>
+    <div id="enroll" class="hidden"><p class="lead" id="enroll-copy">Your account needs MFA setup before you can continue.</p><button class="submit" id="enroll-button" type="button">Open MFA setup</button></div>
+    <p class="status" id="status" role="status"></p>
+    <p class="notice" id="notice">When you use Pengbao tools, file contents and relevant work context are sent to Pengbao for processing. Your password is cleared from this page after sign-in.</p>
+  </section>
+  <footer class="foot" id="foot">A secure local window · Your session is handled by the desktop app.</footer>
+</main>
+<script>
+(function () {
+  const bridge = window.pengbaoAccount;
+  const $ = id => document.getElementById(id);
+  const zh = (navigator.language || '').toLowerCase().startsWith('zh'); let isZh = zh;
+  const copy = { en:{eyebrow:'Local account',title:'Bring your work back into focus.',lead:'Sign in to continue with your Pengbao workspace.',email:'Email',password:'Password',continue:'Continue',code:'Verification code',verify:'Verify',recovery:'Use a recovery code',enroll:'Your account needs MFA setup before you can continue.',open:'Open MFA setup',notice:'When you use Pengbao tools, file contents and relevant work context are sent to Pengbao for processing. Your password is cleared from this page after sign-in.',foot:'A secure local window · Your session is handled by the desktop app.',pending:'Waiting for Pengbao…',busy:'Working securely…',invalid:'Enter your email and password.',network:'Pengbao is unavailable right now.',credentials:'That email or password was not accepted.',expired:'This sign-in has expired. Please try again.',forbidden:'This account is not allowed to sign in.',rate:'Too many attempts. Please wait and try again.',unknown:'Something went wrong. Please try again.',storage:'Your session could not be saved.'}, zh:{eyebrow:'本地账号',title:'让工作回到专注状态。',lead:'登录以继续使用你的鹏宝工作区。',email:'邮箱',password:'密码',continue:'继续',code:'验证码',verify:'验证',recovery:'使用恢复码',enroll:'你的账号需要先完成 MFA 设置。',open:'打开 MFA 设置',notice:'使用鹏宝工具时，文件内容和相关工作上下文会发送给鹏宝处理。登录后，此页面会清除你的密码。',foot:'安全的本地窗口 · 会话由桌面应用管理。',pending:'正在等待鹏宝响应…',busy:'正在安全处理…',invalid:'请输入邮箱和密码。',network:'鹏宝暂时不可用。',credentials:'邮箱或密码不正确。',expired:'登录已过期，请重试。',forbidden:'此账号暂不允许登录。',rate:'尝试次数过多，请稍后重试。',unknown:'发生未知错误，请重试。',storage:'会话保存失败。'}};
+  const text = key => copy[isZh?'zh':'en'][key];
+  function renderLanguage(){ document.documentElement.lang=isZh?'zh-CN':'en'; ['eyebrow','title','lead','email-label','password-label','notice','foot'].forEach(id=>{const map={'email-label':'email','password-label':'password'}; $(id).textContent=text(map[id]||id)}); $('locale').textContent=isZh?'EN':'中文'; $('recovery').textContent=text('recovery'); $('enroll-copy').textContent=text('enroll'); $('enroll-button').textContent=text('open'); $('code-label').textContent=recovery?(isZh?'恢复码':'Recovery code'):text('code'); state(current); }
+  function message(reason){ return text({network:'network',credentials:'credentials',expired:'expired',forbidden:'forbidden','rate-limit':'rate',storage:'storage',unknown:'unknown'}[reason]||'unknown'); }
+  let busy=false, recovery=false, current={phase:'busy'};
+  function setBusy(value){busy=value; document.querySelectorAll('input,button').forEach(el=>{el.disabled=value}); $('submit').textContent=value?text('busy'):text('continue'); $('verify').textContent=value?text('busy'):text('verify');}
+  function state(next){
+    current=next;
+    const phase=next.phase;
+    $('login-form').classList.toggle('hidden',phase==='mfa'||phase==='signed-in');
+    $('mfa-form').classList.toggle('hidden',phase!=='mfa'||next.enrollmentRequired);
+    $('enroll').classList.toggle('hidden',phase!=='mfa'||!next.enrollmentRequired);
+    $('status').className='status';
+    $('status').textContent=phase==='busy'?text('busy'):phase==='pending'?text('pending'):phase==='signed-in'?(isZh?'登录成功，正在打开工作区…':'Signed in. Opening your workspace…'):phase==='error'?message(next.reason):phase==='mfa'&&next.error?message(next.error):'';
+    if(phase==='error'||phase==='mfa'&&next.error) $('status').classList.add('error');
+    setBusy(phase==='busy'||phase==='signed-in');
+  }
+  $('locale').onclick=()=>{if(busy)return;isZh=!isZh;renderLanguage()}; $('login-form').onsubmit=async e=>{e.preventDefault(); if(busy)return; const email=$('email').value.trim(), password=$('password').value; if(!email||!password){$('status').textContent=text('invalid');return} setBusy(true); try{state(await bridge.signIn({email,password}))}catch(_){state({phase:'error',reason:'unknown'})}finally{$('password').value=''}};
+  $('mfa-form').onsubmit=async e=>{e.preventDefault();if(busy)return;setBusy(true);try{state(await bridge.verifyMfa({code:$('code').value.trim(),recovery}))}catch(_){state({phase:'error',reason:'unknown'})}finally{$('code').value=''}}; $('recovery').onclick=()=>{recovery=true;$('code-label').textContent=isZh?'恢复码':'Recovery code';$('code').inputMode='text';$('code').focus()}; $('enroll-button').onclick=async()=>{if(busy)return;setBusy(true);try{await bridge.openEnrollment()}catch(_){state({phase:'error',reason:'unknown'});return}setBusy(false)};
+  renderLanguage(); if(!bridge){state({phase:'error',reason:'unknown'})}else bridge.getState().then(state).catch(()=>state({phase:'error',reason:'unknown'}));
+})();
+</script>
+</body>
+</html>

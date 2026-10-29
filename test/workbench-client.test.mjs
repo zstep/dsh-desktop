@@ -988,9 +988,10 @@ describe('desktop workbench client navigation', () => {
     expect(source).toContain('安装完成后，仅当提示需要重启时')
     expect(source).toContain('试试你平时会用到的功能，看看是否符合预期')
     expect(source).toContain('想上架？把提交指令发给 AI 助手')
-    // The website is the only visible document entry point in this flow.
+    // Creation links resolve to bundled local guides rather than the original vendor.
     expect(source).toContain('href: developmentPageUrl()')
     expect(source).toContain('href: acceptancePageUrl()')
+    expect(source).not.toContain('dshdesktop.com')
     expect(source).not.toContain('离线查看')
     expect(source).toContain('复制开发指令')
     expect(source).toContain('复制提交指令')
@@ -1036,9 +1037,9 @@ describe('desktop workbench client navigation', () => {
     expect(development).toContain('不存在单独的「添加」按钮')
     expect(development).toContain('安装成功不能表述为全部验收通过')
     expect(development).toContain('不要声称已加载')
-    // Prompts give the website as the one link; the bundled copies are for offline reading.
-    expect(development).toContain('https://dshdesktop.com/workbench/docs/development.md')
-    expect(development).not.toContain('/api/desktop-workbenches/')
+    // Workbench guides are bundled locally and never direct Agents to the original vendor.
+    expect(development).toContain('/api/desktop-workbenches/development-guide')
+    expect(development).not.toContain('dshdesktop.com')
     expect(development).toContain('不需要处理市场投稿或发布')
     expect(development).not.toContain('dataelement/awesome-dsh-workbench')
     expect(development).not.toContain('CONTRIBUTING.md')
@@ -1053,8 +1054,8 @@ describe('desktop workbench client navigation', () => {
     expect(submission).toContain('不要凭空声称已验证或直接提交')
     expect(submission).not.toContain('我的 DSH Desktop 工作台已经做好，也装到本机验证过了')
     expect(submission).toContain('工作台市场验收规范')
-    expect(submission).toContain('https://dshdesktop.com/workbench/docs/market-acceptance.md')
-    expect(submission).not.toContain('/api/desktop-workbenches/')
+    expect(submission).toContain('/api/desktop-workbenches/market-acceptance')
+    expect(submission).not.toContain('dshdesktop.com')
     expect(submission).toContain('catalog/README.md')
     expect(submission).toContain('data/workbenches/<owner>__<repo>.yml')
     expect(submission).toContain('description.en')
@@ -1088,9 +1089,9 @@ describe('desktop workbench client navigation', () => {
     expect(prompt.endsWith(english ? 'If installation is incomplete, state that this entry remains unconfirmed until installation and loading succeed.' : '安装未完成时明确此入口仍待安装和加载后确认。')).toBe(true)
   })
 
-  it('provides English Agent prompts and English documentation URLs in English mode', () => {
+  it('provides English Agent prompts and bundled English documentation in English mode', () => {
     const development = developmentWorkbenchAgentPrompt(true)
-    expect(development).toContain('https://dshdesktop.com/workbench/docs/development-en.md')
+    expect(development).toContain('/api/desktop-workbenches/development-guide-en')
     expect(development).toContain('What would you like to call this workbench?')
     expect(development).toContain('Ask only one necessary question at a time')
     expect(development).toContain('a provisional name is fine')
@@ -1101,7 +1102,7 @@ describe('desktop workbench client navigation', () => {
     expect(development).toContain('wait for my answer')
     expect(development).not.toContain('工作台开发规范')
     const submission = submissionWorkbenchAgentPrompt({ english: true, category: { id: 'other', name: '其他', names: { en: 'Other' } }, suggestion: 'Legal' })
-    expect(submission).toContain('https://dshdesktop.com/workbench/docs/market-acceptance-en.md')
+    expect(submission).toContain('/api/desktop-workbenches/market-acceptance-en')
     expect(submission).toContain('category to other (Other)')
     expect(submission).toContain('suggest a new category: Legal')
     expect(submission).toContain('description.zh')

@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({ protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() } }))
 
-import { desktopResourceUrl, resolveDesktopResourceName } from '../src/main/desktop-protocol'
+import type { Protocol } from 'electron'
+import { desktopResourceUrl, installDesktopProtocol, resolveDesktopResourceName } from '../src/main/desktop-protocol'
 
 describe('resolveDesktopResourceName', () => {
   it('names a page or asset in the desktop resources', () => {
@@ -32,5 +33,17 @@ describe('desktopResourceUrl', () => {
     const url = desktopResourceUrl('safe-mode.html', { state: '{"locale":"zh"}', theme: 'dark' })
     expect(url).toBe('dsh-desktop://desktop/safe-mode.html?state=%7B%22locale%22%3A%22zh%22%7D&theme=dark')
     expect(resolveDesktopResourceName(url)).toBe('safe-mode.html')
+  })
+})
+
+describe('installDesktopProtocol', () => {
+  it('registers desktop pages on the account session protocol', () => {
+    const accountProtocol = { handle: vi.fn() } as unknown as Protocol
+
+    installDesktopProtocol(name => `/resources/${name}`, undefined, accountProtocol)
+    installDesktopProtocol(name => `/updated/${name}`, undefined, accountProtocol)
+
+    expect(accountProtocol.handle).toHaveBeenCalledWith('dsh-desktop', expect.any(Function))
+    expect(accountProtocol.handle).toHaveBeenCalledTimes(1)
   })
 })

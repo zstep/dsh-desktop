@@ -16,7 +16,7 @@ import { RepairSessionStore } from './state/repair-agent-sessions'
 import { buildRepairPlan, canOpenRecoveryAgent, type RepairPlan } from './repair-policy'
 import { readRepairJournal, recordRepairAttempt, repairAttemptsForVersion } from './state/repair-job'
 import { spawn } from 'node:child_process'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { parse } from 'yaml'
@@ -28,7 +28,9 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
+  safeStorage,
   shell,
+  session,
   Tray,
   utilityProcess,
   type IpcMainEvent,
@@ -219,6 +221,20 @@ import { requestWindowRestart } from './window-restart-prompt'
 import { freemem, release, totalmem } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { loadDesktopWindowAfterStop } from './desktop-window-load'
+import { PengbaoClient, type PengbaoModel, type PengbaoSession } from './enterprise/client'
+import { PengbaoAccountController } from './enterprise/account-controller'
+import { registerPengbaoAccountIpc } from './enterprise/account-ipc'
+import { createPengbaoAccountWindow } from './enterprise/account-window'
+import { PENGBAO_PRODUCT, pengbaoAccountPaths } from './enterprise/config'
+import type { PengbaoGateway } from './enterprise/gateway'
+import {
+  assertServableModels,
+  preparePengbaoProviderOverlay,
+  removePengbaoProviderOverlay
+} from './enterprise/provider-overlay'
+import { startPengbaoGateway } from './enterprise/gateway'
+import { pengbaoSecretStore } from './enterprise/secret-store'
+import { createFileSessionStore } from './enterprise/session-store'
 
 type PluginRecoveryAction = `agent:${string}` | 'show-log' | 'quit' | 'restart' | 'refresh' | 'safe-mode' | 'auto-process' | 'check-updates' | 'rollback'
 type WebImportAction = 'import' | 'skip'
@@ -245,6 +261,13 @@ const PLUGIN_RECOVERY_ACTIONS = new Set<PluginRecoveryAction>([
 ])
 
 let mainWindow: BrowserWindow | undefined
+let accountWindow: BrowserWindow | undefined
+let accountController: PengbaoAccountController | undefined
+let accountClient: PengbaoClient | undefined
+let accountGateway: PengbaoGateway | undefined
+let accountModels: readonly PengbaoModel[] = []
+let activeAccount: ReturnType<typeof pengbaoAccountPaths> | undefined
+let accountCleanupBlocked = false
 let mobileWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let runtime: HarnessRuntime
@@ -278,6 +301,7 @@ const HARNESS_CURRENT_SESSION_KEY = 'dsh.sessions.current'
 let lastCrashEvidence: CrashEvidence | undefined
 let launchDirectory: string
 let quitting = false
+let accountQuitReady = false
 let configurationRecoveryOperation: Promise<'retry' | 'continue'> | undefined
 let failureRecoveryVisible = false
 let harnessLaunchOperation: Promise<void> | undefined
@@ -411,7 +435,7 @@ function appendRendererPluginRecoveryLog(logs: readonly string[]): void {
       .map((line) => `[renderer] ${line}`)
       .join('\n')
     appendFileSync(
-      join(app.getPath('logs'), 'harness.log'),
+      accountHarnessLogPath(),
       `\n[desktop] frontend plugin recovery ${new Date().toISOString()}\n${evidence}\n`,
       'utf8'
     )
@@ -424,7 +448,7 @@ function appendPluginRecoveryDetectionLog(plugins: readonly string[]): void {
   try {
     const result = plugins.length > 0 ? plugins.join(', ') : 'unresolved'
     appendFileSync(
-      join(app.getPath('logs'), 'harness.log'),
+      accountHarnessLogPath(),
       `[desktop] plugin recovery detection: ${result}\n`,
       'utf8'
     )
@@ -605,19 +629,106 @@ function applyWindowChromeTheme(window: BrowserWindow, isDark: boolean): void {
   }
 }
 
-function configureAppIdentity(): void {
-  if (developmentBuild) {
-    app.setName('DSH Desktop Dev')
-    app.setPath('userData', join(app.getPath('appData'), developmentConfig.profile))
+function accountHome(): string {
+  if (!activeAccount || accountCleanupBlocked) throw new Error('No verified Pengbao account is active')
+  return activeAccount.home
+}
+
+function accountRoot(): string {
+  return dirname(accountHome())
+}
+
+function accountHarnessLogPath(): string {
+  return join(accountRoot(), 'logs', 'harness.log')
+}
+
+function accountRequired(): void { void accountHome() }
+
+function showAccountWindow(): void {
+  if (quitting) return
+  if (accountWindow && !accountWindow.isDestroyed()) {
+    accountWindow.show()
+    accountWindow.focus()
     return
   }
+  const window = createPengbaoAccountWindow({
+    preloadPath: join(import.meta.dirname, '../preload/account.cjs'),
+    htmlPath: desktopResourcePath('pengbao-account.html')
+  })
+  accountWindow = window
+  window.on('closed', () => { if (accountWindow === window) accountWindow = undefined })
+  window.once('ready-to-show', () => window.show())
+}
 
-  app.setName('DSH Desktop')
-  // Keep the historical lowercase directory stable across product-name and
-  // branding changes. Harness stores workspaces, sessions, credentials, and
-  // custom presets below userData, so deriving this path from app.getName()
-  // would make an ordinary upgrade look like a fresh installation.
-  app.setPath('userData', join(app.getPath('appData'), 'dsh-desktop'))
+async function deactivateAccount(): Promise<void> {
+  accountCleanupBlocked = true
+  // Revoke the capability before waiting on any child process or page.
+  const gateway = accountGateway
+  accountGateway = undefined
+  const home = activeAccount?.home
+  accountModels = []
+  clearProfileBootConfirmation()
+  ++mainWindowNavigationVersion
+  // Do not allow another identity after a stalled gateway, child, or bridge shutdown.
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.all([gateway?.stop(), home ? removePengbaoProviderOverlay(home) : Promise.resolve()])
+    await Promise.race([
+      (async () => {
+        await harnessLaunchOperation
+        await runtime?.stop()
+        await mobileBridge?.stop()
+      })(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('Account resources did not stop in time')), 15_000)
+      })
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+  harnessShell?.reset()
+  desktopStorageManager?.flushSync()
+  desktopStorageManager = undefined
+  windowStateManager?.flushSync()
+  windowStateManager = undefined
+  repairAgentService?.dispose()
+  repairAgentService = undefined
+  if (mobileWindow && !mobileWindow.isDestroyed()) mobileWindow.destroy()
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+  activeAccount = undefined
+  accountCleanupBlocked = false
+  if (!quitting) showAccountWindow()
+}
+
+/**
+ * Flips only after the memory-only model link is verified end to end —
+ * gateway → capability seam → a real chat completion with a tool round trip.
+ * Until then activation fails closed rather than booting a runtime whose
+ * model route is silently broken.
+ */
+const PRIVATE_MODEL_HANDOFF_VERIFIED = true
+
+async function activateAccount(session: PengbaoSession): Promise<void> {
+  if (!PRIVATE_MODEL_HANDOFF_VERIFIED) throw new Error('Pengbao model runtime handoff is not yet verified')
+  if (accountCleanupBlocked || activeAccount || runtime) throw new Error('Account switch requires a clean restart')
+  activeAccount = pengbaoAccountPaths(app.getPath('userData'), session.user.id)
+  // The gateway owns the account's only outbound model link: it holds the
+  // JWT, binds loopback only, and mints one per-launch capability token.
+  // Activation failure is unwound by the controller through deactivate().
+  accountGateway = await startPengbaoGateway({
+    jwt: session.token,
+    onFailure: failure => runtime?.note(`[pengbao-gateway] ${JSON.stringify(failure)}`)
+  })
+  accountModels = await accountClient!.models()
+  assertServableModels(accountModels)
+  await removePengbaoProviderOverlay(activeAccount.home)
+  await bootstrapHarnessAfterVerifiedHandoff()
+  await launchHarness()
+}
+
+function configureAppIdentity(): void {
+  app.setName(developmentBuild ? `${PENGBAO_PRODUCT.nameEn} Dev` : PENGBAO_PRODUCT.nameEn)
+  app.setPath('userData', join(app.getPath('appData'), developmentBuild ? `${PENGBAO_PRODUCT.dataDirectory}-dev` : PENGBAO_PRODUCT.dataDirectory))
 }
 
 async function syncNativeTheme(window: BrowserWindow): Promise<void> {
@@ -745,7 +856,7 @@ function readProfileLocalePreference(): unknown {
   try {
     const profile = safeModeVisible || startInSafeMode ? SAFE_MODE_PROFILE : 'web'
     const patchText = readFileSync(
-      join(app.getPath('userData'), 'harness', 'profiles', profile, 'cordis.patch.yml'),
+      join(accountHome(), 'profiles', profile, 'cordis.patch.yml'),
       'utf8'
     )
     return localePreferenceFromProfilePatch(patchText)
@@ -757,7 +868,7 @@ function readProfileLocalePreference(): unknown {
 function readLegacySettingsLocalePreference(): unknown {
   try {
     const settings = parse(
-      readFileSync(join(app.getPath('userData'), 'harness', 'settings.yaml'), 'utf8')
+      readFileSync(join(accountHome(), 'settings.yaml'), 'utf8')
     ) as { locale?: { preference?: unknown } } | null
     if (!settings || typeof settings !== 'object') return undefined
     return settings.locale?.preference
@@ -872,7 +983,7 @@ function scheduleNormalProfileBootConfirmation(): void {
       return
     }
     profileBootConfirmationComplete = true
-    const dshHome = join(app.getPath('userData'), 'harness')
+    const dshHome = accountHome()
     void (async () => {
       await confirmMigration(dshHome, (line) => runtime.note(line), healthy)
       if (!healthy()) {
@@ -1008,7 +1119,7 @@ function configureApplicationLocale(): void {
 function harnessThemePreference(): 'light' | 'dark' | 'system' {
   try {
     const settings = parse(
-      readFileSync(join(app.getPath('userData'), 'harness', 'settings.yaml'), 'utf8')
+      readFileSync(join(accountHome(), 'settings.yaml'), 'utf8')
     ) as { 'ui-theme'?: { preference?: unknown } }
     const preference = settings['ui-theme']?.preference
     return preference === 'light' || preference === 'dark' || preference === 'system'
@@ -1087,6 +1198,10 @@ function restoreMainWindow(): void {
   }
 
   const snapshot = runtime?.snapshot()
+  if (!activeAccount || accountCleanupBlocked || !runtime) {
+    showAccountWindow()
+    return
+  }
   if (snapshot?.phase === 'ready' && snapshot.url) {
     void openHarness(snapshot.url, 'user').catch(showUnexpectedError)
   } else if (snapshot?.phase === 'idle') {
@@ -1099,10 +1214,10 @@ function ensureTray(): void {
 
   const locale = harnessLocale()
   tray = new Tray(desktopIconPath())
-  tray.setToolTip('DSH Desktop')
+  tray.setToolTip(PENGBAO_PRODUCT.nameEn)
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: locale === 'zh' ? '显示 DSH Desktop' : 'Show DSH Desktop', click: restoreMainWindow },
+      { label: locale === 'zh' ? '显示鹏宝 AI' : 'Show Pengbao AI', click: restoreMainWindow },
       { type: 'separator' },
       { label: locale === 'zh' ? '退出' : 'Exit', click: () => app.quit() }
     ])
@@ -1112,7 +1227,7 @@ function ensureTray(): void {
 
 function createWindow(): BrowserWindow {
   const isWindows = process.platform === 'win32'
-  windowStateManager ??= new WindowStateManager(app.getPath('userData'))
+  windowStateManager ??= new WindowStateManager(accountRoot())
   const initialBounds = windowStateManager.validateBounds(windowStateManager.getState())
   const window = new BrowserWindow({
     width: initialBounds.width,
@@ -1143,7 +1258,8 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
       preload: join(import.meta.dirname, '../preload/index.cjs'),
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      partition: activeAccount?.partition ?? (() => { throw new Error('No verified Pengbao account is active') })()
     }
   })
   if (process.platform === 'darwin') {
@@ -1229,7 +1345,7 @@ async function openHarness(
   if (!safeModeVisible && returnToNormalAfterRepair) {
     returnToNormalAfterRepair = false
     try {
-      const saved = await new RepairSessionStore(join(app.getPath('userData'), 'recovery')).load('normal')
+      const saved = await new RepairSessionStore(join(accountRoot(), 'recovery')).load('normal')
       if (saved && desktopStorageManager) restoreRepairReturnNavigation(desktopStorageManager, saved.sessionId)
     } catch (error) {
       runtime.note(`[repair] could not restore ordinary navigation: ${String(error)}`)
@@ -1555,13 +1671,14 @@ async function enterMigrationSafeRecovery(
 }
 
 function launchHarness(): Promise<void> {
+  accountRequired()
   if (processRecovery.blocked) return Promise.resolve()
   if (harnessLaunchOperation) return harnessLaunchOperation
 
   harnessLaunchOperation = (async () => {
     safeModeVisible = false
     runtime.beginLaunch('web profile')
-    const dshHome = join(app.getPath('userData'), 'harness')
+    const dshHome = accountHome()
     await showSplash()
     runtime.note('[desktop] splash shown')
     // Migration and generation projection only hold on a stopped Harness, and
@@ -1569,7 +1686,6 @@ function launchHarness(): Promise<void> {
     // is after maintenance. Stopping here owns that mutation window.
     await runtime.stop()
     runtime.note('[desktop] previous Harness stopped; starting profile maintenance')
-    await maybeImportWebHome(dshHome)
     desktopStorageManager?.switchProfile(join(dshHome, 'profiles', 'web'))
     prepareHarnessPage()
     const maintenance = await runProfileStartupMaintenance({
@@ -1697,13 +1813,14 @@ function launchHarness(): Promise<void> {
 }
 
 function launchSafeHarness(): Promise<void> {
+  accountRequired()
   if (processRecovery.blocked) return Promise.resolve()
   if (harnessLaunchOperation) return harnessLaunchOperation
 
   harnessLaunchOperation = (async () => {
     safeModeVisible = true
     runtime.beginLaunch('safe mode')
-    const dshHome = join(app.getPath('userData'), 'harness')
+    const dshHome = accountHome()
     await refreshMigrationRecoveryLock(dshHome)
     await showSplash()
     await runtime.stop()
@@ -1756,7 +1873,7 @@ async function openRepairAgentPrompt(
   }
   const service = repairAgentService
   const previousNormalRepair = !safeModeVisible
-    ? await new RepairSessionStore(join(app.getPath('userData'), 'recovery')).load('normal')
+    ? await new RepairSessionStore(join(accountRoot(), 'recovery')).load('normal')
     : undefined
   const session = await service.initSession(options)
   if (!session.ok || !session.sessionId) {
@@ -1870,7 +1987,7 @@ async function removeMarket(dshHome: string): Promise<{ ok: boolean; detail?: st
  * weaken it.
  */
 async function uninstallMarketAndRestart(): Promise<{ ok: boolean }> {
-  const dshHome = join(app.getPath('userData'), 'harness')
+  const dshHome = accountHome()
   await showSplash()
   await runtime.stop()
   const result = await removeMarket(dshHome)
@@ -1920,7 +2037,7 @@ function registerHarnessHandlers(): void {
   ipcMain.removeHandler('desktop-host-plugin:status')
   ipcMain.handle('desktop-host-plugin:status', async (event) => {
     assertTrustedMainWindowEvent(event)
-    const dshHome = join(app.getPath('userData'), 'harness')
+    const dshHome = accountHome()
     return {
       enabled: !(await readDisabledHostPlugins(dshHome)).includes(BUILTIN_IMAGE_GENERATION),
       marketActive: await profileHasEnabledBundle(dshHome, BUILTIN_IMAGE_GENERATION)
@@ -1931,7 +2048,7 @@ function registerHarnessHandlers(): void {
   ipcMain.handle('desktop-host-plugin:set-enabled', async (event, enabled: unknown) => {
     assertTrustedMainWindowEvent(event)
     if (typeof enabled !== 'boolean') throw new Error('Expected an enabled state')
-    const dshHome = join(app.getPath('userData'), 'harness')
+    const dshHome = accountHome()
     if (enabled) {
       const handoff = await prepareProfileBundleForHostEnable(dshHome, BUILTIN_IMAGE_GENERATION)
       if (!handoff.ok) return handoff
@@ -2048,8 +2165,8 @@ async function showAbout(window: BrowserWindow): Promise<void> {
   const checkForUpdatesLabel = locale === 'zh' ? '检查更新' : 'Check for Updates'
   const result = await dialog.showMessageBox(window, {
     type: 'info',
-    title: 'DSH Desktop',
-    message: locale === 'zh' ? '关于 DSH Desktop' : 'About DSH Desktop',
+    title: PENGBAO_PRODUCT.nameEn,
+    message: locale === 'zh' ? '关于鹏宝 AI' : 'About Pengbao AI',
     detail: aboutDetail(
       app.getVersion(),
       bundledHarnessVersion(bundledRuntimeRoot()),
@@ -2092,7 +2209,7 @@ async function executeDesktopMenuCommand(command: DesktopMenuCommand): Promise<n
       void showSafeMode().catch(showUnexpectedError)
       break
     case 'show-harness-log':
-      shell.showItemInFolder(join(app.getPath('logs'), 'harness.log'))
+      shell.showItemInFolder(join(accountRoot(), 'logs', 'harness.log'))
       break
     case 'check-for-updates':
       await checkForUpdates(true)
@@ -2209,13 +2326,13 @@ function reportNativeRecoveryFailure(failure: unknown): void {
   console.error('[desktop] native recovery failed', failureMessage)
   if (quitting || gpuFallbackRelaunching) return
   const locale = harnessLocale()
-  dialog.showErrorBox('DSH Desktop', applicationText(locale, 'windowRecovery.heading') + '\n\n' +
+  dialog.showErrorBox(PENGBAO_PRODUCT.nameEn, applicationText(locale, 'windowRecovery.heading') + '\n\n' +
     applicationText(locale, 'windowRecovery.description'))
 }
 
 function recoverCoreConfiguration(): Promise<'retry' | 'continue'> {
   configurationRecoveryOperation ??= recoverStartupConfiguration({
-    dshHome: join(app.getPath('userData'), 'harness'),
+    dshHome: accountHome(),
     get profile() { return safeModeVisible ? SAFE_MODE_PROFILE : 'web' },
     environment: resolveShellEnvironment(),
     launchDirectory,
@@ -2239,7 +2356,7 @@ async function showPluginRecovery(options?: {
   if (processRecovery.blocked || failureRecoveryVisible || quitting) return
   failureRecoveryVisible = true
 
-  const dshHome = join(app.getPath('userData'), 'harness')
+  const dshHome = accountHome()
   const isChinese = harnessLocale() === 'zh'
   cancelPluginRecoverySessionReset()
   const removedPlugins = pluginRecoveryRemovedPlugins
@@ -2596,7 +2713,7 @@ async function showPluginRecovery(options?: {
         }
         continue
       } else if (action === 'show-log') {
-        shell.showItemInFolder(join(app.getPath('logs'), 'harness.log'))
+        shell.showItemInFolder(join(accountRoot(), 'logs', 'harness.log'))
         continue
       } else if (action === 'safe-mode') {
         safeModeSuspectedPlugins = [...new Set(detection.plugins)]
@@ -2872,7 +2989,7 @@ async function showSafeModeManager(initial?: {
 }): Promise<void> {
   if (!safeModeVisible || safeModeManagerVisible || quitting) return
   safeModeManagerVisible = true
-  const dshHome = join(app.getPath('userData'), 'harness')
+  const dshHome = accountHome()
   const isChinese = harnessLocale() === 'zh'
   let notice = initial?.notice
   let noticeTone = initial?.noticeTone
@@ -3301,7 +3418,7 @@ function installMenu(): void {
           label: app.name,
           submenu: [
             {
-              label: isChinese ? '关于 DSH Desktop' : 'About DSH Desktop',
+              label: isChinese ? '关于鹏宝 AI' : 'About Pengbao AI',
               click: () => {
                 if (mainWindow && !mainWindow.isDestroyed()) {
                   void showAbout(mainWindow).catch(showUnexpectedError)
@@ -3312,10 +3429,6 @@ function installMenu(): void {
               label: checkForUpdatesLabel,
               accelerator: 'CmdOrCtrl+U',
               click: () => void checkForUpdates(true).catch(showUnexpectedError)
-            },
-            {
-              label: isChinese ? '了解企业版' : 'Explore Enterprise',
-              click: () => void shell.openExternal('https://dshdesktop.com/zh/enterprise/').catch(showUnexpectedError)
             },
             { type: 'separator' as const },
             // Role titles stay in Electron's English and can be rewritten to the
@@ -3364,7 +3477,7 @@ function installMenu(): void {
         },
         {
           label: isChinese ? '查看 Harness 日志' : 'Show Harness Log',
-          click: () => shell.showItemInFolder(join(app.getPath('logs'), 'harness.log'))
+          click: () => shell.showItemInFolder(join(accountRoot(), 'logs', 'harness.log'))
         },
         ...(process.platform === 'darwin'
           ? []
@@ -3431,7 +3544,7 @@ async function showMobilePairing(): Promise<void> {
     const options: MessageBoxOptions = {
       type: 'info',
       message: 'Harness is still starting.',
-      detail: 'Wait until DSH Desktop is ready, then connect your phone again.',
+      detail: 'Wait until Pengbao AI is ready, then connect your phone again.',
       buttons: ['OK']
     }
     await (mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options))
@@ -3487,16 +3600,43 @@ async function showMobilePairing(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   desktopDiagnostics?.startSending()
+  const client = new PengbaoClient()
+  accountController = new PengbaoAccountController({
+    client,
+    store: createFileSessionStore(join(app.getPath('userData'), 'pengbao-session.json'), pengbaoSecretStore(safeStorage)),
+    activate: activateAccount,
+    deactivate: deactivateAccount
+  })
+  accountClient = client
+  registerPengbaoAccountIpc({
+    window: () => accountWindow,
+    pagePath: desktopResourcePath('pengbao-account.html'),
+    controller: accountController
+  })
+  showAccountWindow()
+  // A restored identity is verified remotely, but cannot enter the legacy
+  // Harness until an authenticated, memory-only model handoff is implemented.
+  void accountController.restore().catch(error => console.warn('[pengbao] account restore failed', error))
+}
+
+/** Only a verified runtime capability handoff may call this setup path. */
+async function bootstrapHarnessAfterVerifiedHandoff(): Promise<void> {
   harnessShell = new HarnessShell({
     frontendRoot: join(bundledRuntimeRoot(), 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist')
   })
   installDesktopProtocol(desktopResourcePath, request => harnessShell.handle(request))
+  if (!activeAccount) throw new Error('No verified Pengbao account is active')
+  installDesktopProtocol(
+    desktopResourcePath,
+    request => harnessShell.handle(request),
+    session.fromPartition(activeAccount.partition).protocol
+  )
   if (process.platform === 'darwin') app.dock?.setIcon(desktopIconPath())
   launchDirectory = await ensureLaunchRoot(app.getPath('userData'))
   registerUpdateHandlers({ locale: harnessLocale })
   nativeTheme.themeSource = harnessThemePreference()
   ensureTray()
-  const dshHome = join(app.getPath('userData'), 'harness')
+  const dshHome = accountHome()
   desktopStorageManager = new DesktopStorageManager(join(dshHome, 'profiles', 'web'), {
     onError: (error, context) => {
       console.warn(`[desktop-storage] error during ${context}:`, error)
@@ -3512,14 +3652,18 @@ async function bootstrap(): Promise<void> {
     dshPatchPath: desktopResourcePath('dsh-desktop.patch.yml'),
     dshSafePatchPath: desktopResourcePath('dsh-desktop-safe.patch.yml'),
     dshMarketPatchPath: desktopResourcePath('dsh-desktop-market.patch.yml'),
-    dshHome: join(app.getPath('userData'), 'harness'),
-    logPath: join(app.getPath('logs'), 'harness.log'),
+    dshHome: accountHome(),
+    logPath: join(accountRoot(), 'logs', 'harness.log'),
     pnpmEntryPath: bundledPnpmEntryPath(),
     pnpmRunnerPath: bundledPnpmRunnerPath(),
     hideConsoleBootstrapPath: hideConsoleBootstrapPath(),
     // Keep the Harness origin stable across launches. These ports are separate
     // from the production/development mobile bridge ports (43127/43128).
     preferredPort: developmentConfig.harnessPort,
+    providerOverlay: async (profile) => accountGateway
+      ? preparePengbaoProviderOverlay(accountHome(), profile, { gatewayUrl: accountGateway.url, models: accountModels })
+      : undefined,
+    privateModelHandoff: () => accountGateway && { gatewayUrl: accountGateway.url, capabilityToken: accountGateway.capabilityToken },
     launchProcess: (executablePath, args, options) =>
       process.platform === 'darwin'
         ? launchDisclaimedUtilityProcess(utilityProcess, args, options, {
@@ -3598,16 +3742,16 @@ async function bootstrap(): Promise<void> {
       void showMobilePairing().catch(showUnexpectedError)
     },
     onConnectedChange: (connected) => broadcastMobileStatus(connected),
-    pairingPinStore: createFilePairingPinStore(pairingPinStorePath(app.getPath('userData')))
+    pairingPinStore: createFilePairingPinStore(pairingPinStorePath(accountRoot()))
   })
   if (!startInSafeMode) void mobileBridge.start().catch(showUnexpectedError)
   repairAgentService = new RepairAgentService({
     harnessUrl: () => runtime.snapshot().url,
     harnessAuthToken: () => runtime.snapshot().authToken,
     environment: () => safeModeVisible ? 'safe' : 'normal',
-    sessionStateDirectory: join(app.getPath('userData'), 'recovery'),
+    sessionStateDirectory: join(accountRoot(), 'recovery'),
     repairHistory: async () => repairAttemptsForVersion(
-      await readRepairJournal(join(app.getPath('userData'), 'harness')).catch((error: unknown) => {
+      await readRepairJournal(accountHome()).catch((error: unknown) => {
         // A corrupt journal blocks automatic actions, but must not block diagnosis.
         runtime.note(`[repair] history unavailable for diagnosis: ${String(error)}`)
         return { attempts: [] }
@@ -3616,8 +3760,8 @@ async function bootstrap(): Promise<void> {
     ensureHarnessReady: async () => {
       if (safeModeVisible) await launchSafeHarness()
     },
-    workspaceDirectory: join(app.getPath('userData'), 'harness'),
-    harnessLogPath: join(app.getPath('logs'), 'harness.log'),
+    workspaceDirectory: accountHome(),
+    harnessLogPath: join(accountRoot(), 'logs', 'harness.log'),
     shippedPresetsDirectory: join(bundledRuntimeRoot(), 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'presets'),
     locale: harnessLocale,
     crashEvidence: () => lastCrashEvidence,
@@ -3643,7 +3787,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle('mobile:open-pairing', () => showMobilePairing())
   ipcMain.handle('mobile:status', () => ({ connected: mobileBridge.snapshot().connected }))
   ipcMain.handle('harness:show-log', () => {
-    shell.showItemInFolder(join(app.getPath('logs'), 'harness.log'))
+    shell.showItemInFolder(join(accountRoot(), 'logs', 'harness.log'))
   })
   ipcMain.handle('harness:open-in-finder', async (event, path?: unknown) => {
     assertTrustedMainWindowEvent(event)
@@ -3745,7 +3889,7 @@ async function bootstrap(): Promise<void> {
     ) {
       return { ok: false }
     }
-    await refreshMigrationRecoveryLock(join(app.getPath('userData'), 'harness'))
+    await refreshMigrationRecoveryLock(accountHome())
     if (
       (action === 'apply' || action === 'upgrade' || action === 'enable' || action === 'backup-delete') && profileRecoveryLocked()
     ) return { ok: false }
@@ -3781,7 +3925,7 @@ async function bootstrap(): Promise<void> {
       if (typeof removalId !== 'string' || removalId.length === 0) return { ok: false }
       if (
         action === 'backup-restore' &&
-        !await canRetryLockedPluginRestore(join(app.getPath('userData'), 'harness'), removalId)
+        !await canRetryLockedPluginRestore(accountHome(), removalId)
       ) return { ok: false }
       resolveSafeModeAction({ type: action, removalId })
     } else if (action === 'agent') {
@@ -3815,7 +3959,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle('safe-mode:exit', async (event) => {
     assertTrustedMainWindowEvent(event)
     if (!safeModeVisible) return { ok: false }
-    const dshHome = join(app.getPath('userData'), 'harness')
+    const dshHome = accountHome()
     if (await refreshMigrationRecoveryLock(dshHome)) {
       resolveSafeModeAction({ type: 'agent' })
       await launchHarness()
@@ -3880,7 +4024,7 @@ async function bootstrap(): Promise<void> {
       },
       prepareToInstall: async () => {
         await runtime.stop()
-        const dshHome = join(app.getPath('userData'), 'harness')
+        const dshHome = accountHome()
         await quarantineInstalledLaunchAgentsForUpdate(dshHome)
         quitting = true
         // NSIS may force-kill before will-quit; clear the marker so the next
@@ -3934,7 +4078,7 @@ async function bootstrap(): Promise<void> {
     }
   })
   if (developmentRepairDemo && mainWindow) {
-    mainWindow.setTitle('DSH Desktop · V0.13.0 维修演示')
+    mainWindow.setTitle(`${PENGBAO_PRODUCT.nameEn} · V0.13.0 维修演示`)
     mainWindow.on('page-title-updated', event => event.preventDefault())
   }
   installMenu()
@@ -3975,6 +4119,10 @@ if (isDaemonLaunch(process.env, process.platform)) {
     }, () => initializeDesktopService({ getExitContext: () => processRecovery.exitContext }))
     app.on('second-instance', (_event, argv) => {
       if (!isUserInitiatedInstance(argv)) return
+      if (!runtime || !activeAccount || accountCleanupBlocked) {
+        showAccountWindow()
+        return
+      }
       if (shouldStartInSafeMode(argv)) {
         void showSafeMode().catch(showUnexpectedError)
         return
@@ -3991,6 +4139,10 @@ if (isDaemonLaunch(process.env, process.platform)) {
       app.quit()
     })
     app.on('activate', () => {
+      if (!runtime || !activeAccount || accountCleanupBlocked) {
+        showAccountWindow()
+        return
+      }
       if (safeModeVisible && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.show()
         mainWindow.focus()
@@ -4008,19 +4160,26 @@ if (isDaemonLaunch(process.env, process.platform)) {
     })
     app.on('will-quit', () => { applicationRollbackFlow.abort(); applicationRollbackVisible = false })
     app.on('before-quit', (event) => {
-      desktopDiagnostics?.markCleanExit()
-      if (quitting || !runtime) return
+      if (accountQuitReady) return
+      if (quitting) { event.preventDefault(); return }
+      if (!runtime && !accountGateway && !activeAccount && !accountCleanupBlocked) {
+        desktopDiagnostics?.markCleanExit()
+        return
+      }
       event.preventDefault()
       quitting = true
-      desktopStorageManager?.flushSync()
       stopUpdateManager()
-      // Windows leaves the tray icon behind as a ghost until the user hovers
-      // over it unless it is destroyed explicitly before the process exits.
       if (tray && !tray.isDestroyed()) tray.destroy()
       tray = undefined
-      repairAgentService?.dispose()
-      repairAgentService = undefined
-      void Promise.all([runtime.stop(), mobileBridge?.stop()]).finally(() => app.quit())
+      void deactivateAccount().then(() => {
+        desktopDiagnostics?.markCleanExit()
+        accountQuitReady = true
+        app.quit()
+      }, error => {
+        quitting = false
+        console.error('[pengbao] unable to stop account resources before quit', error)
+        dialog.showErrorBox('Pengbao cleanup failed', 'The application could not stop all account resources. Close it before signing in with another account.')
+      })
     })
   }
 }

@@ -67,6 +67,17 @@ describe('desktop service', () => {
     expect(isPrereleaseVersion('0.9.0-rc.1+build')).toBe(true)
     expect(() => desktopPlatform('linux', 'x64')).toThrow('Unsupported')
   })
+  it('keeps local reports queued and refuses vendor traffic when remote services are disabled', async () => {
+    const { options, request, service } = fixture()
+    const local = new DesktopService({ ...options, remoteEnabled: false })
+    local.capture('startup-failure', 'local recovery evidence')
+    await local.flush()
+    expect(local.pending()).toHaveLength(1)
+    expect(options.confirmUpload).not.toHaveBeenCalled()
+    await expect(local.checkUpdate(true)).rejects.toThrow('unconfigured')
+    expect(request).not.toHaveBeenCalled()
+    expect(service.pending()).toHaveLength(1)
+  })
   it('uploads exactly the last 100 lines, with redaction before disk, and consumes the report after one upload attempt', async () => {
     const { options, request, service, dir } = fixture()
     writeFileSync(options.logPath, Array.from({ length: 200 }, (_, n) => `line ${n} api_key=privateValue`).join('\r\n') + '\r\n')

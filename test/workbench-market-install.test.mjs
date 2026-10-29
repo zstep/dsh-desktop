@@ -133,7 +133,7 @@ describe('workbench market install routes', () => {
     const connection = { fetch: { register(route) { routes.push(route) } } }
     // The catalog reader captures fetch when the plugin applies.
     vi.stubGlobal('fetch', fetchCatalog || vi.fn(async url => Response.json(String(url).endsWith('/package.json') ? { name: 'project-helper', version: '1.2.0' } : catalog)))
-    apply({ effect: fn => fn(), reflect: { provide() {} }, connection, inject(deps, callback) { if (pluginManager && !deps.includes('tools')) callback({ connection, pluginManager, effect: fn => fn() }) } }, { root })
+    apply({ effect: fn => fn(), reflect: { provide() {} }, connection, inject(deps, callback) { if (pluginManager && !deps.includes('tools')) callback({ connection, pluginManager, effect: fn => fn() }) } }, { root, catalogUrl: 'https://market.example.test/index.json' })
     const call = async (path, body) => {
       const route = routes.find(value => value.path === path)
       if (!route) return undefined
@@ -142,6 +142,30 @@ describe('workbench market install routes', () => {
     }
     return { root, home, call }
   }
+
+  it('keeps local routes available without a configured market and never fetches the vendor catalog', async () => {
+    const root = await tempRoot()
+    const routes = new Map()
+    const fetchCatalog = vi.fn()
+    vi.stubGlobal('fetch', fetchCatalog)
+    const installBundle = vi.fn()
+    const connection = { fetch: { register(route) { routes.set(route.path, route) } } }
+    apply({ effect: fn => fn(), reflect: { provide() {} }, connection,
+      inject(deps, callback) { if (!deps.includes('tools')) callback({ connection, pluginManager: manager({ installBundle }), effect: fn => fn() }) }
+    }, { root })
+    const request = async (path, options) => {
+      const response = await routes.get(path).fetch(new Request(`http://localhost${path}`, options))
+      return { status: response.status, body: await response.json() }
+    }
+    expect(await request('/api/desktop-workbenches/catalog')).toMatchObject({ status: 200, body: { catalog: null, stale: false } })
+    expect((await request('/api/desktop-workbenches/state')).status).toBe(200)
+    expect((await request('/api/desktop-workbenches/market-installs')).status).toBe(200)
+    expect((await request('/api/desktop-workbenches/submission-status')).status).toBe(503)
+    expect((await request('/api/desktop-workbenches/state/migrate', { method: 'POST', body: JSON.stringify({ migrations: { old: 'new' } }) })).status).toBe(503)
+    expect((await request('/api/desktop-workbenches/market-install', { method: 'POST', body: JSON.stringify({ id: KEY }) })).status).toBe(503)
+    expect(fetchCatalog).not.toHaveBeenCalled()
+    expect(installBundle).not.toHaveBeenCalled()
+  })
 
   it('stays browse-only when Desktop has no package service', async () => {
     const { call } = await host(undefined)

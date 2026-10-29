@@ -1,20 +1,20 @@
 {
   "name": "dsh-desktop",
   "version": "0.12.1",
-  "description": "A cross-platform desktop shell for DeepSeek Harness.",
+  "description": "Pengbao AI desktop assistant.",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
-  "author": "DataElement",
+  "author": "Pengtai",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dataelement/dsh-desktop.git"
+    "url": "git+https://gitee.com/cheilpengtai/dsh-desktop.git"
   },
   "bugs": {
-    "url": "https://github.com/dataelement/dsh-desktop/issues"
+    "url": "https://gitee.com/cheilpengtai/dsh-desktop/issues"
   },
-  "homepage": "https://github.com/dataelement/dsh-desktop#readme",
+  "homepage": "https://gitee.com/cheilpengtai/dsh-desktop",
   "keywords": [
     "deepseek",
     "harness",
@@ -25,7 +25,8 @@
   "scripts": {
     "postinstall": "patch-package && node scripts/install-brand-assets.mjs && install-electron --no",
     "dev": "npm run office:prepare && npm run ppt:build && electron-vite dev",
-    "build": "npm run office:prepare && npm run ppt:build && electron-vite build",
+    "build": "npm run brand:generate && npm run icons:generate && npm run loader:generate && npm run office:prepare && npm run ppt:build && electron-vite build",
+    "brand:generate": "node scripts/generate-brand-assets.mjs",
     "icons:generate": "node scripts/generate-app-icons.mjs",
     "loader:generate": "node scripts/generate-loader-gifs.mjs",
     "preview": "electron-vite preview",
@@ -318,8 +319,8 @@
     "koffi": "3.1.5"
   },
   "build": {
-    "appId": "io.dsh.desktop",
-    "productName": "DSH Desktop",
+    "appId": "net.ecombus.pengbao.desktop",
+    "productName": "Pengbao AI",
     "asar": true,
     "asarUnpack": [
       "**/*.{node,dylib,dll,so,exe}",
@@ -398,6 +399,10 @@
         "to": "icon.png"
       },
       {
+        "from": "build/pengbao-b2-mark.png",
+        "to": "pengbao-b2-mark.png"
+      },
+      {
         "from": "build/harness-node-entry.mjs",
         "to": "harness-node-entry.mjs"
       },
@@ -436,6 +441,10 @@
       {
         "from": "build/dsh-desktop-safe.patch.yml",
         "to": "dsh-desktop-safe.patch.yml"
+      },
+      {
+        "from": "build/pengbao-account.html",
+        "to": "pengbao-account.html"
       },
       {
         "from": "build/splash.html",
@@ -482,14 +491,9 @@
         "to": "office-cli.mjs"
       }
     ],
-    "publish": [
-      {
-        "provider": "generic",
-        "url": "https://dshdesktop.com/updates/latest/"
-      }
-    ],
+    "publish": null,
     "detectUpdateChannel": false,
-    "artifactName": "dsh-desktop-${os}-${arch}.${ext}",
+    "artifactName": "pengbao-ai-${os}-${arch}.${ext}",
     "mac": {
       "notarize": false,
       "category": "public.app-category.developer-tools",
@@ -529,7 +533,6 @@
       "icon": "build/icon.ico",
       "verifyUpdateCodeSignature": true,
       "signtoolOptions": {
-        "publisherName": "Beijing Shuju Xiangsu Intelligence Technology Co., Ltd.",
         "signingHashAlgorithms": [
           "sha256"
         ]
@@ -545,7 +548,7 @@
       ]
     },
     "nsis": {
-      "artifactName": "dsh-desktop-windows-${arch}-setup.${ext}",
+      "artifactName": "pengbao-ai-windows-${arch}-setup.${ext}",
       "include": "build/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

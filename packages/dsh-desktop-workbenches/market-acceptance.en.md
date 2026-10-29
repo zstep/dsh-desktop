@@ -1,14 +1,16 @@
+> Bundled offline snapshot from this desktop version. Read these documents locally; if a local document cannot be read, report the failure rather than fetching it from another website.
+
 # Workbench Market Acceptance Standard
 
 Version: 2026-09-29 · The website is authoritative; DSH Desktop bundles a copy for offline use.
 
-Official page: https://dshdesktop.com/workbench/docs/market-acceptance-en/
+Official page: /api/desktop-workbenches/market-acceptance-en
 
-Markdown source for agents: https://dshdesktop.com/workbench/docs/market-acceptance-en.md
+Markdown source for agents: /api/desktop-workbenches/market-acceptance-en
 
-Before development or submission, see the [six-step quickstart](https://dshdesktop.com/workbench/docs/quickstart-en/) ([Markdown](https://dshdesktop.com/workbench/docs/quickstart-en.md)). [中文版](https://dshdesktop.com/workbench/docs/market-acceptance/).
+Before development or submission, see the [six-step quickstart](/api/desktop-workbenches/quickstart-en) ([Markdown](/api/desktop-workbenches/quickstart-en)). [中文版](/api/desktop-workbenches/market-acceptance).
 
-This document applies only when an author **wants to list a workbench in the Workbench Market**. For a workbench developed and used locally, meeting the [Workbench Development Standard](https://dshdesktop.com/workbench/docs/development-en/) and passing the local self-test is enough. There is no need to read this document, publish code, or upload materials.
+This document applies only when an author **wants to list a workbench in the Workbench Market**. For a workbench developed and used locally, meeting the [Workbench Development Standard](/api/desktop-workbenches/development-guide-en) and passing the local self-test is enough. There is no need to read this document, publish code, or upload materials.
 
 Listing follows the DSH plugin market model: the author places code in their own public GitHub repository and submits one listing PR to [awesome-dsh-workbench](https://github.com/dataelement/awesome-dsh-workbench). Descriptions and screenshots are needed only at this stage. The listing YAML and client index fields are defined by that repository's `catalog/README.md` and `schema/`; this document describes author and review requirements without redefining the fields.
 
@@ -158,4 +160,4 @@ Checks unfinished due to network or quota are “incomplete,” not “passed.�
 
 - DSH plugin market listing rules: [awesome-dsh-plugin contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md), [dsh-market](https://github.com/dsh-market/dsh-market).
 - Workbench Market listing format: `catalog/README.md` and `schema/` in [awesome-dsh-workbench](https://github.com/dataelement/awesome-dsh-workbench).
-- Development rules: [Workbench Development Standard](https://dshdesktop.com/workbench/docs/development-en/).
+- Development rules: [Workbench Development Standard](/api/desktop-workbenches/development-guide-en).

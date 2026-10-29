@@ -12,21 +12,24 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../packages/dsh-desktop-workbenches/index.js'
 import { renderDocumentPage } from '../scripts/workbench-doc-page.mjs'
-import { renderBundledGuide, SITE_DOCUMENTS, ACCEPTANCE_SOURCE, ACCEPTANCE_TARGET, ACCEPTANCE_EN_SOURCE, ACCEPTANCE_EN_TARGET, GUIDE_SOURCE, GUIDE_TARGET, GUIDE_EN_SOURCE, GUIDE_EN_TARGET, QUICKSTART_SOURCE, QUICKSTART_EN_SOURCE, renderAcceptanceFromSource, renderGuideFromSource, renderQuickstartFromSource, renderEnglishGuideFromSource, renderEnglishAcceptanceFromSource, renderEnglishQuickstartFromSource } from '../scripts/build-workbench-guide.mjs'
+import { renderBundledGuide, SITE_DOCUMENTS, ACCEPTANCE_SOURCE, ACCEPTANCE_TARGET, ACCEPTANCE_EN_SOURCE, ACCEPTANCE_EN_TARGET, GUIDE_SOURCE, GUIDE_TARGET, GUIDE_EN_SOURCE, GUIDE_EN_TARGET, QUICKSTART_SOURCE, QUICKSTART_EN_SOURCE, QUICKSTART_TARGET, QUICKSTART_EN_TARGET, renderAcceptanceFromSource, renderGuideFromSource, renderQuickstartFromSource, renderEnglishGuideFromSource, renderEnglishAcceptanceFromSource, renderEnglishQuickstartFromSource } from '../scripts/build-workbench-guide.mjs'
 
 const root = join(import.meta.dirname, '..')
 const read = path => readFileSync(join(root, path), 'utf8')
 
 describe('bundled workbench development guide', () => {
-  it('keeps offline fallback notices out of website output and requires online retrieval in prompts', () => {
+  it('keeps bundled snapshots intact and directs desktop prompts to local guides', () => {
     for (const [render, language, notice] of [[renderGuideFromSource, 'zh', '内置离线快照'], [renderEnglishGuideFromSource, 'en', 'Bundled offline snapshot']]) {
       const online = render(read)
       expect(online).not.toContain(notice)
-      expect(renderBundledGuide(online, language)).toContain(notice)
-      expect(renderBundledGuide(online, language)).toContain(online)
+      const bundled = renderBundledGuide(online, language)
+      expect(bundled).toContain(notice)
+      expect(bundled).toContain('/api/desktop-workbenches/market-acceptance')
+      expect(bundled).not.toContain('dshdesktop.com')
     }
     const client = read('packages/dsh-desktop-workbenches/client.js')
-    for (const phrase of ['必须先实际获取', '记录实际获取地址和文档版本', '只有在线获取失败', '能力差异', 'actually fetch and read', 'Record the fetched URL and document version', 'Only if online retrieval fails', 'capability differences']) expect(client).toContain(phrase)
+    for (const phrase of ['/api/desktop-workbenches/development-guide', '/api/desktop-workbenches/market-acceptance', '随此版本打包的快照', 'snapshot packaged with this version']) expect(client).toContain(phrase)
+    expect(client).not.toContain('dshdesktop.com')
   })
 
   it('generates website Markdown and reading pages without bundled-copy notices', async () => {
@@ -124,8 +127,9 @@ describe('bundled workbench development guide', () => {
     expect(guide).toContain('## 3. 包格式')
     expect(guide).toContain('## 8. 本地自测清单')
     // Listing is covered once, by the market acceptance spec.
-    expect(guide).toContain('https://dshdesktop.com/workbench/docs/market-acceptance/')
-    expect(guide).toContain('https://dshdesktop.com/workbench/docs/development.md')
+    expect(guide).toContain('/api/desktop-workbenches/market-acceptance')
+    expect(guide).toContain('/api/desktop-workbenches/development-guide')
+    expect(guide).not.toContain('dshdesktop.com')
     expect(guide).not.toContain('$DSH_WEB_URL')
     expect(guide).not.toContain('data/workbenches/')
     expect(guide).not.toContain('首次市场收录')
@@ -136,23 +140,29 @@ describe('bundled workbench development guide', () => {
 
   it('ships the market acceptance spec as its own document', () => {
     const spec = read(ACCEPTANCE_TARGET)
-    expect(spec).toBe(renderAcceptanceFromSource(read))
-    expect(spec).toBe(read(ACCEPTANCE_SOURCE))
+    expect(spec).toBe(renderBundledGuide(renderAcceptanceFromSource(read)))
     expect(spec).toContain('data/workbenches/<owner>__<repo>.yml')
     expect(spec).toContain('本机不保存投稿状态')
     expect(spec).toContain('**验收清单**')
     expect(spec).not.toContain('submissions.json')
     expect(spec).not.toContain('docs/workbench-')
-    expect(spec).toContain('https://dshdesktop.com/workbench/docs/development/')
-    expect(spec).toContain('https://dshdesktop.com/workbench/docs/market-acceptance.md')
+    expect(spec).toContain('/api/desktop-workbenches/development-guide')
+    expect(spec).toContain('/api/desktop-workbenches/market-acceptance')
+    expect(spec).not.toContain('dshdesktop.com')
     expect(spec).not.toContain('$DSH_WEB_URL')
   })
 
   it('ships complete English development and acceptance sources for offline use', () => {
     expect(read(GUIDE_EN_TARGET)).toBe(renderBundledGuide(renderEnglishGuideFromSource(read), 'en'))
-    expect(read(ACCEPTANCE_EN_TARGET)).toBe(renderEnglishAcceptanceFromSource(read))
-    expect(read(GUIDE_EN_TARGET)).toBe(renderBundledGuide(read(GUIDE_EN_SOURCE), 'en'))
-    expect(read(ACCEPTANCE_EN_TARGET)).toBe(read(ACCEPTANCE_EN_SOURCE))
+    expect(read(ACCEPTANCE_EN_TARGET)).toBe(renderBundledGuide(renderEnglishAcceptanceFromSource(read), 'en'))
+    expect(read(GUIDE_EN_TARGET)).toContain('/api/desktop-workbenches/market-acceptance-en')
+    expect(read(ACCEPTANCE_EN_TARGET)).toContain('/api/desktop-workbenches/development-guide-en')
+    expect(read(GUIDE_EN_TARGET)).not.toContain('dshdesktop.com')
+    expect(read(ACCEPTANCE_EN_TARGET)).not.toContain('dshdesktop.com')
+    expect(read(QUICKSTART_TARGET)).toBe(renderBundledGuide(renderQuickstartFromSource(read)))
+    expect(read(QUICKSTART_EN_TARGET)).toBe(renderBundledGuide(renderEnglishQuickstartFromSource(read), 'en'))
+    expect(read(QUICKSTART_TARGET)).not.toContain('dshdesktop.com')
+    expect(read(QUICKSTART_EN_TARGET)).not.toContain('dshdesktop.com')
     expect(read(GUIDE_EN_TARGET)).toContain('## 8. Local self-test checklist')
     expect(read(ACCEPTANCE_EN_TARGET)).toContain('**Acceptance checklist**')
     expect(read(ACCEPTANCE_EN_TARGET)).toContain('data/workbenches/<owner>__<repo>.yml')
@@ -192,6 +202,11 @@ describe('bundled workbench development guide', () => {
       const englishAcceptance = await routes.find(value => value.path === '/api/desktop-workbenches/market-acceptance-en').fetch(new Request('http://localhost/api/desktop-workbenches/market-acceptance-en'))
       expect(englishAcceptance.status).toBe(200)
       expect(await englishAcceptance.text()).toBe(read(ACCEPTANCE_EN_TARGET))
+      for (const [path, target] of [['/api/desktop-workbenches/quickstart', QUICKSTART_TARGET], ['/api/desktop-workbenches/quickstart-en', QUICKSTART_EN_TARGET]]) {
+        const response = await routes.find(value => value.path === path).fetch(new Request(`http://localhost${path}`))
+        expect(response.status).toBe(200)
+        expect(await response.text()).toBe(read(target))
+      }
       expect(routes.some(value => value.path === '/api/desktop-workbenches/submissions')).toBe(false)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -234,9 +249,12 @@ describe('bundled workbench development guide', () => {
       expect(SITE_DOCUMENTS[en].language).toBe('en')
     }
     const client = read('packages/dsh-desktop-workbenches/client.js')
+    for (const route of ['/api/desktop-workbenches/development-guide', '/api/desktop-workbenches/market-acceptance', '/api/desktop-workbenches/development-guide-en', '/api/desktop-workbenches/market-acceptance-en']) {
+      expect(client).toContain(`'${route}'`)
+    }
     for (const doc of [SITE_DOCUMENTS.development, SITE_DOCUMENTS.acceptance, SITE_DOCUMENTS.developmentEn, SITE_DOCUMENTS.acceptanceEn]) {
-      expect(client).toContain(`'${doc.url}'`)
-      expect(client).toContain(`'${doc.pageUrl}'`)
+      expect(client).not.toContain(`'${doc.url}'`)
+      expect(client).not.toContain(`'${doc.pageUrl}'`)
     }
   })
 

@@ -1,5 +1,5 @@
 diff --git a/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js b/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js
-index 4b1e5adba9..c8e755cbde 100644
+index 4b1e5ad..c615f79 100644
 --- a/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js
 @@ -1446,8 +1446,9 @@ function mapUsage(usage) {
@@ -155,3 +155,78 @@ index 4b1e5adba9..c8e755cbde 100644
  				}), model.contextWindow, options.signal, model.id)[Symbol.asyncIterator]();
  				let exhausted = false;
  				try {
+@@ -2856,6 +2880,38 @@ function directoryEntries(profiles, settingsNs) {
+ 	for (const [provider, profile] of profiles) declare(provider, profile.displayName, profile.catalogError);
+ 	return [...entries.values()];
+ }
++/** The desktop host's memory-only model credential; see {@link registerPrivateModelCredential}. */
++let privateModelCredential;
++/**
++* The desktop host's memory-only model credential, delivered over its private
++* child-message pipe before the profile boots. It lives in module scope for
++* the process lifetime only: never in a credentials document, an environment
++* entry, a profile file, argv, a log, or any tool process. Exactly one entry
++* may be registered, and it answers only the one provider route that names
++* the desktop gateway itself — both the provider id and the loopback origin
++* must match, so a repointed or renamed route resolves through the ordinary
++* credential plane and fails closed instead of borrowing this key.
++* @param entry - the provider id, loopback gateway origin, and capability key.
++*/
++function registerPrivateModelCredential(entry) {
++	if (privateModelCredential !== void 0) throw new Error("llm-pi-ai: a private model credential is already registered");
++	if (typeof entry?.provider !== "string" || entry.provider.length === 0) throw new TypeError("llm-pi-ai: a private model credential requires a provider id");
++	if (typeof entry?.baseURL !== "string" || !/^https?:\/\/127\.0\.0\.1:\d+$/.test(entry.baseURL)) throw new TypeError("llm-pi-ai: a private model credential requires a loopback gateway origin");
++	if (typeof entry?.apiKey !== "string" || entry.apiKey.length === 0) throw new TypeError("llm-pi-ai: a private model credential requires an api key");
++	privateModelCredential = Object.freeze({ provider: entry.provider, baseURL: entry.baseURL, apiKey: entry.apiKey });
++}
++/**
++* The registered private credential when the route names the registered
++* provider and a baseURL at or under the registered gateway origin; every
++* such URL still points at the desktop's own loopback gateway.
++* @returns the capability key, or `undefined` when no registration matches.
++*/
++function matchPrivateModelCredential(provider, baseURL) {
++	const registered = privateModelCredential;
++	if (registered === void 0 || provider !== registered.provider || typeof baseURL !== "string") return void 0;
++	if (baseURL !== registered.baseURL && !baseURL.startsWith(`${registered.baseURL}/`)) return void 0;
++	return registered.apiKey;
++}
+ /** Register one generic pi-ai adapter for all configured provider routes. */
+ function apply(ctx, config) {
+ 	ctx.inject(["settings"], (child) => {
+@@ -2890,6 +2946,8 @@ function apply(ctx, config) {
+ 		return raw;
+ 	});
+ 	const resolveApiKey = async (provider, profile) => {
++		const privateKey = matchPrivateModelCredential(provider, profile.baseURL);
++		if (privateKey !== void 0) return assertUsableApiKey(privateKey, "llm-pi-ai", "the private model handoff");
+ 		const ref = profile.apiKeyEnv;
+ 		if (ref === void 0) return void 0;
+ 		const credentials = ctx.get("credentials");
+@@ -2965,4 +3023,4 @@ function apply(ctx, config) {
+ 	});
+ }
+ //#endregion
+-export { Config, PiAiAdapter, apply, inject, name, recordKeyFor, supportedProtocols };
++export { Config, PiAiAdapter, apply, inject, name, recordKeyFor, registerPrivateModelCredential, supportedProtocols };
+diff --git a/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/types/index.d.ts b/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/types/index.d.ts
+index ebd5ad1..6944db4 100644
+--- a/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/types/index.d.ts
++++ b/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/types/index.d.ts
+@@ -5,6 +5,16 @@ export type { PiAiAdapterOptions } from './adapter.ts';
+ export { Config } from './config.ts';
+ export type { Options, PiAiCompatProfile, PiAiModality, PiAiModelOverride, PiAiModelProfile, PiAiProviderProfile, PiAiReasoningEfforts, PiAiThinkingFormat, ResolvedPiAiProviderProfile, } from './config.ts';
+ export { recordKeyFor } from './auth.ts';
++export interface PrivateModelCredential {
++    /** Provider route id this credential answers; no other route can resolve it. */
++    provider: string;
++    /** Loopback gateway origin the provider route's baseURL must name. */
++    baseURL: string;
++    /** The capability key itself; it never persists beyond the process lifetime. */
++    apiKey: string;
++}
++/** Register the desktop host's memory-only model credential (one-shot, process lifetime). */
++export declare function registerPrivateModelCredential(entry: PrivateModelCredential): void;
+ export { supportedProtocols } from './provider.ts';
+ export declare const name = "llm-pi-ai";
+ export declare const inject: string[];

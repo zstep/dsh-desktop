@@ -82,7 +82,7 @@ export class DesktopService {
   private flushing?: Promise<void>
   private readonly outbox: string
   private readonly marker: string
-  constructor(private readonly options: { stateDir: string; logPath: string; version: string; platform: string; arch: string; request: Request; confirmUpload: (report: string) => Promise<boolean> }) {
+  constructor(private readonly options: { stateDir: string; logPath: string; version: string; platform: string; arch: string; request: Request; confirmUpload: (report: string) => Promise<boolean>; remoteEnabled?: boolean }) {
     this.platform = desktopPlatform(options.platform, options.arch)
     if (!isVersion(options.version)) throw new Error('Invalid application version')
     this.outbox = join(options.stateDir, 'outbox')
@@ -128,6 +128,7 @@ export class DesktopService {
       .sort((a, b) => statSync(join(this.outbox, a)).mtimeMs - statSync(join(this.outbox, b)).mtimeMs)
   }
   flush(): Promise<void> {
+    if (this.options.remoteEnabled === false) return Promise.resolve()
     this.flushing ??= this.flushPending().finally(() => { this.flushing = undefined })
     return this.flushing
   }
@@ -150,6 +151,7 @@ export class DesktopService {
   // A user-initiated check asks the policy service to bypass percentage rollout.
   // Server-side version, platform, enabled-release, and archive validation remain mandatory.
   async checkUpdate(manual = false): Promise<UpdateDecision> {
+    if (this.options.remoteEnabled === false) throw new Error('Pengbao update service is unconfigured')
     const query = new URLSearchParams({ installationId: this.installationId, currentVersion: this.options.version, platform: this.platform })
     if (manual) query.set('manual', 'true')
     const response = await this.options.request(`${SERVICE_URL}/v1/updates/check?${query}`, { signal: AbortSignal.timeout(5000), redirect: 'error' })

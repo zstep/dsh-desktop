@@ -35,6 +35,8 @@ export const ACCEPTANCE_SOURCE = 'docs/workbench-market-acceptance.zh.md'
 export const ACCEPTANCE_EN_SOURCE = 'docs/workbench-market-acceptance.en.md'
 export const QUICKSTART_SOURCE = 'docs/workbench-quickstart.zh.md'
 export const QUICKSTART_EN_SOURCE = 'docs/workbench-quickstart.en.md'
+export const QUICKSTART_TARGET = 'packages/dsh-desktop-workbenches/quickstart.zh.md'
+export const QUICKSTART_EN_TARGET = 'packages/dsh-desktop-workbenches/quickstart.en.md'
 // Each document has a reading page for people and the Markdown source for Agents.
 export const SITE_DOCUMENTS = {
   development: {
@@ -69,12 +71,26 @@ SITE_DOCUMENTS.quickstart.alternatePageUrl = SITE_DOCUMENTS.quickstartEn.pageUrl
 
 const withTrailingNewline = text => (text.endsWith('\n') ? text : `${text}\n`)
 
-// Offline notices belong only to Desktop outputs, never to website documents.
+// Desktop copies link only to documents served by the local host. Website
+// output remains unchanged; do not rewrite unrelated submission URLs.
+const desktopDocuments = {
+  development: 'development-guide',
+  'development-en': 'development-guide-en',
+  'market-acceptance': 'market-acceptance',
+  'market-acceptance-en': 'market-acceptance-en',
+  quickstart: 'quickstart',
+  'quickstart-en': 'quickstart-en'
+}
+
 export function renderBundledGuide(markdown, language = 'zh') {
   const notice = language === 'en'
-    ? '> Bundled offline snapshot: use only after online retrieval fails. This is not guaranteed to be the latest standard and must not override the online version. Report the retrieval failure, this offline source, and document version.\n\n'
-    : '> 内置离线快照：仅在在线获取失败后备用，不保证是最新规范，不得覆盖在线版本。请报告获取失败原因、本离线来源和文档版本。\n\n'
-  return notice + markdown
+    ? '> Bundled offline snapshot from this desktop version. Read these documents locally; if a local document cannot be read, report the failure rather than fetching it from another website.\n\n'
+    : '> 内置离线快照来自当前桌面版本。请在本机读取这些文档；若本地文档无法读取，如实报告错误，不要转向其他网站补取。\n\n'
+  const local = markdown.replaceAll(/https:\/\/dshdesktop\.com\/workbench\/docs\/([a-z-]+)(?:\.md|\/)/g, (url, name) => {
+    const route = desktopDocuments[name]
+    return route ? `/api/desktop-workbenches/${route}` : url
+  })
+  return notice + local
 }
 
 export function renderGuideFromSource(readFile = path => readFileSync(join(root, path), 'utf8')) {
@@ -112,9 +128,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         ])
     : [
         { destination: target, label: GUIDE_TARGET, rendered: renderBundledGuide(renderGuideFromSource()) },
-        { destination: join(root, ACCEPTANCE_TARGET), label: ACCEPTANCE_TARGET, rendered: renderAcceptanceFromSource() },
+        { destination: join(root, ACCEPTANCE_TARGET), label: ACCEPTANCE_TARGET, rendered: renderBundledGuide(renderAcceptanceFromSource()) },
         { destination: join(root, GUIDE_EN_TARGET), label: GUIDE_EN_TARGET, rendered: renderBundledGuide(renderEnglishGuideFromSource(), 'en') },
-        { destination: join(root, ACCEPTANCE_EN_TARGET), label: ACCEPTANCE_EN_TARGET, rendered: renderEnglishAcceptanceFromSource() }
+        { destination: join(root, ACCEPTANCE_EN_TARGET), label: ACCEPTANCE_EN_TARGET, rendered: renderBundledGuide(renderEnglishAcceptanceFromSource(), 'en') },
+        { destination: join(root, QUICKSTART_TARGET), label: QUICKSTART_TARGET, rendered: renderBundledGuide(renderQuickstartFromSource()) },
+        { destination: join(root, QUICKSTART_EN_TARGET), label: QUICKSTART_EN_TARGET, rendered: renderBundledGuide(renderEnglishQuickstartFromSource(), 'en') }
       ]
   let stale = false
   for (const { destination, label, rendered } of outputs) {

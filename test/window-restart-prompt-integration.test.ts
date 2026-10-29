@@ -7,6 +7,7 @@ import ts from 'typescript'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { requestWindowRestart } from '../src/main/window-restart-prompt'
 import { rendererDiagnosticText } from '../src/main/renderer-diagnostics'
+import { PENGBAO_PRODUCT } from '../src/main/enterprise/config'
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => { throw new Error('Promise not initialized') }
@@ -28,7 +29,7 @@ function fixture() {
   }).outputText
   const actions: string[] = []
   const context = {
-    Error, applicationText, requestWindowRestart: vi.fn(requestWindowRestart), rendererDiagnosticText,
+    Error, PENGBAO_PRODUCT, applicationText, requestWindowRestart: vi.fn(requestWindowRestart), rendererDiagnosticText,
     quitting: false, gpuFallbackRelaunching: false,
     harnessLocale: vi.fn(() => 'en'),
     runtime: {

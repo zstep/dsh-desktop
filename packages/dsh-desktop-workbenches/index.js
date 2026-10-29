@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-desktop-workbenches'
 export const inject = ['connection']
-export const Config = Schema.object({ root: Schema.string().required() })
+export const Config = Schema.object({ root: Schema.string().required(), catalogUrl: Schema.string() })
+
+const unavailableCatalog = () => { throw new CatalogError('Workbench market catalog is not configured.', 503) }
 
 export function catalogReadOptions(request) {
   const params = new URL(request.url).searchParams
@@ -67,8 +69,10 @@ async function readPayload(request, maximum = MAX_STATE_BYTES, tooLarge = 'Workb
 
 export function apply(ctx, config) {
   const store = createStateStore(config.root)
+  const marketConfigured = typeof config.catalogUrl === 'string' && config.catalogUrl.trim() !== ''
   const readCatalog = createCatalogReader({
-    fetch: selectMarketFetch(),
+    url: marketConfigured ? config.catalogUrl : 'disabled://workbench-market',
+    fetch: marketConfigured ? selectMarketFetch() : unavailableCatalog,
     cachePath: join(config.root, 'workbench-catalog-cache.json'),
     onWarning: error => ctx.logger?.warn?.(error)
   })
@@ -132,13 +136,16 @@ export function apply(ctx, config) {
   ctx.connection.fetch.register(documentRoute('/api/desktop-workbenches/development-guide-en', 'development-guide.en.md'))
   ctx.connection.fetch.register(documentRoute('/api/desktop-workbenches/author-guide-en', 'development-guide.en.md'))
   ctx.connection.fetch.register(documentRoute('/api/desktop-workbenches/market-acceptance-en', 'market-acceptance.en.md'))
+  ctx.connection.fetch.register(documentRoute('/api/desktop-workbenches/quickstart', 'quickstart.zh.md'))
+  ctx.connection.fetch.register(documentRoute('/api/desktop-workbenches/quickstart-en', 'quickstart.en.md'))
   ctx.connection.fetch.register({
     path: '/api/desktop-workbenches/catalog',
     methods: ['GET'],
     requestBody: 'buffered',
     async fetch(request) {
       try {
-        const result = await readCatalog(catalogReadOptions(request))
+        const options = catalogReadOptions(request)
+        const result = marketConfigured ? await readCatalog(options) : { catalog: null, stale: false }
         return Response.json(result, { headers: { 'cache-control': 'no-store' } })
       } catch (error) {
         return Response.json({ error: error instanceof CatalogError ? error.message : 'Could not read the workbench catalog.' }, {
@@ -183,6 +190,7 @@ export function apply(ctx, config) {
     requestBody: 'buffered',
     async fetch(request) {
       try {
+        if (!marketConfigured) throw new CatalogError('Workbench market catalog is not configured.', 503)
         const payload = await readPayload(request)
         if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !payload.migrations || typeof payload.migrations !== 'object' || Array.isArray(payload.migrations)) throw new StateError('A workbench ID migration is required.')
         const allowed = authorizedStateMigrations((await readCatalog()).catalog)
@@ -197,11 +205,12 @@ export function apply(ctx, config) {
     requestBody: 'buffered',
     async fetch(request) {
       try {
+        if (!marketConfigured) throw new CatalogError('Workbench market catalog is not configured.', 503)
         const status = await readSubmissionStatus(new URL(request.url).searchParams.get('url'))
         return Response.json(status, { headers: { 'cache-control': 'no-store' } })
       } catch (error) {
-        return Response.json({ error: error instanceof SubmissionStatusError ? error.message : 'Could not read the pull request.' }, {
-          status: error instanceof SubmissionStatusError ? error.status : 500, headers: { 'cache-control': 'no-store' }
+        return Response.json({ error: error instanceof SubmissionStatusError || error instanceof CatalogError ? error.message : 'Could not read the pull request.' }, {
+          status: error instanceof SubmissionStatusError || error instanceof CatalogError ? error.status : 500, headers: { 'cache-control': 'no-store' }
         })
       }
     }
@@ -270,6 +279,7 @@ export function apply(ctx, config) {
       requestBody: 'buffered',
       async fetch(request) {
         try {
+          if (!marketConfigured) throw new CatalogError('Workbench market catalog is not configured.', 503)
           const { id, confirmedReplacement } = await catalogPayloadFrom(request)
           // Never accept a package spec from the browser: the reviewed catalog
           // supplies the pinned target and the backend verifies it before publish.

@@ -1,14 +1,16 @@
+> 内置离线快照来自当前桌面版本。请在本机读取这些文档；若本地文档无法读取，如实报告错误，不要转向其他网站补取。
+
 # 工作台市场验收规范
 
 版本：2026-09-29 · 以官网版本为准，DSH Desktop 内附文档副本供离线取用。
 
-官方地址：https://dshdesktop.com/workbench/docs/market-acceptance/
+官方地址：/api/desktop-workbenches/market-acceptance
 
-Markdown 原文（供 Agent 读取）：https://dshdesktop.com/workbench/docs/market-acceptance.md
+Markdown 原文（供 Agent 读取）：/api/desktop-workbenches/market-acceptance
 
-开发与投稿前可先看[六步速览](https://dshdesktop.com/workbench/docs/quickstart/)（[Markdown 原文](https://dshdesktop.com/workbench/docs/quickstart.md)）。
+开发与投稿前可先看[六步速览](/api/desktop-workbenches/quickstart)（[Markdown 原文](/api/desktop-workbenches/quickstart)）。
 
-本文只适用于**想把工作台上架到工作台市场**的情况。只在本地开发、自己使用的工作台，满足《工作台开发规范》（https://dshdesktop.com/workbench/docs/development/ ）并在本机自测通过即可，不需要阅读本文，也不需要公开代码或上传任何资料。
+本文只适用于**想把工作台上架到工作台市场**的情况。只在本地开发、自己使用的工作台，满足《工作台开发规范》（/api/desktop-workbenches/development-guide ）并在本机自测通过即可，不需要阅读本文，也不需要公开代码或上传任何资料。
 
 上架流程与 DSH 插件市场相同：作者把代码放到自己的公开 GitHub 仓库，再向 [awesome-dsh-workbench](https://github.com/dataelement/awesome-dsh-workbench) 提交一个收录 PR。简介、截图等资料只在这一步才需要准备。收录 YAML 与客户端索引的字段以该仓库的 `catalog/README.md` 和 `schema/` 为准，本文只说明作者要满足什么、审核看什么，不重新定义字段。
 
@@ -159,4 +161,4 @@ PR 描述写明：工作台用途、本机验收结果、验证过的 Desktop �
 
 - DSH 插件市场收录规则：[awesome-dsh-plugin contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)、[dsh-market](https://github.com/dsh-market/dsh-market)。
 - 工作台市场收录格式：[awesome-dsh-workbench](https://github.com/dataelement/awesome-dsh-workbench) 的 `catalog/README.md` 与 `schema/`。
-- 开发阶段的规则：《工作台开发规范》：https://dshdesktop.com/workbench/docs/development/ 。
+- 开发阶段的规则：《工作台开发规范》：/api/desktop-workbenches/development-guide 。

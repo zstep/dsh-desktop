@@ -216,10 +216,9 @@ describe('DSH Desktop onboarding wizard', () => {
     expect(source).toContain('openSection(MODELS_SECTION_ID)')
     expect(source).not.toContain('OnboardingSurface')
     expect(source).not.toContain('ModelsSection')
-    expect(source).toContain('https://github.com/dataelement/dsh-desktop\'')
-    expect(source).not.toContain('dsh-desktop/issues')
-    expect(source).toContain('GITHUB_MARK_PATH')
-    expect(source).toContain('IconGlobeOutlineRegular')
+    expect(source).not.toContain('https://dshdesktop.com')
+    expect(source).not.toContain('https://github.com/dataelement/dsh-desktop')
+    expect(source).toContain('本地执行不代表内容始终留在本机')
   })
 
   it('registers the desktop notice as the only onboarding step', () => {
@@ -297,10 +296,24 @@ describe('DSH Desktop onboarding wizard', () => {
     const zh = dictsRecord.zh ?? {}
     const en = dictsRecord.en ?? {}
     expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort())
-    expect(zh.step0Title).toBe('内测声明')
-    expect(zh.configureModel).toBe('去配置模型')
+    expect(zh.step0Title).toBe('使用前须知')
+    expect(zh.brandName).toBe('鹏宝 AI')
+    expect(en.brandName).toBe('Pengbao AI')
+    expect(zh.declarationBody).toContain('工具结果可能发送至鹏宝')
+    expect(zh.configureModel).toBe('查看模型')
+    expect(en.declarationBody).toContain('tool results may be sent to Pengbao')
     expect(en.configureModel).toBeTruthy()
     expect(en.later).toBeTruthy()
+  })
+
+  it('uses the Pengbao text mark without the upstream artwork or external links', () => {
+    const { plugin } = loadPlugin()
+    expect(plugin.apply).toBeTypeOf('function')
+    const source = readFileSync(path.join(projectRoot, 'packages', 'dsh-desktop-onboarding', 'client.js'), 'utf8')
+    expect(source).toContain("'aria-hidden': 'true' }, '鹏'")
+    expect(source).not.toContain('BRAND_MARK_PATH')
+    expect(source).not.toContain('dshdesktop.com')
+    expect(source).not.toContain('github.com/dataelement')
   })
 
   it('shows only an eligible install with no acknowledgement', () => {

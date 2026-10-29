@@ -1,5 +1,5 @@
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js
-index 9700d0366c..36032a91e0 100644
+index 9700d03..d466fe2 100644
 --- a/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js
 @@ -93,6 +93,23 @@ window.__ModuleLoader__.load({
@@ -130,7 +130,35 @@ index 9700d0366c..36032a91e0 100644
  				interactive: true,
  				renderFactorySlot,
  				loadImage,
-@@ -5641,6 +5671,10 @@ window.__ModuleLoader__.load({
+@@ -5559,21 +5589,14 @@ window.__ModuleLoader__.load({
+ 		* @returns mask and static SVG selected by browser capabilities and accessibility preferences.
+ 		*/
+ 		function RunningWhaleTail() {
+-			return (0, react_jsx_runtime.jsxs)("span", {
++			return (0, react_jsx_runtime.jsx)("img", {
++				src: "dsh-desktop://desktop/pengbao-b2-mark.png",
++				alt: "",
++				width: "16",
++				height: "16",
+ 				className: ChatView_module_css_default.runningIcon,
+ 				"aria-hidden": "true",
+-				children: [(0, react_jsx_runtime.jsx)("span", { className: ChatView_module_css_default.runningWhaleAnimated }), (0, react_jsx_runtime.jsx)("svg", {
+-					className: ChatView_module_css_default.runningWhaleStill,
+-					width: "100%",
+-					height: "100%",
+-					viewBox: "0 0 16 16",
+-					fill: "none",
+-					children: (0, react_jsx_runtime.jsx)("path", {
+-						d: REST_PATH,
+-						stroke: "currentColor",
+-						strokeWidth: 1
+-					})
+-				})]
++				style: { objectFit: "contain" }
+ 			});
+ 		}
+ 		//#endregion
+@@ -5641,6 +5664,10 @@ window.__ModuleLoader__.load({
  		/** Render the flow without adding a DOM parent or changing keyed row positions. */
  		const ChatFlow = (0, react.memo)(function ChatFlow({ entries, pendingInputs, lastInputTurn, deferCollapse, useSession, useChat, useChatNode, useChatNodeBottom, useChatNodeProcess, useChatGroup, usePresentation, useStore, actions, renderSlot, renderFactorySlot, t, useGroupAction, useGroupHeaderAction, cwd, openFile, inspectCall, forkAt, loadImage, fileMentions }) {
  			const nodeStore = useChat((snapshot) => snapshot.nodes);
@@ -141,7 +169,7 @@ index 9700d0366c..36032a91e0 100644
  			const running = useSession((snapshot) => snapshot.running);
  			const runningStartTime = useChatNode(useChat((snapshot) => snapshot.navigation.items().at(-1)?.anchorKey) ?? "", (node) => {
  				const location = node?.location;
-@@ -5671,6 +5705,8 @@ window.__ModuleLoader__.load({
+@@ -5671,6 +5698,8 @@ window.__ModuleLoader__.load({
  						...seatProps,
  						key: chatRenderKey(entry),
  						nodeKey: entry.key,
@@ -150,7 +178,7 @@ index 9700d0366c..36032a91e0 100644
  						...entry.groupPart === void 0 ? {} : { groupPart: entry.groupPart }
  					});
  					case "group": return (0, react.createElement)(ChatGroupSeat, {
-@@ -5685,6 +5721,7 @@ window.__ModuleLoader__.load({
+@@ -5685,6 +5714,7 @@ window.__ModuleLoader__.load({
  			});
  			const pendingRows = pendingInputs.map((item) => "requestId" in item ? (0, react_jsx_runtime.jsx)(PendingSubmissionBubble, {
  				submission: item,
@@ -158,7 +186,7 @@ index 9700d0366c..36032a91e0 100644
  				loadImage,
  				renderFactorySlot,
  				t
-@@ -5880,7 +5917,8 @@ window.__ModuleLoader__.load({
+@@ -5880,7 +5910,8 @@ window.__ModuleLoader__.load({
  			"message.failure.accountSignedOut": "任务已因退出 DeepSeek 登录而停止。",
  			"message.failure.interrupted": "DSH 进程在本轮完成前退出（例如被强制结束、崩溃或关闭超时），重新启动后本轮已中止。未完成的工具调用结果未知。",
  			"message.failure.accountSignInRequired": "请先登录 DeepSeek，并确认请求地址支持账号认证。",
@@ -168,7 +196,7 @@ index 9700d0366c..36032a91e0 100644
  			"message.turnError": "本轮运行失败",
  			"message.maxTokens": "已达到输出 token 上限",
  			"message.maxTokens.hint": "回答被截断，已有输出保留在对话中。发送“继续”可让模型接着输出。",
-@@ -6074,7 +6112,8 @@ window.__ModuleLoader__.load({
+@@ -6074,7 +6105,8 @@ window.__ModuleLoader__.load({
  			"message.failure.accountSignedOut": "Stopped because you signed out of DeepSeek.",
  			"message.failure.interrupted": "The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.",
  			"message.failure.accountSignInRequired": "Sign in to DeepSeek and ensure the request destination supports account authentication.",
@@ -178,7 +206,7 @@ index 9700d0366c..36032a91e0 100644
  			"message.turnError": "This turn failed",
  			"message.maxTokens": "Output token limit reached",
  			"message.maxTokens.hint": "The reply was cut off; earlier output is preserved in the conversation. Send \"continue\" to let the model resume.",
-@@ -7294,11 +7333,12 @@ window.__ModuleLoader__.load({
+@@ -7294,11 +7326,12 @@ window.__ModuleLoader__.load({
  		* @param props - prepared content, facts, authorized image loader, and framework Factory/locale seats.
  		* @returns the content stack using the existing user-message layout.
  		*/
@@ -193,7 +221,7 @@ index 9700d0366c..36032a91e0 100644
  			return (0, react_jsx_runtime.jsxs)("div", {
  				className: MessageItem_module_css_default.userStack,
  				children: [
-@@ -7310,8 +7350,11 @@ window.__ModuleLoader__.load({
+@@ -7310,8 +7343,11 @@ window.__ModuleLoader__.load({
  							loadImage,
  							align: "end",
  							compact: compactImages
@@ -207,7 +235,7 @@ index 9700d0366c..36032a91e0 100644
  							title: attachment.file.name,
  							children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.FileTypeIcon, {
  								path: attachment.file.name,
-@@ -7339,8 +7382,9 @@ window.__ModuleLoader__.load({
+@@ -7339,8 +7375,9 @@ window.__ModuleLoader__.load({
  							label: t("message.extraBlock"),
  							payload: block,
  							truncatedLabel: truncated
@@ -218,7 +246,7 @@ index 9700d0366c..36032a91e0 100644
  					referenceLabels.length > 0 && (0, react_jsx_runtime.jsx)("div", {
  						className: MessageItem_module_css_default.referenceSummary,
  						children: t("message.referenceSummary", { labels: referenceLabels.join(t("message.referenceSeparator")) })
-@@ -13054,7 +13098,8 @@ window.__ModuleLoader__.load({
+@@ -13054,7 +13091,8 @@ window.__ModuleLoader__.load({
  			"configForms",
  			"remote",
  			"remote.session",
@@ -228,7 +256,7 @@ index 9700d0366c..36032a91e0 100644
  		];
  		/**
  		* Mount all Chat-owned contributions.
-@@ -13144,6 +13189,14 @@ window.__ModuleLoader__.load({
+@@ -13144,6 +13182,14 @@ window.__ModuleLoader__.load({
  				}, LinkOpeningRow));
  			});
  			const transcriptView = new TranscriptViewPolicy(chatSettings, "dshDesktop" in globalThis ? "standard" : DEFAULT_TRANSCRIPT_VIEW_MODE);
@@ -243,7 +271,7 @@ index 9700d0366c..36032a91e0 100644
  			const presentation = derivePresentationPolicy(transcriptView.mode, transcriptView.collapseTiming);
  			const performancePolicy = new PerformanceUsagePolicy(chatSettings);
  			ctx.effect(() => () => {
-@@ -13156,6 +13209,7 @@ window.__ModuleLoader__.load({
+@@ -13156,6 +13202,7 @@ window.__ModuleLoader__.load({
  				name: "conversation.chat.user.content",
  				scope: "session",
  				locale: NS,
@@ -251,7 +279,7 @@ index 9700d0366c..36032a91e0 100644
  				children: { "conversation.chat.user.images": {
  					kind: "single",
  					scope: "session"
-@@ -13208,7 +13262,7 @@ window.__ModuleLoader__.load({
+@@ -13208,7 +13255,7 @@ window.__ModuleLoader__.load({
  				name: "conversation.chat.flow",
  				locale: NS,
  				store: chatStore,
@@ -260,7 +288,7 @@ index 9700d0366c..36032a91e0 100644
  					kind: "keyed",
  					scope: "session",
  					inject: CHAT_NODE_INJECT
-@@ -13242,10 +13296,22 @@ window.__ModuleLoader__.load({
+@@ -13242,10 +13289,22 @@ window.__ModuleLoader__.load({
  							fileMentions: (owner) => ctx.get("chatFileMentions")?.forClosing(owner, sessionId),
  							openFile: async (path, options) => {
  								const cwd = ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd;
@@ -288,7 +316,7 @@ index 9700d0366c..36032a91e0 100644
  							openExternalLink: (url) => {
  								if (linkOpening.getSnapshot() === "sidebar" && ctx.get("sidebarRightTabs")?.get("browser") !== void 0) ctx.sidebarRight.openTab("browser", { params: { url } });
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/types/client/contract/slots.d.ts b/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/types/client/contract/slots.d.ts
-index 8a03bd5ab7..44532502fb 100644
+index 8a03bd5..4453250 100644
 --- a/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/types/client/contract/slots.d.ts
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/types/client/contract/slots.d.ts
 @@ -33,12 +33,18 @@ export type UsePresentation = SnapshotSelectorHook<ChatPresentationPolicy>;
@@ -362,10 +390,3 @@ index 8a03bd5ab7..44532502fb 100644
          /**
           * Command row keyed by the command name. The component receives the folded
           * command lifecycle and linked compaction when present. Reusing a key
-@@ -411,4 +434,4 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
-         };
-     }
- }
--//# sourceMappingURL=slots.d.ts.map
-\ No newline at end of file
-+//# sourceMappingURL=slots.d.ts.map

@@ -1,5 +1,5 @@
 import childProcess from 'node:child_process'
-import { syncBuiltinESMExports } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerHostModuleFallback } from './host-module-fallback.mjs'
@@ -27,8 +27,85 @@ if (process.versions.electron !== undefined) {
 
 const [dshEntryPath, ...dshArguments] = process.argv.slice(2)
 
+// The only secret-bearing channel is the parent/child message pipe. Never put
+// its contents in argv, process.env, a profile document, or diagnostics. The
+// environment bit is only a mode selector and has no authority by itself.
+async function receivePrivateModelHandoff() {
+  if (process.env.DSH_DESKTOP_PRIVATE_MODEL_HANDOFF !== '1') return undefined
+  delete process.env.DSH_DESKTOP_PRIVATE_MODEL_HANDOFF
+  const port = process.parentPort
+  const ipc = typeof process.send === 'function'
+  if (!port && !ipc) throw new Error('Private model handoff requires a parent message channel')
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error('Private model handoff timed out'))
+    }, 5_000)
+    const cleanup = () => {
+      clearTimeout(timeout)
+      if (port) port.off('message', onUtilityMessage)
+      else process.off('message', onNodeMessage)
+    }
+    const receive = (message) => {
+      if (settled || message?.kind !== 'dsh-desktop:private-model-delivery') return
+      settled = true
+      const { gatewayUrl, capabilityToken } = message
+      if (typeof gatewayUrl !== 'string' || !/^https?:\/\/127\.0\.0\.1:\d+$/.test(gatewayUrl) ||
+          typeof capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,}$/.test(capabilityToken)) {
+        cleanup()
+        send({ kind: 'dsh-desktop:private-model-rejected' })
+        reject(new Error('Invalid private model handoff'))
+        return
+      }
+      cleanup()
+      send({ kind: 'dsh-desktop:private-model-received' })
+      resolve(Object.freeze({ gatewayUrl, capabilityToken }))
+    }
+    const onUtilityMessage = (event) => receive(event?.data)
+    const onNodeMessage = (message) => receive(message)
+    const send = (message) => {
+      if (port) port.postMessage(message)
+      else process.send(message)
+    }
+    if (port) port.on('message', onUtilityMessage)
+    else process.on('message', onNodeMessage)
+    send({ kind: 'dsh-desktop:private-model-ready' })
+  })
+}
+
 function report(label, value) {
   process.stderr.write(`[harness-node] ${label}: ${value}\n`)
+}
+
+// The capability token reaches the provider credential seam through module
+// memory only. Resolve the llm plugin exactly as the profile composition does
+// — anchored at the DSH entry's own installation (pnpm realpath-dedupes both to
+// one module instance) — and hand the token to its one-shot registry, which
+// answers only the provider route naming this loopback gateway. A failed
+// registration must fail the launch: a runtime without its credential is a
+// silently broken model link, not a degraded mode to boot into.
+async function registerPrivateModelCredential(dshEntryPathValue, handoff) {
+  const piAiUrl = await resolvePiAiModuleUrl(dshEntryPathValue)
+  const { registerPrivateModelCredential: register } = await import(piAiUrl)
+  register({
+    provider: 'pengbao',
+    baseURL: handoff.gatewayUrl,
+    apiKey: handoff.capabilityToken
+  })
+  process.stdout.write('[harness-node] private model credential registered\n')
+}
+
+async function resolvePiAiModuleUrl(dshEntryPathValue) {
+  try {
+    const requireFromDshEntry = createRequire(dshEntryPathValue)
+    return pathToFileURL(requireFromDshEntry.resolve('@deepseek-ai/dsh-llm-pi-ai')).href
+  } catch {
+    // The anchor is unavailable (for example a test double entry); fall back
+    // to ambient resolution, which the host module fallback hook also anchors
+    // at the DSH entry for @deepseek-ai packages.
+    return '@deepseek-ai/dsh-llm-pi-ai'
+  }
 }
 
 // Send loader-owned identity before the human-readable error. Do not serialize
@@ -92,6 +169,7 @@ if (!dshEntryPath) {
   process.stdout.write(`[harness-node] loading=${dshEntryPath}\n`)
   process.argv = [process.execPath, dshEntryPath, ...dshArguments]
   try {
+    const privateModelHandoff = await receivePrivateModelHandoff()
     const archive = packagedArchiveRoot(dshEntryPath)
     const resources = archive ? dirname(archive) : import.meta.dirname
     process.env.DSH_DESKTOP_OFFICE_RESOURCES = archive
@@ -102,6 +180,7 @@ if (!dshEntryPath) {
     // Packages load through app.asar; the Office engine must resolve to its
     // unpacked directory so the OS can spawn it.
     registerOfficeEngineResolution(dshEntryPath)
+    if (privateModelHandoff) await registerPrivateModelCredential(dshEntryPath, privateModelHandoff)
     // Harness 0.1.5 gates its CLI behind `if (import.meta.main)` and exports
     // `runCli`. This file imports the entry rather than being it, so that guard
     // is false here and a plain import would load the module, run nothing, and

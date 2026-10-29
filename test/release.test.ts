@@ -195,7 +195,7 @@ describe('GitHub release contract', () => {
       'utf8'
     )
 
-    expect(packageJson.build.artifactName).toBe('dsh-desktop-${os}-${arch}.${ext}')
+    expect(packageJson.build.artifactName).toBe('pengbao-ai-${os}-${arch}.${ext}')
     expect(packageJson.build.asar).toBe(true)
     // JavaScript stays in app.asar; only files the OS loads or executes unpack.
     expect(packageJson.build.asarUnpack).not.toContain('node_modules/**/*')
@@ -208,6 +208,10 @@ describe('GitHub release contract', () => {
     expect(packageJson.build.extraResources).toContainEqual({
       from: 'build/app-icon.png',
       to: 'icon.png'
+    })
+    expect(packageJson.build.extraResources).toContainEqual({
+      from: 'build/pengbao-b2-mark.png',
+      to: 'pengbao-b2-mark.png'
     })
     expect(packageJson.build.extraResources).toContainEqual({
       from: 'build/windows-hidden-console.mjs',
@@ -243,6 +247,11 @@ describe('GitHub release contract', () => {
       to: 'windows-hide-console-import.mjs'
     })
     expect(packageJson.build.extraResources).toContainEqual({
+      from: 'build/pengbao-account.html',
+      to: 'pengbao-account.html'
+    })
+    expect(await readFile(path.join(projectRoot, 'build', 'pengbao-account.html'), 'utf8')).toContain('<!doctype html>')
+    expect(packageJson.build.extraResources).toContainEqual({
       from: 'build/splash.html',
       to: 'splash.html'
     })
@@ -271,7 +280,7 @@ describe('GitHub release contract', () => {
       to: 'web-import.html'
     })
     expect(packageJson.build.nsis.artifactName).toBe(
-      'dsh-desktop-windows-${arch}-setup.${ext}'
+      'pengbao-ai-windows-${arch}-setup.${ext}'
     )
     expect(packageJson.build.nsis.include).toBe('build/installer.nsh')
     expect(packageJson.build.win.target).toEqual([{ target: 'nsis', arch: ['x64'] }])
@@ -290,40 +299,23 @@ describe('GitHub release contract', () => {
     expect(packageJson.build.detectUpdateChannel).toBe(false)
   })
 
-  it('publishes update metadata for installed desktop builds', async () => {
+  it('keeps vendor update publishing disabled until a Pengbao service is configured', async () => {
     const packageJson = JSON.parse(
       await readFile(path.join(projectRoot, 'package.json'), 'utf8')
     ) as {
-      dependencies: Record<string, string>
       build: {
-        publish: Array<{ provider: string; url?: string; owner?: string; repo?: string }>
-        win: { verifyUpdateCodeSignature: boolean; signtoolOptions: { publisherName: string } }
+        appId: string
+        productName: string
+        publish: null
+        win: { verifyUpdateCodeSignature: boolean; signtoolOptions: { publisherName?: string } }
       }
     }
-    const workflow = await readFile(
-      path.join(projectRoot, '.github', 'workflows', 'release.yml'),
-      'utf8'
-    )
 
-    expect(packageJson.dependencies['electron-updater']).toBeTruthy()
-    expect(packageJson.build.publish).toEqual([
-      { provider: 'generic', url: 'https://dshdesktop.com/updates/latest/' }
-    ])
+    expect(packageJson.build.appId).toBe('net.ecombus.pengbao.desktop')
+    expect(packageJson.build.productName).toBe('Pengbao AI')
+    expect(packageJson.build.publish).toBeNull()
     expect(packageJson.build.win.verifyUpdateCodeSignature).toBe(true)
-    expect(packageJson.build.win.signtoolOptions.publisherName).toBe('Beijing Shuju Xiangsu Intelligence Technology Co., Ltd.')
-    for (const asset of [
-      'latest-mac-arm64.yml',
-      'latest-mac-x64.yml',
-      'latest-mac.yml',
-      'latest.yml',
-      'dsh-desktop-mac-${{ matrix.arch }}.zip.blockmap',
-      'dsh-desktop-windows-x64-setup.exe.blockmap'
-    ]) {
-      expect(workflow).toContain(asset)
-    }
-    expect(workflow).toContain('merge-mac-update-metadata.mjs')
-    expect(workflow).toContain('Verify release assets before publication')
-    expect(workflow).toContain('verify-release-assets.mjs release-assets')
+    expect(packageJson.build.win.signtoolOptions.publisherName).toBeUndefined()
   })
 
   it('keeps builder jobs from attempting implicit tag publishing', async () => {
@@ -378,12 +370,12 @@ describe('GitHub release contract', () => {
     expect(packageJson.scripts['package:dev:win']).toContain('verify-target.mjs win32 x64')
     expect(packageJson.scripts['package:dev:win']).toContain('electron-builder.dev.cjs')
     expect(packageJson.scripts['package:dev:win']).toContain('--publish never')
-    expect(developmentConfig.appId).toBe('io.dsh.desktop.dev')
-    expect(developmentConfig.productName).toBe('DSH Desktop Dev')
+    expect(developmentConfig.appId).toBe('net.ecombus.pengbao.desktop.dev')
+    expect(developmentConfig.productName).toBe('Pengbao AI Dev')
     expect(developmentConfig.directories.output).toBe('dist-dev')
     expect(developmentConfig.extraMetadata.dshDesktopChannel).toBe('development')
-    expect(developmentConfig.artifactName).toBe('dsh-desktop-dev-${os}-${arch}.${ext}')
-    expect(developmentConfig.nsis.artifactName).toBe('dsh-desktop-dev-windows-${arch}-setup.${ext}')
+    expect(developmentConfig.artifactName).toBe('pengbao-ai-dev-${os}-${arch}.${ext}')
+    expect(developmentConfig.nsis.artifactName).toBe('pengbao-ai-dev-windows-${arch}-setup.${ext}')
   })
 
   it('builds and publishes every supported platform', async () => {

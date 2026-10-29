@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const source = path.join(projectRoot, 'build', 'icon.png')
+const source = path.join(projectRoot, 'build', 'app-icon.png')
 const lightSource = path.join(projectRoot, 'build', 'logo-light.png')
 const darkSource = path.join(projectRoot, 'build', 'logo-dark.png')
 const destinationDirectory = path.join(
@@ -65,7 +65,7 @@ function replaceManifestIcon(contents, file) {
     throw new Error(`Could not update DSH Desktop branding in ${file}: no icon entry to replace`)
   }
   target.src = '/dsh-desktop-logo.png'
-  target.sizes = '1254x1254'
+  target.sizes = '1024x1024'
   target.type = 'image/png'
   return `${JSON.stringify(manifest, null, 2)}\n`
 }

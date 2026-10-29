@@ -1,18 +1,18 @@
-> 内置离线快照：仅在在线获取失败后备用，不保证是最新规范，不得覆盖在线版本。请报告获取失败原因、本离线来源和文档版本。
+> 内置离线快照来自当前桌面版本。请在本机读取这些文档；若本地文档无法读取，如实报告错误，不要转向其他网站补取。
 
 # 工作台开发规范
 
 版本：2026-10-27 · 以官网版本为准，DSH Desktop 内附文档副本供离线取用。
 
-官方地址：https://dshdesktop.com/workbench/docs/development/
+官方地址：/api/desktop-workbenches/development-guide
 
-Markdown 原文（供 Agent 读取）：https://dshdesktop.com/workbench/docs/development.md
+Markdown 原文（供 Agent 读取）：/api/desktop-workbenches/development-guide
 
-六步速览：https://dshdesktop.com/workbench/docs/quickstart/ （[Markdown 原文](https://dshdesktop.com/workbench/docs/quickstart.md)）。
+六步速览：/api/desktop-workbenches/quickstart （[Markdown 原文](/api/desktop-workbenches/quickstart)）。
 
 本文是开发工作台时由 AI 直接执行的规范。**只在本地开发、自己使用时，满足本文即可**：按第 3 节写好包，装到本机 DSH Desktop，按第 8 节自测通过，就可以正常使用，不需要公开代码，也不需要上传到任何地方。
 
-如果之后想把工作台上架到工作台市场，再阅读《工作台市场验收规范》：https://dshdesktop.com/workbench/docs/market-acceptance/ 。仓库公开、发布、简介、截图和收录 PR 的要求都在那一份里，本文不涉及。
+如果之后想把工作台上架到工作台市场，再阅读《工作台市场验收规范》：/api/desktop-workbenches/market-acceptance 。仓库公开、发布、简介、截图和收录 PR 的要求都在那一份里，本文不涉及。
 
 工作台是一种 DSH 插件。它首先必须是一个合格的 DSH 插件包，能被 `dsh plugin add` 安装、被 Harness 加载；在此基础上，再向 Desktop 注册业务面板，并遵守工作台与会话、工作区的交互规则。
 
@@ -310,4 +310,4 @@ React.createElement('header', { 'data-dsh-workbench-toolbar': '' },
 ## 参考
 
 - DSH 插件打包与发布：deepseek-harness 仓库 `docs/user/develop/basic/publish.md`、`config.md`；包清单类型 `@deepseek-ai/dsh-package-manifest`；客户端模块加载 `@deepseek-ai/dsh-client-modules`。
-- 上架到工作台市场：《工作台市场验收规范》：https://dshdesktop.com/workbench/docs/market-acceptance/ 。
+- 上架到工作台市场：《工作台市场验收规范》：/api/desktop-workbenches/market-acceptance 。

@@ -44,6 +44,14 @@ export interface HarnessRuntimeOptions {
   /** Windows console-hide bootstrap passed to the Harness as an absolute path. */
   hideConsoleBootstrapPath?: string
   onChanged(snapshot: RuntimeSnapshot): void
+  /** Optional main-process-only provider capability for the next launch. */
+  privateModelHandoff?: () => PrivateModelHandoff | undefined
+  /**
+   * Optional extra `--patch` overlay (for the account's model route), resolved
+   * per launch so it can merge the profile's current user layer. Appended after
+   * every other overlay, for the normal and the Safe Mode profile alike.
+   */
+  providerOverlay?: (profile: string) => Promise<string | undefined>
 }
 
 export interface HarnessChildProcess extends EventEmitter {
@@ -51,6 +59,84 @@ export interface HarnessChildProcess extends EventEmitter {
   readonly stderr: NodeJS.ReadableStream
   readonly exitCode: number | null
   kill(signal?: NodeJS.Signals): boolean
+  /** Node's IPC send or the utility-process adapter's postMessage bridge. */
+  send?(message: unknown, callback?: (error: Error | null) => void): boolean
+}
+
+/** This value never travels through launch arguments, the environment, or profile files. */
+export interface PrivateModelHandoff {
+  gatewayUrl: string
+  capabilityToken: string
+}
+
+const PRIVATE_HANDOFF_MARKER = 'DSH_DESKTOP_PRIVATE_MODEL_HANDOFF'
+const PRIVATE_HANDOFF_TIMEOUT_MS = 5_000
+
+function privateHandoffSpawnOptions(
+  options: SpawnOptionsWithoutStdio,
+  enabled: boolean
+): SpawnOptionsWithoutStdio {
+  if (!enabled) return options
+  return {
+    ...options,
+    env: { ...options.env, [PRIVATE_HANDOFF_MARKER]: '1' },
+    // Node spawn (Windows/Linux) needs an IPC channel; Electron utilityProcess
+    // ignores stdio[3] and uses postMessage through its own parentPort instead.
+    stdio: ['pipe', 'pipe', 'pipe', 'ipc'] as unknown as SpawnOptionsWithoutStdio['stdio']
+  }
+}
+
+export function deliverPrivateHandoff(
+  child: HarnessChildProcess,
+  handoff: PrivateModelHandoff,
+  isCurrent: () => boolean,
+  signal: AbortSignal
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let finished = false
+    let sent = false
+    const finish = (error?: Error) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      child.off('message', message)
+      child.off('exit', exited)
+      child.off('error', errored)
+      signal.removeEventListener('abort', cancelled)
+      if (error) reject(error)
+      else resolve()
+    }
+    const exited = () => finish(new Error('Harness exited before private model handoff'))
+    const errored = () => finish(new Error('Harness failed before private model handoff'))
+    const cancelled = () => finish(new Error('Private model handoff was cancelled'))
+    const message = (packet: unknown) => {
+      if (!isCurrent()) return finish(new Error('Private model handoff was cancelled'))
+      if (!packet || typeof packet !== 'object') return
+      const kind = (packet as { kind?: unknown }).kind
+      if (kind === 'dsh-desktop:private-model-ready') {
+        if (sent) return
+        sent = true
+        if (!child.send) return finish(new Error('Harness child has no private message channel'))
+        try {
+          if (child.send({ kind: 'dsh-desktop:private-model-delivery', ...handoff }, (error) => {
+            if (error) finish(new Error('Could not send private model handoff'))
+          }) === false) finish(new Error('Harness private message channel is unavailable'))
+        } catch {
+          finish(new Error('Could not send private model handoff'))
+        }
+      } else if (kind === 'dsh-desktop:private-model-received' && sent) {
+        finish()
+      } else if (kind === 'dsh-desktop:private-model-rejected' && sent) {
+        finish(new Error('Harness rejected private model handoff'))
+      }
+    }
+    const timer = setTimeout(() => finish(new Error('Harness private model handoff timed out')), PRIVATE_HANDOFF_TIMEOUT_MS)
+    child.on('message', message)
+    child.once('exit', exited)
+    child.once('error', errored)
+    signal.addEventListener('abort', cancelled, { once: true })
+    if (signal.aborted || !isCurrent() || child.exitCode !== null) cancelled()
+  })
 }
 
 export const DEFAULT_HARNESS_PORT = 43129
@@ -323,6 +409,7 @@ export function buildHarnessSpawnOptions(
     DSH_DESKTOP_PNPM_ENTRY: _pnpmEntry,
     DSH_DESKTOP_PNPM_RUNNER: _pnpmRunner,
     DSH_DESKTOP_HIDE_CONSOLE_BOOTSTRAP: _hideConsoleBootstrap,
+    DSH_DESKTOP_PRIVATE_MODEL_HANDOFF: _privateHandoff,
     ...parentEnvironment
   } = environment
   const pathKey = platform === 'win32' ? 'Path' : 'PATH'
@@ -451,6 +538,8 @@ export function isHarnessStartupProbeHealthy(
 
 export class HarnessRuntime {
   private child?: HarnessChildProcess
+  private privateHandoffAbort?: AbortController
+  private launchGeneration = 0
   private logStream?: WriteStream
   private phase: RuntimePhase = 'idle'
   private message = 'Harness is not running.'
@@ -492,6 +581,7 @@ export class HarnessRuntime {
 
   async start(launchDirectory: string, profile = 'web'): Promise<void> {
     await this.stop()
+    const launchGeneration = ++this.launchGeneration
     this.launchAttempts++
     this.logRemainders.stdout = ''
     this.logRemainders.stderr = ''
@@ -524,6 +614,7 @@ export class HarnessRuntime {
     }
     await mkdir(this.options.dshHome, { recursive: true })
     const shellEnvironment = await prewarmShellEnvironment()
+    if (launchGeneration !== this.launchGeneration) return
     let configurationProblems
     try {
       configurationProblems = await inspectStartupConfiguration(this.options.dshHome, profile, shellEnvironment, launchDirectory)
@@ -569,6 +660,8 @@ export class HarnessRuntime {
       const disabledPatch = await prepareHostDisabledPluginsPatch(this.options.dshHome, sourcePatchPath)
       if (disabledPatch) patchPaths.push(disabledPatch)
     }
+    const providerOverlayPath = await this.options.providerOverlay?.(profile)
+    if (providerOverlayPath) patchPaths.push(providerOverlayPath)
 
     await mkdir(this.options.dshHome, { recursive: true })
     await mkdir(dirname(this.options.logPath), { recursive: true })
@@ -604,11 +697,18 @@ export class HarnessRuntime {
     this.setState('starting', 'Starting DeepSeek Harness…')
 
     let child: HarnessChildProcess
+    let handoff: PrivateModelHandoff | undefined
+    if (launchGeneration !== this.launchGeneration) return
     try {
+      handoff = this.options.privateModelHandoff?.()
+      if (handoff && (!/^https?:\/\/127\.0\.0\.1:\d+$/.test(handoff.gatewayUrl) ||
+        !/^[A-Za-z0-9_-]{32,}$/.test(handoff.capabilityToken))) {
+        throw new Error('Invalid private model handoff')
+      }
       child = this.options.launchProcess(
         this.options.nodeExecutablePath,
         args,
-        buildHarnessSpawnOptions(
+        privateHandoffSpawnOptions(buildHarnessSpawnOptions(
           launchDirectory,
           this.options.dshHome,
           process.platform,
@@ -619,7 +719,7 @@ export class HarnessRuntime {
             runnerPath: this.options.pnpmRunnerPath,
             hideConsoleBootstrapPath: this.options.hideConsoleBootstrapPath
           }
-        )
+        ), handoff !== undefined)
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -628,6 +728,21 @@ export class HarnessRuntime {
       return
     }
     this.child = child
+    if (handoff) {
+      const abort = new AbortController()
+      this.privateHandoffAbort = abort
+      try {
+        await deliverPrivateHandoff(child, handoff, () => this.child === child && launchGeneration === this.launchGeneration, abort.signal)
+      } catch (error) {
+        if (this.child !== child) return
+        this.child = undefined
+        await this.stopChild(child)
+        this.setState('failed', error instanceof Error ? error.message : 'Private model handoff failed')
+        return
+      } finally {
+        if (this.privateHandoffAbort === abort) this.privateHandoffAbort = undefined
+      }
+    }
     let fatalMemoryFailure = false
     let memoryEvidenceTail = ''
 
@@ -711,6 +826,8 @@ ${cause}`
   }
 
   async stop(): Promise<void> {
+    ++this.launchGeneration
+    this.privateHandoffAbort?.abort()
     const child = this.child
     if (!child) {
       this.closeLog()

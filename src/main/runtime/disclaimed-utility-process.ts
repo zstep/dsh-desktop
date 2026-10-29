@@ -57,7 +57,8 @@ export function launchDisclaimedUtilityProcess(
     utilityProcessOptions
   )
   return new UtilityProcessAdapter(
-    launcher.fork(spec.modulePath, spec.args, spec.options)
+    launcher.fork(spec.modulePath, spec.args, spec.options),
+    spawnOptions.stdio?.[3] === 'ipc'
   )
 }
 
@@ -74,7 +75,7 @@ class UtilityProcessAdapter extends EventEmitter implements HarnessChildProcess 
   readonly stderr: NodeJS.ReadableStream
   exitCode: number | null = null
 
-  constructor(private readonly child: UtilityProcess) {
+  constructor(private readonly child: UtilityProcess, private readonly privateMessages: boolean) {
     super()
     if (!child.stdout || !child.stderr) {
       child.kill()
@@ -82,6 +83,7 @@ class UtilityProcessAdapter extends EventEmitter implements HarnessChildProcess 
     }
     this.stdout = child.stdout
     this.stderr = child.stderr
+    if (privateMessages) child.on('message', message => this.emit('message', message))
 
     child.once('spawn', () => this.emit('spawn'))
     child.once('error', (type, location, report) => {
@@ -92,6 +94,18 @@ class UtilityProcessAdapter extends EventEmitter implements HarnessChildProcess 
       this.exitCode = code
       this.emit('exit', code, null)
     })
+  }
+
+  send(message: unknown, callback?: (error: Error | null) => void): boolean {
+    if (!this.privateMessages || this.exitCode !== null) return false
+    try {
+      this.child.postMessage(message)
+      callback?.(null)
+      return true
+    } catch (error) {
+      callback?.(error instanceof Error ? error : new Error('Utility process message failed'))
+      return false
+    }
   }
 
   kill(signal?: NodeJS.Signals): boolean {

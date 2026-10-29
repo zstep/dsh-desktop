@@ -1,21 +1,18 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
-// Regenerate the legacy brand loaders (build/dsh-loader.gif and
-// build/dsh-loader-dark.gif) from the brand mark in build/brand-mark.svg.
+// Regenerate the brand loaders from the approved transparent bird mark.
 // The mark is quantised onto a 4px pixel grid, bobs gently, and sheds a few
-// square "bubbles" from the window's traffic lights — the same motion the
-// previous hand-drawn loaders used. The startup splash now uses the original
-// build/startup-whale.gif asset; this generator must never overwrite it.
+// square "bubbles". The full-resolution source is used on the startup splash.
 
 const require = createRequire(import.meta.url)
 const sharp = require('sharp')
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const buildDirectory = path.join(projectRoot, 'build')
-const markSource = path.join(buildDirectory, 'brand-mark.svg')
+const markSource = path.join(buildDirectory, 'pengbao-b2-mark.png')
 
 const WIDTH = 640
 const HEIGHT = 360
@@ -25,8 +22,6 @@ const CELL = 4
 const COLS = WIDTH / CELL
 const ROWS = HEIGHT / CELL
 
-/** Tight bounds of the mark inside its 1000x1000 artwork (shared with the sidebar mark). */
-const MARK_VIEWBOX = { x: 42, y: 218, width: 898, height: 564 }
 /** Body width in cells; matches the ~310px silhouette of the previous loader. */
 const BODY_CELLS = 78
 
@@ -34,12 +29,12 @@ const THEMES = {
   light: {
     file: 'dsh-loader.gif',
     body: [0, 0, 0],
-    sparks: [[143, 197, 242], [146, 203, 245], [180, 214, 239]]
+    sparks: [[22, 164, 163], [28, 198, 196], [108, 225, 217]]
   },
   dark: {
     file: 'dsh-loader-dark.gif',
     body: [253, 253, 253],
-    sparks: [[32, 68, 170], [27, 66, 164], [21, 46, 106]]
+    sparks: [[17, 91, 91], [20, 137, 135], [28, 198, 196]]
   }
 }
 
@@ -48,16 +43,14 @@ const THEMES = {
  * @returns {{ cells: Uint8Array, width: number, height: number }}
  */
 async function markMask() {
-  const svg = await readFile(markSource, 'utf8')
-  const d = /\sd="([^"]+)"/u.exec(svg)?.[1]
-  if (!d) throw new Error(`No path data in ${path.relative(projectRoot, markSource)}`)
   const width = BODY_CELLS
-  const height = Math.round((BODY_CELLS * MARK_VIEWBOX.height) / MARK_VIEWBOX.width)
+  const height = Math.round((BODY_CELLS * 0.86))
   // Render at 4x cell resolution and average down so thin features (the three
   // dots, the belly bump) survive the threshold instead of dropping out.
   const oversample = 4
-  const probe = `<svg xmlns="http://www.w3.org/2000/svg" width="${width * oversample}" height="${height * oversample}" viewBox="${MARK_VIEWBOX.x} ${MARK_VIEWBOX.y} ${MARK_VIEWBOX.width} ${MARK_VIEWBOX.height}" preserveAspectRatio="none"><path d="${d}" fill="#fff"/></svg>`
-  const { data } = await sharp(Buffer.from(probe)).raw().toBuffer({ resolveWithObject: true })
+  const { data } = await sharp(markSource)
+    .resize(width * oversample, height * oversample, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .ensureAlpha().raw().toBuffer({ resolveWithObject: true })
   const cells = new Uint8Array(width * height)
   for (let cy = 0; cy < height; cy += 1) {
     for (let cx = 0; cx < width; cx += 1) {

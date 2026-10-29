@@ -69,6 +69,7 @@ function applicationRollback(): ApplicationRollback {
 }
 
 export async function getApplicationRollbackStatus(): Promise<ApplicationRollbackStatus> {
+  if (!supportsUpdates()) return { available: false, reason: 'pengbao-update-service-unconfigured' }
   try {
     const result = await applicationRollback().status()
     if (!result.available || !result.targetVersion) return result
@@ -132,7 +133,7 @@ export function registerUpdateHandlers(options: { locale?: () => 'en' | 'zh' } =
   ipcMain.handle('updates:install', () => installDownloadedUpdate())
   ipcMain.handle('updates:skip', (_event, version: unknown) => skipUpdate(version))
   ipcMain.handle('updates:download', () => downloadAvailableUpdate())
-  ipcMain.handle('updates:list-versions', () => fetchAvailableReleases(app.getVersion()))
+  ipcMain.handle('updates:list-versions', () => supportsUpdates() ? fetchAvailableReleases(app.getVersion()) : [])
   ipcMain.handle('updates:install-version', (_event, version: unknown) =>
     installSpecificVersion(version)
   )
@@ -182,7 +183,7 @@ export function startUpdateManager(options: {
   if (!supportsUpdates()) {
     transition({
       type: 'unsupported',
-      message: 'Updates are available in installed macOS and Windows builds.'
+      message: 'Pengbao updates are unavailable until an update service is configured.'
     })
     return
   }
@@ -203,7 +204,7 @@ export async function checkForUpdates(manual = false, source: UpdateStatus['sour
     transition(
       {
         type: 'unsupported',
-        message: 'Update checks are only available in installed macOS and Windows builds.'
+        message: 'Pengbao updates are unavailable until an update service is configured.'
       },
       manual
     )
@@ -285,6 +286,7 @@ export async function downloadAvailableUpdate(): Promise<UpdateStatus> {
 }
 
 async function downloadAvailableUpdateOwned(owner?: symbol): Promise<UpdateStatus> {
+  if (!supportsUpdates()) return getUpdateStatus()
   if ((rollbackOwnsUpdater && owner !== ROLLBACK_OWNER) || installing) return getUpdateStatus()
   if (status.phase !== 'available' || downloading) return getUpdateStatus()
   const expectedVersion = status.availableVersion
@@ -367,6 +369,7 @@ export async function installDownloadedUpdate(): Promise<void> {
 }
 
 async function installDownloadedUpdateOwned(owner?: symbol): Promise<boolean> {
+  if (!supportsUpdates()) return false
   if (rollbackOwnsUpdater && owner !== ROLLBACK_OWNER) return false
   if (status.phase !== 'downloaded' || installing) return false
   const version = status.availableVersion

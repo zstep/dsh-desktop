@@ -1,4 +1,4 @@
-import { protocol } from 'electron'
+import { protocol, type Protocol } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { extname } from 'node:path'
 
@@ -18,6 +18,10 @@ const CONTENT_TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.gif': 'image/gif'
 }
+const installedHandlers = new WeakMap<Protocol, {
+  resolvePath: (name: string) => string
+  harness?: (request: Request) => Promise<Response>
+}>()
 
 /**
  * The resource a desktop URL asks for: one path segment with a servable
@@ -58,14 +62,24 @@ export function registerDesktopScheme(): void {
 /** Runs once the app is ready; `resolvePath` maps a resource name to its file. */
 export function installDesktopProtocol(
   resolvePath: (name: string) => string,
-  harness?: (request: Request) => Promise<Response>
+  harness?: (request: Request) => Promise<Response>,
+  targetProtocol: Protocol = protocol
 ): void {
-  protocol.handle(DESKTOP_SCHEME, async (request) => {
-    if (new URL(request.url).host === 'harness' && harness) return harness(request)
+  const existing = installedHandlers.get(targetProtocol)
+  if (existing) {
+    existing.resolvePath = resolvePath
+    existing.harness = harness
+    return
+  }
+
+  const state = { resolvePath, harness }
+  installedHandlers.set(targetProtocol, state)
+  targetProtocol.handle(DESKTOP_SCHEME, async (request) => {
+    if (new URL(request.url).host === 'harness' && state.harness) return state.harness(request)
     const name = resolveDesktopResourceName(request.url)
     if (!name) return new Response('Not found', { status: 404 })
     try {
-      const body = await readFile(resolvePath(name))
+      const body = await readFile(state.resolvePath(name))
       return new Response(body, { headers: { 'content-type': CONTENT_TYPES[extname(name)] ?? 'application/octet-stream' } })
     } catch {
       return new Response('Not found', { status: 404 })

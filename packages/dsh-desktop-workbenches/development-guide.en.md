@@ -1,18 +1,18 @@
-> Bundled offline snapshot: use only after online retrieval fails. This is not guaranteed to be the latest standard and must not override the online version. Report the retrieval failure, this offline source, and document version.
+> Bundled offline snapshot from this desktop version. Read these documents locally; if a local document cannot be read, report the failure rather than fetching it from another website.
 
 # Workbench Development Standard
 
 Version: 2026-10-27 · The website is authoritative; DSH Desktop bundles a copy for offline use.
 
-Official page: https://dshdesktop.com/workbench/docs/development-en/
+Official page: /api/desktop-workbenches/development-guide-en
 
-Markdown source for agents: https://dshdesktop.com/workbench/docs/development-en.md
+Markdown source for agents: /api/desktop-workbenches/development-guide-en
 
-Six-step quickstart: https://dshdesktop.com/workbench/docs/quickstart-en/ ([Markdown](https://dshdesktop.com/workbench/docs/quickstart-en.md)). [中文版](https://dshdesktop.com/workbench/docs/development/).
+Six-step quickstart: /api/desktop-workbenches/quickstart-en ([Markdown](/api/desktop-workbenches/quickstart-en)). [中文版](/api/desktop-workbenches/development-guide).
 
 This standard is intended for direct execution by an AI developing a workbench. **For local development and personal use, this document is sufficient**: build the package under Section 3, install it in the local DSH Desktop, and pass the Section 8 self-test. There is no requirement to publish code or upload anything.
 
-If the author later wants to list the workbench in the Workbench Market, also read the [Workbench Market Acceptance Standard](https://dshdesktop.com/workbench/docs/market-acceptance-en/). Its separate rules cover a public repository, releases, descriptions, screenshots, and listing PRs.
+If the author later wants to list the workbench in the Workbench Market, also read the [Workbench Market Acceptance Standard](/api/desktop-workbenches/market-acceptance-en). Its separate rules cover a public repository, releases, descriptions, screenshots, and listing PRs.
 
 A workbench is a DSH plugin. It must first be a valid DSH plugin package that `dsh plugin add` can install and Harness can load. It then registers a business panel with Desktop and follows the rules for workbenches, sessions, and workspaces.
 
@@ -310,4 +310,4 @@ Final delivery must list actual results and evidence: changed files, package ver
 ## References
 
 - DSH plugin packaging and publication: `docs/user/develop/basic/publish.md` and `config.md` in deepseek-harness; package manifest types in `@deepseek-ai/dsh-package-manifest`; client module loading in `@deepseek-ai/dsh-client-modules`.
-- Market listing: [Workbench Market Acceptance Standard](https://dshdesktop.com/workbench/docs/market-acceptance-en/).
+- Market listing: [Workbench Market Acceptance Standard](/api/desktop-workbenches/market-acceptance-en).
