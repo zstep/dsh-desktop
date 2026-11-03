@@ -4,7 +4,7 @@ import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isMap, isScalar, isSeq, parseDocument } from 'yaml'
-import { readDisabledHostPlugins } from './host-plugin-state'
+import { readEffectiveDisabledHostPlugins } from './host-plugin-selection'
 
 const PACKAGE_SPECIFIER = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9._-]+)*$/i
 
@@ -43,7 +43,7 @@ export function hostInsertedPluginNames(source: string, disabled: readonly strin
   return hostPluginNames(source).map(({ name }) => name).filter((name) => !omitted.has(name))
 }
 
-function withoutDisabledInsertions(source: string, disabled: readonly string[]): string {
+export function withoutDisabledHostInsertions(source: string, disabled: readonly string[]): string {
   if (disabled.length === 0) return source
   const document = parseDocument(source, { logLevel: 'silent' })
   if (document.errors.length > 0) throw document.errors[0]
@@ -77,9 +77,9 @@ export async function prepareHostPluginSourcesPatch(
   hostModuleAnchor: string
 ): Promise<string> {
   const original = await readFile(desktopPatchPath, 'utf8')
-  const source = withoutDisabledInsertions(
+  const source = withoutDisabledHostInsertions(
     original,
-    await readDisabledHostPlugins(dshHome)
+    await readEffectiveDisabledHostPlugins(dshHome)
   )
   const names = hostPluginNames(source)
   if (names.length === 0 && source === original) return desktopPatchPath

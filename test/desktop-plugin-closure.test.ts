@@ -60,4 +60,18 @@ describe('desktop plugin closure', () => {
       expect(manifest.dependencies[row.name]).toMatch(/^file:packages\//u)
     }
   })
+
+  it('declares the patched third-party imagegen as an exact wrapper dependency', async () => {
+    const wrapper = JSON.parse(
+      await readFile(path.join(projectRoot, 'packages/dsh-desktop-imagegen/package.json'), 'utf8')
+    ) as { dependencies: Record<string, string>; exports: Record<string, string> }
+    const manifest = JSON.parse(
+      await readFile(path.join(projectRoot, 'package.json'), 'utf8')
+    ) as { dependencies: Record<string, string> }
+
+    expect(manifest.dependencies['@dickpy/dsh-imagegen']).toBe('1.11.0')
+    expect(wrapper.dependencies['@dickpy/dsh-imagegen']).toBe('1.11.0')
+    expect(wrapper.exports['./client']).toBe('./.generated/client.js')
+    expect(await readFile(path.join(projectRoot, 'scripts/prepare-imagegen.mjs'), 'utf8')).toContain('id: "dsh-desktop-imagegen"')
+  })
 })

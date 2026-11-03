@@ -50,9 +50,12 @@ async function receivePrivateModelHandoff() {
     const receive = (message) => {
       if (settled || message?.kind !== 'dsh-desktop:private-model-delivery') return
       settled = true
-      const { gatewayUrl, capabilityToken } = message
+      const { gatewayUrl, capabilityToken, image } = message
       if (typeof gatewayUrl !== 'string' || !/^https?:\/\/127\.0\.0\.1:\d+$/.test(gatewayUrl) ||
-          typeof capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,}$/.test(capabilityToken)) {
+          typeof capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,}$/.test(capabilityToken) ||
+          (image !== undefined && (!image || typeof image !== 'object' ||
+            typeof image.gatewayUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(image.gatewayUrl) ||
+            typeof image.capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,}$/.test(image.capabilityToken)))) {
         cleanup()
         send({ kind: 'dsh-desktop:private-model-rejected' })
         reject(new Error('Invalid private model handoff'))
@@ -60,7 +63,9 @@ async function receivePrivateModelHandoff() {
       }
       cleanup()
       send({ kind: 'dsh-desktop:private-model-received' })
-      resolve(Object.freeze({ gatewayUrl, capabilityToken }))
+      resolve(Object.freeze({ gatewayUrl, capabilityToken, ...(image ? {
+        image: Object.freeze({ gatewayUrl: image.gatewayUrl, capabilityToken: image.capabilityToken })
+      } : {}) }))
     }
     const onUtilityMessage = (event) => receive(event?.data)
     const onNodeMessage = (message) => receive(message)
@@ -94,6 +99,17 @@ async function registerPrivateModelCredential(dshEntryPathValue, handoff) {
     apiKey: handoff.capabilityToken
   })
   process.stdout.write('[harness-node] private model credential registered\n')
+}
+
+async function registerPrivateImageCredential(dshEntryPathValue, handoff) {
+  // Match the host insertion's installation anchor; never resolve a Profile
+  // package with the same name or fall back to an ambient market instance.
+  const requireHost = createRequire(dshEntryPathValue)
+  const hostEntry = requireHost.resolve('dsh-image-generation')
+  const bridgeEntry = createRequire(hostEntry).resolve('dsh-image-generation/desktop-bridge')
+  const { registerDesktopImageBridge } = await import(pathToFileURL(bridgeEntry).href)
+  registerDesktopImageBridge(handoff)
+  process.stdout.write('[harness-node] private image credential registered\n')
 }
 
 async function resolvePiAiModuleUrl(dshEntryPathValue) {
@@ -180,7 +196,10 @@ if (!dshEntryPath) {
     // Packages load through app.asar; the Office engine must resolve to its
     // unpacked directory so the OS can spawn it.
     registerOfficeEngineResolution(dshEntryPath)
-    if (privateModelHandoff) await registerPrivateModelCredential(dshEntryPath, privateModelHandoff)
+    if (privateModelHandoff) {
+      await registerPrivateModelCredential(dshEntryPath, privateModelHandoff)
+      if (privateModelHandoff.image) await registerPrivateImageCredential(dshEntryPath, privateModelHandoff.image)
+    }
     // Harness 0.1.5 gates its CLI behind `if (import.meta.main)` and exports
     // `runCli`. This file imports the entry rather than being it, so that guard
     // is false here and a plain import would load the module, run nothing, and

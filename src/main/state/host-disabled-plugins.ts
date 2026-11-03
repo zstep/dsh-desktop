@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { parse } from 'yaml'
-import { readMarketDisabledPackages } from './plugin-disable'
+import { readDisabledProfileBundles } from '@deepseek-ai/dsh-app-boot'
+import { readEffectiveDisabledHostPlugins } from './host-plugin-selection'
+import { BUILTIN_IMAGEGEN, MARKET_IMAGEGEN } from './host-plugin-state'
+import { withoutDisabledHostInsertions } from './host-plugin-sources'
 import { bundleEntryIds } from './patch-layer'
 import { profileCordisPatchPath, profilePackageJsonPath } from './plugin-recovery'
 
@@ -52,24 +55,30 @@ export async function prepareHostDisabledPluginsPatch(
   dshHome: string,
   hostSourcePatchPath: string
 ): Promise<string | undefined> {
-  let disabled: Set<string>
-  try {
-    disabled = new Set(await readMarketDisabledPackages(dshHome))
-  } catch {
-    // Match the loader: an unreadable market state cannot authorize skipping.
-    disabled = new Set()
-  }
+  const profileDirectory = dirname(profilePackageJsonPath(dshHome))
+  const disabled = readDisabledProfileBundles(profileDirectory)
   const overlayPath = join(dshHome, OVERLAY_NAME)
   if (disabled.size === 0) {
     await rm(overlayPath, { force: true })
     return undefined
   }
 
-  // The runtime patch rewrites package names to file URLs. Keep the source
-  // patch's package ownership while retaining the same active row IDs.
-  const hostRows = insertedRows(await readFile(hostSourcePatchPath, 'utf8'))
+  // Filter the original-name patch before restoration. The generated source
+  // patch has file URLs, and the raw patch can include omitted host rows that
+  // must never be revived (host disabled or the Profile owns the package).
+  const originalSource = await readFile(hostSourcePatchPath, 'utf8')
+  const hostRows = insertedRows(withoutDisabledHostInsertions(
+    originalSource,
+    await readEffectiveDisabledHostPlugins(dshHome)
+  ))
   const activeIds = new Set(hostRows.map((row) => row.id))
-  const profileDirectory = dirname(profilePackageJsonPath(dshHome))
+  // Unlike the legacy Office tool, the independent image workbench keeps its
+  // user's explicit row-off choice even when a market package is skipped.
+  const imagegenIds = new Set(hostRows.filter((row) =>
+    row.name === BUILTIN_IMAGEGEN || row.name === MARKET_IMAGEGEN
+  ).map((row) => row.id))
+  const omittedHostIds = new Set(insertedRows(originalSource)
+    .filter((row) => !activeIds.has(row.id)).map((row) => row.id))
   let bundles: string[] = []
   try {
     const manifest = JSON.parse(await readFile(profilePackageJsonPath(dshHome), 'utf8')) as {
@@ -115,12 +124,14 @@ export async function prepareHostDisabledPluginsPatch(
 
   const entries: { id: string; disabled: boolean }[] = []
   for (const id of disabledBundleIds) {
-    if (oldDisabledIds.has(id) && activeIds.has(id)) entries.push({ id, disabled: false })
+    // Never let another bundle's shared-ID repair revive an omitted host
+    // source or the Profile row whose explicit disable selected that omission.
+    if (oldDisabledIds.has(id) && activeIds.has(id) && !omittedHostIds.has(id) && !imagegenIds.has(id)) entries.push({ id, disabled: false })
   }
   // A market toggle may also disable the in-box row when both packages have
   // the same name. Restore that row after the market bundle is skipped.
   for (const row of hostRows) {
-    if (disabled.has(row.name) && oldDisabledIds.has(row.id) && !entries.some((entry) => entry.id === row.id)) {
+    if (disabled.has(row.name) && oldDisabledIds.has(row.id) && !imagegenIds.has(row.id) && !entries.some((entry) => entry.id === row.id)) {
       entries.push({ id: row.id, disabled: false })
     }
   }

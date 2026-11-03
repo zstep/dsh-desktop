@@ -157,10 +157,18 @@ export function generationBody(provider, spec, args) {
     ? { '1:1': '1024x1024', '16:9': '1536x1024', '9:16': '1024x1536', '4:3': '1536x1024', '3:4': '1024x1536' }
     : { '1:1': '2048x2048', '16:9': '2560x1440', '9:16': '1440x2560', '4:3': '2304x1728', '3:4': '1728x2304' }
   if (!sizes[ratio]) throw new ImageError('RATIO', 'Choose a supported image aspect ratio.')
+  const requestedSize = args.size
+  if (requestedSize !== undefined) {
+    if (typeof requestedSize !== 'string' || !/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(requestedSize)) throw new ImageError('SIZE', 'Enter image dimensions as width x height.')
+    const dimensions = requestedSize.split('x').map(Number)
+    const width = dimensions[0] ?? 0
+    const height = dimensions[1] ?? 0
+    if (width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageError('SIZE', 'Image dimensions exceed the 8192-pixel side or 64-megapixel limit.')
+  }
   return {
     model: spec.model,
     prompt: [prompt, style && `Art direction: ${style}`, args.purpose && `Intended use: ${args.purpose}`, `Compose for ${ratio}. Keep important subjects inside the safe central area for cropping.`].filter(Boolean).join('\n\n'),
-    size: sizes[ratio],
+    size: requestedSize ?? sizes[ratio],
     ...(provider === 'openai'
       ? { n: 1, quality: 'auto', output_format: 'png' }
       // Ark defaults to single-image generation. Use its shared single-image

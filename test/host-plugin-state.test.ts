@@ -8,14 +8,14 @@ const homes: string[] = []
 afterEach(async () => { await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))) })
 
 describe('Desktop host plugin state', () => {
-  it('defaults the built-in image tool to disabled and persists a reversible host-only switch', async () => {
+  it('defaults the built-in image tool to enabled and persists a reversible host-only switch', async () => {
     const home = await mkdtemp(join(tmpdir(), 'dsh-host-state-'))
     homes.push(home)
-    expect(await readDisabledHostPlugins(home)).toEqual(['dsh-image-generation'])
-    await setHostPluginEnabled(home, 'dsh-image-generation', true)
     expect(await readDisabledHostPlugins(home)).toEqual([])
     await setHostPluginEnabled(home, 'dsh-image-generation', false)
     expect(await readDisabledHostPlugins(home)).toEqual(['dsh-image-generation'])
+    await setHostPluginEnabled(home, 'dsh-image-generation', true)
+    expect(await readDisabledHostPlugins(home)).toEqual([])
   })
 
   it('preserves an explicitly enabled state from an existing Profile', async () => {

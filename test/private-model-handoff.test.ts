@@ -41,6 +41,7 @@ async function fixture(): Promise<{ root: string; cli: string; output: string }>
   const scopedModules = join(root, 'node_modules', '@deepseek-ai')
   await mkdir(scopedModules, { recursive: true })
   await symlink(join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh-llm-pi-ai'), join(scopedModules, 'dsh-llm-pi-ai'), process.platform === 'win32' ? 'junction' : 'dir')
+  await symlink(join(projectRoot, 'packages', 'dsh-image-generation'), join(root, 'node_modules', 'dsh-image-generation'), process.platform === 'win32' ? 'junction' : 'dir')
   const cli = join(root, 'cli.mjs')
   const output = join(root, 'child-report.json')
   await writeFile(cli, `
@@ -49,6 +50,8 @@ async function fixture(): Promise<{ root: string; cli: string; output: string }>
     export async function runCli() {
       const tool = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { encoding: 'utf8' })
       const piAi = await import('@deepseek-ai/dsh-llm-pi-ai')
+      const imageBridge = await import('dsh-image-generation/desktop-bridge')
+      const imageRegistered = !!imageBridge.getDesktopImageBridge()
       let entryRegistrationHeld = false
       try {
         piAi.registerPrivateModelCredential({ provider: 'other', baseURL: 'http://127.0.0.1:1', apiKey: 'probe'.repeat(8) })
@@ -58,6 +61,7 @@ async function fixture(): Promise<{ root: string; cli: string; output: string }>
       writeFileSync(${JSON.stringify(output)}, JSON.stringify({ argv: process.argv, env: process.env,
         toolEnv: tool.stdout, ipc: typeof process.send === 'function' || !!process.parentPort,
         exportNames: Object.keys(piAi).sort(),
+        imageRegistered,
         entryRegistrationHeld }))
     }
   `)
@@ -95,6 +99,33 @@ describe('private Harness child message handoff', () => {
     expect(report.toolEnv).not.toContain(capability)
     expect(logs.join('')).not.toContain(capability)
     expect(JSON.stringify(await readFile(cli, 'utf8'))).not.toContain(capability)
+  })
+
+  it('registers the image lease in the host package without exposing either capability', async () => {
+    const { root, cli, output } = await fixture()
+    const imageCapability = 'Image_Capability_0123456789abcdefghijklmnop'
+    const child = spawn(process.execPath, [entry, cli], {
+      cwd: root, env: { ...process.env, DSH_DESKTOP_PRIVATE_MODEL_HANDOFF: '1' },
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc']
+    })
+    launched.push(child)
+    let logs = ''
+    child.stdout!.on('data', chunk => { logs += String(chunk) })
+    child.stderr!.on('data', chunk => { logs += String(chunk) })
+    await deliverPrivateHandoff(child as HarnessChildProcess, {
+      ...handoff, image: { gatewayUrl: handoff.gatewayUrl, capabilityToken: imageCapability }
+    }, () => true, new AbortController().signal)
+    await waitForExit(child as HarnessChildProcess)
+    expect(child.exitCode, logs).toBe(0)
+    const report = JSON.parse(await readFile(output, 'utf8'))
+    expect(report.imageRegistered).toBe(true)
+    expect(report.entryRegistrationHeld).toBe(true)
+    expect(logs).toContain('private image credential registered')
+    for (const secret of [capability, imageCapability]) {
+      expect(JSON.stringify(report)).not.toContain(secret)
+      expect(logs).not.toContain(secret)
+      expect(await readFile(cli, 'utf8')).not.toContain(secret)
+    }
   })
 
   it('cancels a real spawn before the child can receive the capability', async () => {
@@ -164,14 +195,15 @@ describe('private Harness child message handoff', () => {
               if (!existsSync(${JSON.stringify(output)})) return setTimeout(check, 20)
               const report = JSON.parse(readFileSync(${JSON.stringify(output)}, 'utf8'))
               const leaked = JSON.stringify(report).includes(secret) || logs.includes(secret)
-              writeFileSync(join(${JSON.stringify(root)}, 'electron-result.json'), JSON.stringify({ leaked, ipc: report.ipc, delivered: report.entryRegistrationHeld }))
+              writeFileSync(join(${JSON.stringify(root)}, 'electron-result.json'), JSON.stringify({ leaked, ipc: report.ipc, delivered: report.entryRegistrationHeld, imageRegistered: report.imageRegistered }))
               child.kill()
-              app.exit(!leaked && report.ipc && report.entryRegistrationHeld ? 0 : 3)
+              app.exit(!leaked && report.ipc && report.entryRegistrationHeld && report.imageRegistered ? 0 : 3)
             }
             check()
           }
           if (event.kind === 'dsh-desktop:private-model-ready') child.send({
-            kind: 'dsh-desktop:private-model-delivery', gatewayUrl: 'http://127.0.0.1:43129', capabilityToken: secret
+            kind: 'dsh-desktop:private-model-delivery', gatewayUrl: 'http://127.0.0.1:43129', capabilityToken: secret,
+            image: { gatewayUrl: 'http://127.0.0.1:43129', capabilityToken: secret }
           })
         })
         child.on('exit', code => { if (!existsSync(join(${JSON.stringify(root)}, 'electron-result.json'))) { console.error('utility early exit', code, logs); app.exit(4) } })
@@ -184,7 +216,7 @@ describe('private Harness child message handoff', () => {
       const result = spawnSync(electron, [main], { cwd: root, env, encoding: 'utf8', timeout: 15_000 })
       expect(result.error, `${result.stdout}\n${result.stderr}`).toBeUndefined()
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0)
-      expect(JSON.parse(await readFile(join(root, 'electron-result.json'), 'utf8'))).toEqual({ leaked: false, ipc: true, delivered: true })
+      expect(JSON.parse(await readFile(join(root, 'electron-result.json'), 'utf8'))).toEqual({ leaked: false, ipc: true, delivered: true, imageRegistered: true })
     }, 20_000
   )
 

@@ -45,6 +45,10 @@
     - id: dsh-desktop-market-installer
       name: dsh-desktop-market-installer
 
+    # Installation-owned image studio; Profile-installed imagegen takes precedence.
+    - id: imagegen
+      name: dsh-desktop-imagegen
+
     # One shared image tool for conversations and Office workflows.
     - id: dsh-image-generation
       name: dsh-image-generation

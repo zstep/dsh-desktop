@@ -65,6 +65,42 @@ Harness UI → 本地 Harness Agent → pi-ai → main 中受限模型代理
 - 最终构建在独立临时 appData/userData 下，真实 Windows Electron + Harness 的普通 Profile 与 Safe Mode 均完成已保存测试账号恢复、bootstrap/UI 挂载、取消切换保留登录、确认切换停止子进程并清除本机测试登录信息；两轮均无 renderer error，已查看实际截图。普通模式截图仍显示工作台加载提示，不将其记为全部工作台就绪。认证为注入的测试响应，实际 `app.relaunch` 被观察而未执行第二进程，因此不替代生产账号 A→B→A、安装升级及重启后登录页验收。未停止或注销用户正在运行的应用，未清除其数据。
 - 含本节启动与账号切换修复的新安装器：`dist-dev/startup-account-fix/pengbao-ai-dev-windows-x64-setup.exe`，284,571,926 字节（271.39 MiB），SHA-256 为 `b5c09b6b8fcdfe7f3384bd55327ad36ccfb616ca63d4a1e062225ffffbb1787f`。`verify-target win32 x64`、最终构建、包内 Harness/bootstrap/原生模块/终端及 692 份依赖清单、Office 文档编写和 DOCX/PPTX/XLSX 转 PDF 门禁全部通过。下载 Electron 时曾遇 HTTPS 超时，最终使用已锁定且目标检查通过的本地 Electron 43.0.0 分发目录打包，未跳过 afterPack。Authenticode 确认未签名，未上传或发布；上节两个旧安装器均不含本节修复。
 
+### 2026-10-30 默认启用鹏宝生图
+
+- 普通 Profile 在缺少宿主开关状态时默认启用内置生图工具；已有 version-1 显式关闭、已保存的手动服务商／模型／Key、只读和坏配置状态均保留。仍参与加载的同名 Profile 市场包优先，宿主不重复插入，也不交接私有生图能力；单条 patch 行禁用不等于包级退出。来源选择、启动预检、旧 disabled 行恢复和脱敏状态 IPC 共用该规则。Safe Mode 不增加生图插件。
+- 新增独立的图片 capability lease，经现有父子私有 IPC 注册到安装包自有生图模块的单次内存 registry；不进入 argv、环境、Profile、renderer 或日志。按 Harness 启动周期签发，stop、子进程退出／error、启动失败、握手失败和超时均撤销；账号 gateway 停止时撤销全部 lease。图片与聊天 capability 不能互访路由。同进程插件不是安全沙箱，这条接缝用于避免意外泄漏和错误交接。
+- main 通过普通用户 `/api/config` 和 `/api/v1/auths/` 查询全局开关及有效权限，生成时提交 `{prompt,n:1}`，并仅在用户明确要求像素尺寸时附带经过校验的 `size: WIDTHxHEIGHT` 到 `/api/v1/images/generations`；未指定时由后台选择尺寸。桌面不读取含密钥的管理员 `/images/config`，不下载上游 Key，不为界面展示而猜模型。只接受唯一且严格匹配的相对 Files 描述符，main 下载后交付最多 20 MiB PNG/JPEG/WebP；拒绝任意 URL／文件代理、编码逃逸、重定向及秘密响应透传。图片并发独立默认 2，总代理期限上限 230 秒，不自动重试生成。
+- 插件无持久化服务商选择且存在私有桥时，计算默认“鹏宝统一配置”，读取不写配置、不要求 Key；显式手动选择优先，切换鹏宝保留原 profiles 和 revision 原子冲突检查。UI 展示鹏宝服务地址、模型由服务器选择、关闭／权限／认证／网络状态、刷新和取消，以及云端文件和本地副本说明。设置页不增加尺寸配置；工具调用仅在用户明确要求时传递 `size`，未指定时使用后台默认。提示词组装只后台刷新脱敏状态，不让图片网络故障阻塞文本聊天。生成继续沿用工作区权限预检、图片规范化和沙箱 PNG 写入，返回 `model_selection: server-managed`，不伪造模型 ID。
+- 实际检查：尺寸改动后定向图片／bridge／gateway／真实 Harness 回归 4 文件 149 项通过；真实 Harness fixture 同时覆盖未指定尺寸省略 `size` 与明确 `1024x512` 透传。`npm run typecheck` 与 `git diff --check` 通过；随后使用 `CSC_IDENTITY_AUTO_DISCOVERY=false npm run package:dev:mac:x64 -- --config.directories.output=dist-dev/pengbao-size-20261030` 完成 macOS x64 target 验证、构建和 afterPack 门禁。未重跑完整测试套件，历史全量失败记录仍适用。
+- 新增 `test/pengbao-image-runtime.test.ts`，使用锁定 Harness `0.2.1-rc.3`、临时 home／工作区和注入上游验证：无手动配置默认鹏宝、真实沙箱生成 PNG／保留透明度／校验 SHA-256、正常停止与重启再生图、child 退出撤销旧 lease。`DSH_TEST_MANAGED_IMAGE_GUI=1` 额外启动安全设置不放宽的真实 Electron 窗口，实际打开内置生图卡片、切换 OpenAI 再切回鹏宝、保存、刷新、重启后确认选择保留；已查看截图。初次 GUI 驱动误点侧栏“插件”而非设置“内置插件”导致等待超时，修正导航后通过；截图等待操作结束，避免把 pending 画面当最终状态。
+- GUI 为实际 Harness 页面加隔离 Electron BrowserWindow，不等同于完整桌面主入口／专用账号窗口验收；未验证真实模型从对话发起生图／取消、生产账号切换、Windows 或打包安装升级。未调用线上收费生图、未修改后端或线上配置、未读取真实凭据、未提交推送、未签名公证或发布。本节新功能的 macOS x64 未签名开发包为 `dist-dev/pengbao-size-20261030/pengbao-ai-dev-mac-x64.dmg`（368,838,401 字节，SHA-256 `22a583fce7fce5e76845f6010505a8804069f564b0c09acb879d7537fad6f727`）和 `dist-dev/pengbao-size-20261030/pengbao-ai-dev-mac-x64.zip`（369,688,614 字节，SHA-256 `d4e1f81815972de94d2275505627e76c1e4ec68a62c212df357c94288274bb4c`）；未签名、未公证、未上传或发布。
+
+### 2026-11-02 默认集成 `@dickpy/dsh-imagegen@1.11.0`（独立开发包已构建并核验）
+
+- 普通 Profile 默认插入并启用本地 `dsh-desktop-imagegen` 包，逻辑 Loader ID 为 `imagegen`；现有 Profile 已安装同逻辑插件时由 Profile 保持所有权，Safe Mode 不注入。`dsh-image-generation` Office 工具继续保留，不与第三方插件重复注册。包装包只依赖精确版本 `@dickpy/dsh-imagegen@1.11.0`，并通过 `patches/@dickpy+dsh-imagegen+1.11.0.patch` 增加实例级 host adapter；`scripts/prepare-imagegen.mjs` 从锁定发布包生成 ignored 的客户端入口，不能手工维护第二份 bundle。
+- 默认图片服务显示为“鹏宝／服务端默认图片模型”，只读取普通用户配置和权限状态，由后台选择实际图片模型；不读取管理员 `/images/config`、不下载供应商 Key、不把模型名或 JWT 写入插件配置。受管生成仅支持单张文生图和可选 `WIDTHxHEIGHT`，明确拒绝图生图、参考图、多图、非默认 quality/detail；不支持的请求在出站前失败。生成结果仍走插件原有队列、取消、预览和历史链路。
+- 提示词增强沿用插件现有 Enhance/Polish 按钮；每次点击动态读取当前桌面默认聊天 provider/model，使用受限 LLM stream，只收集可见文本 delta 并拒绝 reasoning、空结果、异常 finish 和超长结果。单纯点击 Generate 不自动先调用增强。设置页提供图片服务和提示词服务的“继承桌面默认／自定义／关闭”选择；自定义 channels、endpoint、model、secret 或显式关闭均优先，合成的 managed channel 仅用于运行时投影，不回写持久化配置。宿主模式同时屏蔽第三方自动更新检查和安装，独立运行的上游插件仍保留原行为。
+- 图片能力通过每个 Harness runtime 的可撤销 lease 传递，仅暴露 status/generate 绑定操作；启动失败、握手失败、退出、停止、超时和账号 gateway 停止都会撤销。JWT 仍只由 main 持有，插件、renderer、YAML、argv/env 和日志均不接收凭据。固定 HTTPS、无重定向、响应大小／媒体类型和并发／超时限制沿用现有图片 gateway；超时不自动重试，并提示请求可能仍在服务端完成或计费。
+- 验证：图片 host adapter、managed 操作、设置投影／更新门禁／队列 history、插件闭包、来源选择／状态／预检和 lease 回归共 77 项通过；锁定 Harness 的真实临时 Profile 集成通过，覆盖 host descriptor、无 model override 的图片出站、默认聊天模型切换、多图拒绝、历史结果和停止后 lease 撤销。另有 `DSH_TEST_IMAGEGEN_GUI=1` 的临时 Electron mock 路径可驱动工作台 Enhance/Generate 和主预览；fixture 图片与聊天响应均为本地 mock，不代表真实线上模型质量或收费验收。
+- 补丁维护：已在独立临时副本中将实际安装文件逆向还原，再检查并正向重放 Imagegen 补丁，三个 lib 文件与当前安装逐字节一致；根依赖与 lockfile 对应一致，第三方 tarball 固定 npm registry 来源及 integrity。此检查不替代全新 `npm ci`／完整 postinstall 验收。上游提供等价的实例级 host 图片／增强操作、免 Key 就绪描述和宿主更新控制后，应迁移到公开接缝，删除本补丁及客户端派生适配，重新验证独立和宿主两种运行方式。
+- 打包前复验：11 文件 153 项通过，包含真实临时 Harness 路径；类型检查与 `git diff --check` 通过。本次未重跑全量测试，前次全量结果为 3146 通过、7 失败、6 跳过；失败涉及 Python `contextlib.chdir`、Office cache 清理、插件市场超时、workbench 状态、PPT 模板预览和 enterprise menu fixture，尚未全部定位，不能报告全量通过。未做真实账号生图／增强、Windows、正式安装升级、签名、公证、发布或线上配置变更。当前运行中的旧包不会因源码修改自动获得本集成。
+- 独立 macOS x64 开发包已完成于 `dist-dev/imagegen-default-20261102-r2/`，身份为 Pengbao AI Dev。原生目标验证、完整 build、包内 Harness/bootstrap/原生模块/终端与 695 份依赖清单、Office 编写及 DOCX/PPTX/XLSX 转 PDF 门禁均通过。另以包内 Helper 和实际 app.asar 启动临时 Harness、本地 mock，验证 wrapper／派生客户端、普通默认 patch 插入、受管图片、显式默认聊天增强、Generate 不调用增强、history、宿主更新门禁及 fixture capability 不进入日志／HTML／设置。该 smoke 显式向隔离测试 Profile 插入插件，不代表产品 Safe Mode 默认启用，也不等于完整桌面主入口 GUI／真实账号验收。
+- 安装包完整性：DMG 为 374,763,579 字节，SHA-256 `0a6dc5ae5fe2b09853be3c562bfd74f32673d71599eb25f66ff9ebb7b028db3c`；ZIP 为 375,569,571 字节，SHA-256 `9a9c55b6579243742e182a79d6b0e04d9db656990007762f3e03345f1dacf852`。`hdiutil verify` 和 ZIP 全数据检查通过，`codesign -dv` 确认未签名。未公证、未上传或发布、未安装替换用户应用。
+- 打包期间先后遇到 CLI 将 `afterSign=null` 当脚本路径、API 合并完整配置导致 Office extraResources 重复软链接；最终使用独立 JS 配置的真正 null 和新输出目录解决，保留全部 afterPack 门禁且未删除旧输出或 Office 资源。包内 smoke 初次将 `--patch` 放在 app 参数后导致 unknown option，调整测试脚本参数顺序后通过，未改产品 CLI；本机 Python 不支持 `hashlib.file_digest`，改用 Node 流式 SHA-256 完成校验。构建仍有现有 renderer config 缺失提示，不声称新增 renderer 构建验收。
+
+### 2026-11-04 实际图片默认名称与供应商目录（本地源码，尚未上线）
+
+- 桌面优先读取普通图片权限下的 `/api/v1/images/metadata`，只接收 `{models, defaultModel, selection, catalogStatus}`；仅明确 404/405 时兼容旧 `/images/models`，认证、网络或格式错误不伪装成旧端点。开放显式选择要求正文 `selection: request-local` 与精确能力头 `X-Image-Model-Selection: request-local-v1` 同时成立；缺失能力头时保持仅服务端默认。
+- 默认选项仅显示实际模型名称，不附加“跟随默认”等后缀；其内部身份固定为 `desktop-managed`、偏好仍存空字符串，生成省略 `model`。其他选项以精确上游 ID 保存和出站，即使 ID 等于当前默认 ID 或显示名称也保持显式选择；同名选项附加 ID。刷新后台默认只改变显示，不保存偏好；受管服务生效时隐藏空自定义渠道提示，不要求用户选择引擎。
+- 供应商发现、有效默认及回退规则由 Open WebUI 后端的共享解析器负责，不能把聊天模型目录或首个图片候选当作默认。详细后端契约见 sibling Open WebUI 项目的 `docs/integrations/PENGBAO_DESKTOP_BACKEND_CONTRACT.md`；旧后端无元数据时明确显示默认名称暂不可用，不猜测型号。
+- 图片失败诊断独立于聊天回调，仅记录本地产生的关联 ID、固定阶段、安全错误码、耗时及可选数字 HTTP 状态。不得记录 prompt、模型 ID、URL、凭据、供应商错误正文或图片内容；回调异常不改变请求结果。新增日志接线尚未进入当前运行应用，不能据此声称已取得线上失败证据。
+- 本地网关／bridge／lease 等 6 文件回归 230 项通过、1 项跳过；开发依赖更新后，额外的 gateway／lease／host 回归 12 文件 288 项通过、1 项跳过，类型检查通过。权威第三方补丁已在隔离 pristine 1.11.0 基线上验证重放，`git diff --check` 通过。本轮全量 `npm test` 在 pretest 阶段因两个任务并发准备 Office 缓存导致目录冲突，没有获得新的全量测试结果；随后串行完整构建和打包成功，不修改 Office 产品代码来掩盖该失败。
+- 用户指定的 `gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`gpt-image-2`、`gemini-3-pro-image`、`gemini-3.1-flash-image` 已补充精确 ID 回归：OpenAI 兼容目录可混合返回这些模型，无需让用户切换引擎。后端 metadata／旧目录／显式生成校验 128 项离线测试通过；桌面包装层及新包临时 Harness 的 mock 验证覆盖五项显示、保存和精确透传，未硬编码候选到产品目录。这证明代码兼容性，不代表线上实际目录已返回全部五项或真实生成可用。
+- 新 macOS Intel 开发包位于 `dist-dev/imagegen-model-names-20261104/`。target 验证、完整 build、包内 Harness/bootstrap/原生模块/终端、695 份依赖清单及 Office 编写和 DOCX/PPTX/XLSX 转 PDF 门禁通过。包内 Helper／app.asar 配合临时 Profile 和本地 mock 验证默认仅显示实际名称、默认省略 model、显式模型跨 Harness 重启保留、增强使用当前聊天模型、失效模型零派发、history、更新门禁及 fixture capability 不泄漏。仍有既有 renderer config 缺失提示；不替代完整桌面主入口和真实账号验收。
+- DMG 为 374,726,052 字节，SHA-256 `724dfd303fd1be867ff9dfc09e64ff67115045cc6e6e3de4670ec86b5dcbcb0c`；ZIP 为 375,568,792 字节，SHA-256 `427229b06c1bf918d0e0c5a6c6475d49aa711bbaab49349f93b28236db27a69d`。`hdiutil verify` 与 ZIP 全数据校验通过。构建显式跳过签名，未公证、未发布、未安装替换用户应用。包从保留其他 WIP 的完整开发工作树构建，本次选择性提交只包含生图集成，二者不能称为同一干净提交树的纯净构建。
+- 权限层最初拒绝直接修改已安装的 `@dickpy/dsh-imagegen/lib/{client,index,host-adapter}.js`，当时仅维护独立副本和权威补丁，未换工具绕过。用户随后明确授权更新这三个开发依赖文件并打包；依赖更新和 `imagegen:prepare` 已完成，使用实际安装依赖的 6 文件 231 项回归及类型检查通过。
+- 没有发送真实生图。服务端额外参数可覆盖客户端 `n:1`，且尚未建立获准的安全 UI 自动化路径；无法保证单张预算时不发请求，不读取管理员配置或提取凭据绕过。默认生图失败根因仍未确认。用户已另行要求提交和重新打包；没有改真实 Profile、关闭／重启用户应用、部署后端、改线上配置、推送、签名／公证／发布。
+
 ## 实施顺序
 
 ### 1. 固定协议与产品配置

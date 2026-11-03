@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { disableProfilePlugin, isProfilePluginDisabledByPatch, readMarketDisabledPackages } from './plugin-disable'
+import { readDisabledProfileBundles } from '@deepseek-ai/dsh-app-boot'
+import { disableProfilePlugin, isProfilePluginDisabledByPatch } from './plugin-disable'
 
 const STATE_FILE = 'desktop-host-plugins.json'
 export const BUILTIN_IMAGE_GENERATION = 'dsh-image-generation'
-const DEFAULT_DISABLED_HOST_PLUGINS = [BUILTIN_IMAGE_GENERATION]
+export const BUILTIN_IMAGEGEN = 'dsh-desktop-imagegen'
+export const MARKET_IMAGEGEN = '@dickpy/dsh-imagegen'
+
+/** The wrapper and market bundle occupy the same logical imagegen Loader ID. */
+export function hostPluginTargetPackage(name: string): string {
+  return name === BUILTIN_IMAGEGEN ? MARKET_IMAGEGEN : name
+}
+const DEFAULT_DISABLED_HOST_PLUGINS: readonly string[] = []
 
 export async function readDisabledHostPlugins(dshHome: string): Promise<string[]> {
   let source: string
@@ -47,7 +55,7 @@ export async function profileContainsBundle(dshHome: string, name: string): Prom
 
 export async function profileHasEnabledBundle(dshHome: string, name: string): Promise<boolean> {
   if (!(await profileContainsBundle(dshHome, name))) return false
-  if ((await readMarketDisabledPackages(dshHome)).includes(name)) return false
+  if (readDisabledProfileBundles(join(dshHome, 'profiles', 'web')).has(name)) return false
   return !(await isProfilePluginDisabledByPatch(dshHome, name))
 }
 
@@ -55,6 +63,17 @@ export async function profileHasEnabledBundle(dshHome: string, name: string): Pr
  * disable alone does not remove the Profile bundle's Loader ID at next boot.
  */
 export async function prepareProfileBundleForHostEnable(dshHome: string, name: string): Promise<{ ok: boolean; reason?: string }> {
+  if (name === BUILTIN_IMAGEGEN) {
+    // This independent workbench must not take over or rewrite a Profile owner,
+    // including one whose patch row the user has switched off.
+    const skipped = readDisabledProfileBundles(join(dshHome, 'profiles', 'web'))
+    for (const candidate of [MARKET_IMAGEGEN, BUILTIN_IMAGEGEN]) {
+      if (!skipped.has(candidate) && await profileContainsBundle(dshHome, candidate)) {
+        return { ok: false, reason: 'market-active' }
+      }
+    }
+    return { ok: true }
+  }
   if (!(await profileContainsBundle(dshHome, name))) return { ok: true }
   if (await profileHasEnabledBundle(dshHome, name)) return { ok: false, reason: 'market-active' }
   const result = await disableProfilePlugin(dshHome, name)
@@ -67,8 +86,10 @@ let pendingWrite: Promise<void> = Promise.resolve()
 export function setHostPluginEnabled(dshHome: string, name: string, enabled: boolean): Promise<void> {
   const write = async (): Promise<void> => {
     const disabled = new Set(await readDisabledHostPlugins(dshHome))
-    if (enabled) disabled.delete(name)
-    else disabled.add(name)
+    if (enabled) {
+      disabled.delete(name)
+      if (name === BUILTIN_IMAGEGEN) disabled.delete(MARKET_IMAGEGEN)
+    } else disabled.add(name)
     await mkdir(dshHome, { recursive: true })
     const target = join(dshHome, STATE_FILE)
     const temporary = `${target}.${randomUUID()}.tmp`

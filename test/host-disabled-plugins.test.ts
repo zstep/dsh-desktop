@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,13 +7,36 @@ import { composeEntries, loadOverlayPatches, loadProfileDirectory } from '@deeps
 import { prepareHostDisabledPluginsPatch } from '../src/main/state/host-disabled-plugins'
 import { HarnessRuntime } from '../src/main/runtime/harness-runtime'
 import { inspectProfileBootInputs } from '../src/main/state/profile-boot-preflight'
-import { prepareProfileBundleForHostEnable, setHostPluginEnabled } from '../src/main/state/host-plugin-state'
+import { BUILTIN_IMAGEGEN, MARKET_IMAGEGEN, prepareProfileBundleForHostEnable, setHostPluginEnabled } from '../src/main/state/host-plugin-state'
 import { projectRoot } from './patch-path'
 
 const homes: string[] = []
 afterEach(async () => { await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))) })
 
 describe('disabled Profile packages in Desktop host patch', () => {
+  it.each([MARKET_IMAGEGEN, BUILTIN_IMAGEGEN])('does not revive an explicit imagegen off after %s is package-skipped', async skipped => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-host-disable-'))
+    homes.push(home)
+    const profile = join(home, 'profiles', 'web')
+    const bundle = join(profile, 'node_modules', skipped)
+    await mkdir(bundle, { recursive: true })
+    await mkdir(join(profile, '.dsh-market'))
+    await writeFile(join(profile, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: [skipped] } } }))
+    await writeFile(join(bundle, 'package.json'), JSON.stringify({ dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+    await writeFile(join(bundle, 'cordis.patch.yml'), `- insert:\n    - id: imagegen\n      name: ${JSON.stringify(skipped)}\n`)
+    await writeFile(join(profile, '.dsh-market', 'state.json'), JSON.stringify({ disabled: [skipped] }))
+    const userPatch = '- id: imagegen\n  disabled: true\n'
+    await writeFile(join(profile, 'cordis.patch.yml'), userPatch)
+    const hostPath = join(home, 'desktop.patch.yml')
+    await writeFile(hostPath, `- insert:\n    - id: imagegen\n      name: ${BUILTIN_IMAGEGEN}\n`)
+    expect(await prepareHostDisabledPluginsPatch(home, hostPath)).toBeUndefined()
+    expect(await readFile(join(profile, 'cordis.patch.yml'), 'utf8')).toBe(userPatch)
+    const loaded = loadProfileDirectory('test', profile, join(home, 'missing.json'))
+    expect(loaded.patches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'imagegen', disabled: true })
+    ]))
+  })
+
   it('drops a stale generated host disable when a Profile package is switched off', async () => {
     const home = await mkdtemp(join(tmpdir(), 'dsh-host-disable-'))
     homes.push(home)
@@ -43,6 +66,39 @@ describe('disabled Profile packages in Desktop host patch', () => {
     expect(overlayPath).toBeDefined()
     expect(await readFile(overlayPath!, 'utf8')).toContain('- id: "dsh-image-generation"\n  disabled: false')
     expect(await readFile(join(profile, 'cordis.patch.yml'), 'utf8')).toContain('disabled: true')
+  })
+
+  it('does not restore omitted original-name host rows or revive a disabled Profile row sharing its ID', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-host-disable-'))
+    homes.push(home)
+    const profile = join(home, 'profiles', 'web')
+    const bundle = join(profile, 'node_modules', 'dsh-image-generation')
+    const disabledBundle = join(profile, 'node_modules', 'old-bundle')
+    await mkdir(bundle, { recursive: true })
+    await mkdir(disabledBundle, { recursive: true })
+    await mkdir(join(profile, '.dsh-market'))
+    await writeFile(join(profile, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-image-generation', 'old-bundle'] } } }))
+    for (const directory of [bundle, disabledBundle]) {
+      await writeFile(join(directory, 'package.json'), JSON.stringify({ dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+      await writeFile(join(directory, 'cordis.patch.yml'), '- insert:\n    - id: dsh-image-generation\n      name: dsh-image-generation\n')
+    }
+    await writeFile(join(profile, 'cordis.patch.yml'), '- id: dsh-image-generation\n  disabled: true\n')
+    await writeFile(join(profile, '.dsh-market', 'state.json'), JSON.stringify({ disabled: ['old-bundle'] }))
+    const hostPath = join(home, 'desktop.patch.yml')
+    await writeFile(hostPath, '- insert:\n    - id: dsh-image-generation\n      name: dsh-image-generation\n')
+    // Profile owns the name even though all its rows are disabled. The omitted
+    // host row must not become an active ID for restoring another disabled bundle.
+    const overlayPath = await prepareHostDisabledPluginsPatch(home, hostPath)
+    expect(overlayPath).toBeUndefined()
+    // Package disable allows host ownership, but an explicit host-off must
+    // likewise prevent restoration using the raw original source row.
+    await writeFile(join(profile, '.dsh-market', 'state.json'), JSON.stringify({ disabled: ['old-bundle', 'dsh-image-generation'] }))
+    await setHostPluginEnabled(home, 'dsh-image-generation', false)
+    expect(await prepareHostDisabledPluginsPatch(home, hostPath)).toBeUndefined()
+    await expect(readFile(join(home, 'desktop-disabled-plugins.patch.yml'))).rejects.toMatchObject({ code: 'ENOENT' })
+    const loaded = loadProfileDirectory('test', profile, join(home, 'missing-app.json'))
+    const entries = composeEntries([...loaded.layers.map(layer => layer.patches), loaded.patches])
+    expect(entries).toEqual([])
   })
 
   it('keeps the core authorization row and the in-box image tool active', async () => {
@@ -176,7 +232,7 @@ describe('disabled Profile packages in Desktop host patch', () => {
     }
   }, 90_000)
 
-  it('boots the market image bundle with the built-in one off by default', async () => {
+  it('preserves a distinct physical market image bundle without duplicate Loader IDs while host defaults on', async () => {
     const home = await mkdtemp(join(tmpdir(), 'dsh-host-disable-'))
     homes.push(home)
     const profile = join(home, 'profiles', 'web')
@@ -198,7 +254,7 @@ describe('disabled Profile packages in Desktop host patch', () => {
     try {
       await runtime.start(home)
       expect(runtime.snapshot().phase, runtime.snapshot().logs.join('\n')).toBe('ready')
-      expect(await readFile(join(home, 'desktop-host-sources.patch.yml'), 'utf8')).not.toContain('dsh-image-generation')
+      expect(await readFile(join(home, 'desktop-host-sources.patch.yml'), 'utf8')).toContain('dsh-image-generation')
       await runtime.stop()
       const manifestPath = join(profile, 'package.json')
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
@@ -209,8 +265,15 @@ describe('disabled Profile packages in Desktop host patch', () => {
       manifest.dsh.profile.bundles.push('dsh-image-generation')
       await writeFile(manifestPath, JSON.stringify(manifest))
       await mkdir(join(profile, 'node_modules'), { recursive: true })
-      await symlink(join(projectRoot, 'node_modules', 'dsh-image-generation'),
-        join(profile, 'node_modules', 'dsh-image-generation'), 'junction')
+      const hostPackage = await realpath(join(projectRoot, 'node_modules', 'dsh-image-generation'))
+      const marketPackage = join(profile, 'node_modules', 'dsh-image-generation')
+      await cp(hostPackage, marketPackage, { recursive: true })
+      expect(await realpath(marketPackage)).not.toBe(hostPackage)
+      // A distinct route proves the physical Profile module, not merely a
+      // same-name host export or symlink, was actually activated by Harness.
+      const marketEntry = join(marketPackage, 'index.js')
+      await writeFile(marketEntry, (await readFile(marketEntry, 'utf8'))
+        .replace("'/api/image-generation.settings'", "'/api/market-image-generation.settings'"))
       expect(await inspectProfileBootInputs(home, entryPath, desktopPatchPath)).toBeUndefined()
       await runtime.start(home)
       const snapshot = runtime.snapshot()
@@ -220,7 +283,30 @@ describe('disabled Profile packages in Desktop host patch', () => {
       if (!snapshot.url || !snapshot.authToken) throw new Error('Harness did not announce an authenticated endpoint')
       const login = await fetch(`${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`, { redirect: 'manual' })
       const headers = { Cookie: login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ') }
-      expect((await fetch(new URL('/api/image-generation.settings', snapshot.url), { headers })).status).toBe(200)
+      expect((await fetch(new URL('/api/market-image-generation.settings', snapshot.url), { headers })).status).toBe(200)
+      expect((await fetch(new URL('/api/image-generation.settings', snapshot.url), { headers })).status).toBe(404)
+      await runtime.stop()
+      const userPatch = '- id: dsh-image-generation\n  disabled: true\n'
+      await writeFile(join(profile, 'cordis.patch.yml'), userPatch)
+      // A disabled patch row still owns its Loader ID; no host insertion,
+      // private capability or row restoration may silently replace it.
+      await runtime.start(home)
+      const rowDisabled = runtime.snapshot()
+      expect(rowDisabled.phase, rowDisabled.logs.join('\n')).toBe('ready')
+      expect(await readFile(join(home, 'desktop-host-sources.patch.yml'), 'utf8')).not.toContain('dsh-image-generation')
+      await expect(readFile(join(home, 'desktop-disabled-plugins.patch.yml'))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await readFile(join(profile, 'cordis.patch.yml'), 'utf8')).toBe(userPatch)
+      await runtime.stop()
+      // Only the package-level switch releases ownership for the default host.
+      await mkdir(join(profile, '.dsh-market'), { recursive: true })
+      await writeFile(join(profile, '.dsh-market', 'state.json'), JSON.stringify({ disabled: ['dsh-image-generation'] }))
+      await runtime.start(home)
+      const packageDisabled = runtime.snapshot()
+      expect(packageDisabled.phase, packageDisabled.logs.join('\n')).toBe('ready')
+      expect(await readFile(join(home, 'desktop-host-sources.patch.yml'), 'utf8')).toContain('dsh-image-generation')
+      expect(await readFile(join(home, 'desktop-disabled-plugins.patch.yml'), 'utf8')).toContain('disabled: false')
+      expect(await readFile(manifestPath, 'utf8')).toBe(JSON.stringify(manifest))
+      expect(await readFile(join(profile, 'cordis.patch.yml'), 'utf8')).toBe(userPatch)
     } finally {
       await runtime.stop()
     }

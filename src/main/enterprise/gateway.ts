@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { once } from 'node:events'
 import { PENGBAO_PRODUCT } from './config'
+import { createImageGateway, IMAGE_GATEWAY_TIMEOUT_MS, type PengbaoImageLease, type PengbaoImageFailure } from './image-gateway'
 
 const TOP_LEVEL = ['model', 'messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'stream_options', 'temperature', 'max_tokens', 'max_completion_tokens', 'top_p', 'stop', 'frequency_penalty', 'presence_penalty', 'seed', 'response_format', 'reasoning_effort'] as const
 const FORBIDDEN = new Set(['chat_id', 'id', 'session_id', 'parent_id', 'tool_ids', 'metadata', 'features', 'files', 'filter_ids', 'function_call', 'functions'])
@@ -18,13 +19,17 @@ export interface PengbaoGatewayOptions {
   maxBodyBytes?: number
   maxConcurrent?: number
   timeoutMs?: number
+  imageTimeoutMs?: number
+  imageMaxConcurrent?: number
   onFailure?: (failure: PengbaoGatewayFailure) => void
+  onImageFailure?: (failure: PengbaoImageFailure) => void
 }
 
 export interface PengbaoGateway {
   url: string
   port: number
   capabilityToken: string
+  createImageLease: () => PengbaoImageLease
   stop: () => Promise<void>
 }
 
@@ -92,7 +97,9 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
   const maxBody = options.maxBodyBytes ?? 1_048_576
   const maxConcurrent = options.maxConcurrent ?? 4
   const timeout = options.timeoutMs ?? 120_000
-  for (const limit of [maxBody, maxConcurrent, timeout]) {
+  const imageTimeout = options.imageTimeoutMs ?? IMAGE_GATEWAY_TIMEOUT_MS
+  const imageMaxConcurrent = options.imageMaxConcurrent ?? 2
+  for (const limit of [maxBody, maxConcurrent, timeout, imageTimeout, imageMaxConcurrent]) {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('Invalid gateway limit')
   }
   const upstreamFetch = options.fetch ?? fetch
@@ -103,11 +110,14 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
   let authority = ''
   let stopPromise: Promise<void> | undefined
 
+  const images = createImageGateway({ getJwt: () => jwt, fetch: upstreamFetch, maxBodyBytes: maxBody,
+    timeoutMs: Math.min(imageTimeout, IMAGE_GATEWAY_TIMEOUT_MS), maxConcurrent: imageMaxConcurrent, onFailure: options.onImageFailure })
+  const serverTimeout = Math.max(timeout, Math.min(imageTimeout, IMAGE_GATEWAY_TIMEOUT_MS))
   const server = createServer((req, res) => { void handle(req, res) })
   server.headersTimeout = 10_000
-  server.requestTimeout = timeout
+  server.requestTimeout = serverTimeout
   server.maxHeadersCount = 32
-  server.on('connection', socket => { socket.setTimeout(timeout, () => socket.destroy()) })
+  server.on('connection', socket => { socket.setTimeout(serverTimeout, () => socket.destroy()) })
   server.on('upgrade', (_req, socket) => socket.destroy())
   server.on('connect', (_req, socket) => socket.destroy())
 
@@ -119,6 +129,8 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     const fetchMode = req.headers['sec-fetch-mode']
     if (hostCount !== 1 || req.headers.host !== authority || 'origin' in req.headers ||
       'sec-fetch-site' in req.headers || (fetchMode !== undefined && fetchMode !== 'cors')) return fail(res, 403)
+    // Image routes authenticate only against runtime-scoped image leases, never the chat credential.
+    if (req.url?.startsWith('/v1/image-generation/')) return images.handle(req, res)
     const supplied = Buffer.from(req.headers.authorization ?? '')
     if (supplied.length !== credential.length || !timingSafeEqual(supplied, credential)) return fail(res, 401)
     const isModels = req.method === 'GET' && req.url === '/v1/models'
@@ -200,9 +212,11 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     port: address.port,
     url: `http://${authority}`,
     capabilityToken,
+    createImageLease: images.createLease,
     stop: () => {
       if (stopPromise) return stopPromise
       stopping = true
+      images.stop()
       credential = Buffer.alloc(0)
       jwt = ''
       for (const controller of active) controller.abort()

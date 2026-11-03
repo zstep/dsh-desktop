@@ -1,11 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import { inspectProfileBootInputs } from '../src/main/state/profile-boot-preflight'
-import { setHostPluginEnabled } from '../src/main/state/host-plugin-state'
-import { projectRoot } from './patch-path'
+import { BUILTIN_IMAGEGEN, MARKET_IMAGEGEN, setHostPluginEnabled } from '../src/main/state/host-plugin-state'
 
 const homes: string[] = []
 afterEach(async () => { await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))) })
@@ -86,7 +85,22 @@ describe('normal Profile boot preflight', () => {
     expect((await check())?.packageName).toBe('test-startup-bundle')
   })
 
-  it.each(['dsh-image-generation', 'test-startup-bundle'])('sends a duplicate %s bundle to Recovery without changing the manifest', async (name) => {
+  it('recognizes the target alias and omits a duplicate wrapper without mutating the Profile', async () => {
+    const { home, profile } = await fixture()
+    const bundle = join(profile, 'node_modules', MARKET_IMAGEGEN)
+    await mkdir(bundle, { recursive: true })
+    const manifest = JSON.stringify({ dsh: { profile: { bundles: [MARKET_IMAGEGEN] } } })
+    await writeFile(join(profile, 'package.json'), manifest)
+    await writeFile(join(bundle, 'package.json'), JSON.stringify({ dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+    await writeFile(join(bundle, 'cordis.patch.yml'), `- insert:\n    - id: imagegen\n      name: ${JSON.stringify(MARKET_IMAGEGEN)}\n`)
+    const hostPatch = join(home, 'host.patch.yml')
+    await writeFile(hostPatch, `- insert:\n    - id: imagegen\n      name: ${BUILTIN_IMAGEGEN}\n`)
+    expect(await inspectProfileBootInputs(home, join(home, 'app', 'lib', 'bin.js'), hostPatch)).toBeUndefined()
+    expect(await readFile(join(profile, 'package.json'), 'utf8')).toBe(manifest)
+  })
+
+  it('sends an unrelated duplicate bundle to Recovery without changing the manifest', async () => {
+    const name = 'test-startup-bundle'
     const { home, profile } = await fixture()
     const manifestPath = join(profile, 'package.json')
     const manifest = JSON.stringify({
@@ -94,20 +108,9 @@ describe('normal Profile boot preflight', () => {
       dsh: { profile: { bundles: [name] } }
     })
     await writeFile(manifestPath, manifest)
-    if (name !== 'test-startup-bundle') {
-      await symlink(join(projectRoot, 'node_modules', name),
-        join(profile, 'node_modules', name), 'junction')
-    }
     const entry = join(home, 'app', 'lib', 'bin.js')
-    const hostPatch = name === 'test-startup-bundle'
-      ? join(home, 'host.patch.yml')
-      : join(projectRoot, 'build', 'dsh-desktop.patch.yml')
-    if (name === 'test-startup-bundle') {
-      await writeFile(hostPatch, '- insert:\n    - id: host-test\n      name: test-startup-bundle\n')
-    } else {
-      expect(await inspectProfileBootInputs(home, entry, hostPatch)).toBeUndefined()
-      await setHostPluginEnabled(home, name, true)
-    }
+    const hostPatch = join(home, 'host.patch.yml')
+    await writeFile(hostPatch, '- insert:\n    - id: host-test\n      name: test-startup-bundle\n')
     expect(await inspectProfileBootInputs(home, entry, hostPatch)).toEqual({
       message: expect.stringContaining('enabled in both'),
       packageName: name

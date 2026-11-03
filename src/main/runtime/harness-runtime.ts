@@ -10,6 +10,8 @@ import type { RuntimePhase, RuntimeSnapshot } from '../../shared/contracts'
 import { SAFE_MODE_PROFILE } from '../state/safe-mode-profile'
 import { prepareHostDisabledPluginsPatch } from '../state/host-disabled-plugins'
 import { prepareHostPluginSourcesPatch } from '../state/host-plugin-sources'
+import { BUILTIN_IMAGE_GENERATION, BUILTIN_IMAGEGEN } from '../state/host-plugin-state'
+import { resolveHostPluginState } from '../state/host-plugin-selection'
 import { parsePluginStartupFailures, type PluginStartupFailure } from '../../shared/plugin-startup-failure'
 import { removeStaleWriterLocks } from './stale-writer-locks'
 import { inspectStartupConfiguration, repairStartupConfig, validModelEndpoint } from '../state/startup-config-recovery'
@@ -46,6 +48,8 @@ export interface HarnessRuntimeOptions {
   onChanged(snapshot: RuntimeSnapshot): void
   /** Optional main-process-only provider capability for the next launch. */
   privateModelHandoff?: () => PrivateModelHandoff | undefined
+  /** Issued only for the selected in-box image plugin; revoked with this launch. */
+  privateImageLease?: () => PrivateImageLease | undefined
   /**
    * Optional extra `--patch` overlay (for the account's model route), resolved
    * per launch so it can merge the profile's current user layer. Appended after
@@ -67,6 +71,13 @@ export interface HarnessChildProcess extends EventEmitter {
 export interface PrivateModelHandoff {
   gatewayUrl: string
   capabilityToken: string
+  image?: { gatewayUrl: string; capabilityToken: string }
+}
+
+export interface PrivateImageLease {
+  gatewayUrl: string
+  capabilityToken: string
+  revoke(): void
 }
 
 const PRIVATE_HANDOFF_MARKER = 'DSH_DESKTOP_PRIVATE_MODEL_HANDOFF'
@@ -539,6 +550,7 @@ export function isHarnessStartupProbeHealthy(
 export class HarnessRuntime {
   private child?: HarnessChildProcess
   private privateHandoffAbort?: AbortController
+  private imageLease?: PrivateImageLease
   private launchGeneration = 0
   private logStream?: WriteStream
   private phase: RuntimePhase = 'idle'
@@ -701,8 +713,25 @@ export class HarnessRuntime {
     if (launchGeneration !== this.launchGeneration) return
     try {
       handoff = this.options.privateModelHandoff?.()
+      if (handoff && this.options.privateImageLease && profile !== SAFE_MODE_PROFILE) {
+        const selections = await Promise.all([BUILTIN_IMAGE_GENERATION, BUILTIN_IMAGEGEN].map(
+          name => resolveHostPluginState(this.options.dshHome, name)
+        ))
+        if (launchGeneration !== this.launchGeneration) return
+        if (selections.some(selection => selection.effectiveSource === 'host' && selection.effectiveEnabled)) {
+          this.imageLease = this.options.privateImageLease()
+          if (this.imageLease) {
+            handoff = { ...handoff, image: {
+              gatewayUrl: this.imageLease.gatewayUrl,
+              capabilityToken: this.imageLease.capabilityToken
+            } }
+          }
+        }
+      }
       if (handoff && (!/^https?:\/\/127\.0\.0\.1:\d+$/.test(handoff.gatewayUrl) ||
-        !/^[A-Za-z0-9_-]{32,}$/.test(handoff.capabilityToken))) {
+        !/^[A-Za-z0-9_-]{32,}$/.test(handoff.capabilityToken) ||
+        (handoff.image && (!/^http:\/\/127\.0\.0\.1:\d+$/.test(handoff.image.gatewayUrl) ||
+          !/^[A-Za-z0-9_-]{32,}$/.test(handoff.image.capabilityToken))))) {
         throw new Error('Invalid private model handoff')
       }
       child = this.options.launchProcess(
@@ -728,6 +757,12 @@ export class HarnessRuntime {
       return
     }
     this.child = child
+    const imageLease = this.imageLease
+    const revokeChildImageLease = () => {
+      if (imageLease && this.imageLease === imageLease) this.revokeImageLease()
+    }
+    child.once('error', revokeChildImageLease)
+    child.once('exit', revokeChildImageLease)
     if (handoff) {
       const abort = new AbortController()
       this.privateHandoffAbort = abort
@@ -736,6 +771,7 @@ export class HarnessRuntime {
       } catch (error) {
         if (this.child !== child) return
         this.child = undefined
+        this.revokeImageLease()
         await this.stopChild(child)
         this.setState('failed', error instanceof Error ? error.message : 'Private model handoff failed')
         return
@@ -811,6 +847,7 @@ ${cause}`
 
     if (this.child !== child) return
     if (!ready) {
+      this.revokeImageLease()
       await this.stopChild(child)
       this.setState(
         'failed',
@@ -825,8 +862,15 @@ ${cause}`
     this.setState('ready', 'Harness is ready.')
   }
 
+  private revokeImageLease(): void {
+    const lease = this.imageLease
+    this.imageLease = undefined
+    lease?.revoke()
+  }
+
   async stop(): Promise<void> {
     ++this.launchGeneration
+    this.revokeImageLease()
     this.privateHandoffAbort?.abort()
     const child = this.child
     if (!child) {
@@ -863,6 +907,7 @@ ${cause}`
     failureReason?: RuntimeSnapshot['failureReason']
   ): void {
     this.phase = phase
+    if (phase === 'failed') this.revokeImageLease()
     this.message = message
     this.failureReason = failureReason
     this.options.onChanged(this.snapshot())

@@ -1,0 +1,926 @@
+diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dickpy/dsh-imagegen/lib/client.js
+--- a/node_modules/@dickpy/dsh-imagegen/lib/client.js
++++ b/node_modules/@dickpy/dsh-imagegen/lib/client.js
+@@ -915,6 +915,17 @@
+ 			"settings.promptApiUrlHint": "OpenAI 兼容基址；留空则复用图像 API 地址。",
+ 			"settings.promptApiKey": "对话 API 密钥（可选）",
+ 			"settings.promptApiKeyHint": "留空则复用图像 API 密钥。",
++			"settings.hostInherit": "继承桌面默认服务",
++			"settings.hostCustom": "使用自定义服务",
++			"settings.hostOff": "关闭",
++			"settings.hostCustomPriority": "未使用桌面服务（关闭或自定义设置优先）",
++			"settings.hostImage": "默认生图服务",
++			"settings.hostPrompt": "默认提示词增强服务",
++			"settings.hostServerOnly": "服务端尚不支持安全的按请求切换；仅使用服务端默认模型。",
++			"settings.hostModelsUnavailable": "图片模型列表暂不可用；显式选择不会回退为默认模型。",
++			"settings.hostModelStale": "所选图片模型已不可用，请刷新并重新选择；未发起生图请求。",
++			"settings.hostModelSaveFailed": "图片模型选择保存失败；刷新后可能恢复为之前的选择。",
++			"settings.hostUnsupported": "桌面生图服务仅支持单张文生图，不支持图片编辑、参考图、质量覆盖或主图衍生套图。",
+ 			"settings.promptModel": "对话模型",
+ 			"settings.promptModelHint": "选择或填写支持 /chat/completions 的模型。",
+ 			"settings.promptModelDetectionHint": "默认复用生图 API；检测后点选一个模型即可。",
+@@ -1976,6 +1987,17 @@
+ 			"settings.promptApiUrlHint": "OpenAI-compatible base URL. Leave blank to reuse the image API URL.",
+ 			"settings.promptApiKey": "Chat API key (optional)",
+ 			"settings.promptApiKeyHint": "Leave blank to reuse the image API key.",
++			"settings.hostInherit": "Inherit desktop default service",
++			"settings.hostCustom": "Use custom service",
++			"settings.hostOff": "Off",
++			"settings.hostCustomPriority": "Desktop service inactive (off or custom settings take precedence)",
++			"settings.hostImage": "Default image service",
++			"settings.hostPrompt": "Default prompt enhancement service",
++			"settings.hostServerOnly": "This server does not support safe per-request selection; only the server default is used.",
++			"settings.hostModelsUnavailable": "Image model discovery is unavailable; explicit selections will not fall back to the default.",
++			"settings.hostModelStale": "The selected image model is unavailable. Refresh and choose a model again; no generation was sent.",
++			"settings.hostModelSaveFailed": "Could not save the image model selection; refreshing may restore the previous selection.",
++			"settings.hostUnsupported": "The desktop image service supports single-image text generation only, without editing, reference images, quality overrides or main-image anchor sets.",
+ 			"settings.promptModel": "Chat model",
+ 			"settings.promptModelHint": "Select or enter a model supporting /chat/completions.",
+ 			"settings.promptModelDetectionHint": "Uses the image API by default. Detect and select one model.",
+@@ -44695,12 +44717,18 @@
+ 		*/
+ 		/** Resolve a selection against the current groups, keeping the preferred channel when possible. */
+ 		function resolveModelChoice(groups, value, preferredChannelId) {
+-			const requestedModel = value?.model?.trim() ?? "";
++			const requestedModel = value?.channelId === "desktop-managed" ? value?.model ?? "" : value?.model?.trim() ?? "";
++				// Never substitute another model for a stale managed selection.
++				if (value?.channelId === "desktop-managed" && requestedModel !== "") return { channelId: value.channelId, model: requestedModel };
+ 			const group = groups.find((candidate) => candidate.id === value?.channelId && candidate.models.includes(requestedModel)) ?? groups.find((candidate) => candidate.id === preferredChannelId && candidate.models.includes(requestedModel)) ?? groups.find((candidate) => candidate.models.includes(requestedModel)) ?? groups.find((candidate) => candidate.id === value?.channelId) ?? groups.find((candidate) => candidate.id === preferredChannelId) ?? groups[0];
+ 			return {
+ 				channelId: group?.id ?? "",
+ 				model: group?.models.includes(requestedModel) === true ? requestedModel : group?.models[0] ?? ""
+ 			};
++		}
++		function modelChoiceLabel(group, model) {
++			const name = group?.modelNames?.[model];
++			return typeof name === "string" && name.length > 0 && name.length <= 544 && !/[\p{C}\p{Zl}\p{Zp}]/u.test(name) ? name : model;
+ 		}
+ 		function ModelPicker(props) {
+ 			const resolved = resolveModelChoice(props.groups, props.value);
+@@ -44828,7 +44856,9 @@
+ 							});
+ 							setOpen(false);
+ 						},
+-						children: model
++						title: modelChoiceLabel(draftGroup, model),
++						"aria-label": modelChoiceLabel(draftGroup, model),
++						children: modelChoiceLabel(draftGroup, model)
+ 					}, model)),
+ 					(draftGroup?.models.length ?? 0) === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+ 						className: model_picker_module_css_default.empty,
+@@ -44843,10 +44873,10 @@
+ 				"data-variant": props.variant ?? "panel",
+ 				"data-open": open ? "" : void 0,
+ 				disabled: props.disabled === true || props.groups.length === 0,
+-				"aria-label": `${props.ariaLabel}: ${activeGroup?.name ?? props.channelPlaceholder} / ${resolved.model || props.emptyLabel}`,
++				"aria-label": `${props.ariaLabel}: ${activeGroup?.name ?? props.channelPlaceholder} / ${modelChoiceLabel(activeGroup, resolved.model) || props.emptyLabel}`,
+ 				"aria-haspopup": "menu",
+ 				"aria-expanded": open,
+-				title: `${activeGroup?.name ?? props.channelPlaceholder} · ${resolved.model || props.emptyLabel}`,
++				title: `${activeGroup?.name ?? props.channelPlaceholder} · ${modelChoiceLabel(activeGroup, resolved.model) || props.emptyLabel}`,
+ 				onClick: toggle,
+ 				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+ 					className: model_picker_module_css_default.value,
+@@ -44862,7 +44892,7 @@
+ 						}),
+ 						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+ 							className: model_picker_module_css_default.model,
+-							children: resolved.model || props.emptyLabel
++							children: modelChoiceLabel(activeGroup, resolved.model) || props.emptyLabel
+ 						})
+ 					]
+ 				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+@@ -54247,6 +54277,7 @@
+ 					if (writable !== void 0) draft.writable = writable;
+ 					draft.status = "ready";
+ 					draft.value = view.value;
++					draft.host = view.host;
+ 				});
+ 				const secretSets = Object.fromEntries((view.secrets ?? []).map((secret) => [secret.path.join("."), secret.set]));
+ 				this.keySet.set(Object.values(secretSets).some(Boolean));
+@@ -54293,6 +54324,7 @@
+ 				return models.length === 0 ? [] : [{
+ 					id: channel.id,
+ 					name: channel.name.trim() || channel.id,
++					...(channel.managed === true ? { modelNames: Object.fromEntries(channel.models.map(model => [model.alias, model.name ?? model.alias])) } : {}),
+ 					models
+ 				}];
+ 			});
+@@ -55028,11 +55060,36 @@
+ 			return CONFIG_WIDTH_DEFAULT;
+ 		}
+ 		/** Read the current config from the settings scope snapshot. */
++		function managedModelChoice(config) {
++			const id = config?.desktopImageModelId;
++			if (id === void 0 || id === "") return "desktop-managed";
++			return typeof id === "string" && id.length <= 256 && id === id.trim() && !/[\p{C}\p{Zl}\p{Zp}]/u.test(id) && id !== "desktop-managed" ? id : "\u0000Unavailable managed selection";
++		}
++		function saveManagedModelChoice(scope, choice, image) {
++			if (!image?.active || choice.channelId !== image.id) return Promise.resolve();
++			const mapping = image.models?.find((item) => item.alias === choice.model);
++			if (!mapping || mapping.id !== image.id && managedModelChoice({ desktopImageModelId: mapping.id }) !== mapping.id) return Promise.reject(new Error("Managed image selection is unavailable"));
++			return scope.mutateOps([{ op: "set", path: ["desktopImageModelId"], value: mapping.id === image.id ? "" : mapping.id }]);
++		}
++		function studioHostConfig(snapshot) {
++			const config = snapshot.value;
++			const host = snapshot.host;
++			if (!host || !config) return config;
++			const image = host.image;
++			return { ...config, host,
++				...(config.desktopImageMode === "off" ? { channels: [], imageModels: [] } : image?.active ? {
++					channels: [{ id: image.id, name: image.label, apiUrl: "", models: image.models ?? [{ alias: image.id, id: image.id, name: image.label }], managed: true }],
++					defaultChannelId: image.id, defaultModel: managedModelChoice({ ...config, host })
++				} : {})
++			};
++		}
+ 		function useConfig(scope) {
+-			const [value, setValue] = (0, react.useState)(scope.getSnapshot().value);
+-			(0, react.useEffect)(() => scope.subscribe(() => {
+-				setValue(scope.getSnapshot().value);
+-			}), [scope]);
++			const [value, setValue] = (0, react.useState)(() => studioHostConfig(scope.getSnapshot()));
++			(0, react.useEffect)(() => {
++				const dispose = scope.subscribe(() => setValue(studioHostConfig(scope.getSnapshot())));
++				const timer = window.setInterval(() => { if (scope.getSnapshot().host) scope.load(); }, 5000);
++				return () => { dispose(); window.clearInterval(timer); };
++			}, [scope]);
+ 			return value;
+ 		}
+ 		/** Track one redacted secret field without exposing its value to the panel. */
+@@ -55378,14 +55435,14 @@
+ 					window.clearInterval(timer);
+ 				};
+ 			}, [active, subscriptionChannelsKey]);
+-			const connectedChannelIds = new Set((config?.channels ?? []).filter((channel) => channel.auth === "subscription" && channel.subscription !== void 0 ? subscriptionStates[channel.subscription] !== "logged-out" : channel.apiUrl.trim() !== "" && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`)).map((channel) => channel.id));
++			const connectedChannelIds = new Set((config?.channels ?? []).filter((channel) => channel.managed === true ? config.host?.image?.ready === true : channel.auth === "subscription" && channel.subscription !== void 0 ? subscriptionStates[channel.subscription] !== "logged-out" : channel.apiUrl.trim() !== "" && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`)).map((channel) => channel.id));
+ 			const connected = enabled && (config?.channels ?? []).length > 0 ? connectedChannelIds.size > 0 : enabled && configured && apiKeySet;
+ 			/** Whether the channel behind one concrete model choice can submit now. */
+ 			const channelReady = (channelId) => (config?.channels ?? []).length > 0 ? connectedChannelIds.has(channelId) : enabled && configured && apiKeySet;
+ 			const reusablePromptChannelIds = new Set((config?.channels ?? []).filter((channel) => channel.auth !== "subscription" && channel.apiUrlFull !== true && channel.apiUrl.trim() !== "" && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`)).map((channel) => channel.id));
+ 			const promptEndpointConfigured = (config?.promptApiUrl ?? "").trim() !== "" || reusablePromptChannelIds.size > 0;
+ 			const promptKeyConfigured = promptKeySet || reusablePromptChannelIds.size > 0;
+-			const promptReady = enabled && (config?.promptModel ?? "").trim() !== "" && promptEndpointConfigured && promptKeyConfigured;
++			const promptReady = enabled && config?.desktopPromptMode !== "off" && (config?.host?.prompt?.active ? config.host.prompt.ready === true : (config?.promptModel ?? "").trim() !== "" && promptEndpointConfigured && promptKeyConfigured);
+ 			const [tab, setTab] = (0, react.useState)("text");
+ 			const [workspace, setWorkspace] = (0, react.useState)("normal");
+ 			const [pptImport, setPptImport] = (0, react.useState)();
+@@ -55401,6 +55458,7 @@
+ 			const [canvasImportRequest, setCanvasImportRequest] = (0, react.useState)();
+ 			/** Switch to a normal-generation tab, leaving any task workspace. */
+ 			const openTab = (next) => {
++				if (next === "edit" && config?.host?.image?.active) { setError(tt("settings.hostUnsupported")); return; }
+ 				setWorkspace("normal");
+ 				setTab(next);
+ 			};
+@@ -55417,8 +55475,13 @@
+ 			const [quality, setQuality] = (0, react.useState)("auto");
+ 			const [count, setCount] = (0, react.useState)(1);
+ 			const [detail, setDetail] = (0, react.useState)("");
+-			const [model, setModel] = (0, react.useState)("");
+-			const [modelChannelId, setModelChannelId] = (0, react.useState)("");
++			const [model, setModel] = (0, react.useState)(() => config?.host?.image?.active ? managedModelChoice(config) : "");
++			const [modelChannelId, setModelChannelId] = (0, react.useState)(() => config?.host?.image?.active ? config.host.image.id : "");
++			const selectImageModel = (choice) => {
++				setModelChannelId(choice.channelId);
++				setModel(choice.model);
++				void saveManagedModelChoice(scope, choice, config?.host?.image).catch(() => setError(tt("settings.hostModelSaveFailed")));
++			};
+ 			const [compareEnabled, setCompareEnabled] = (0, react.useState)(false);
+ 			/** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
+ 			const [compareModels, setCompareModels] = (0, react.useState)([]);
+@@ -55600,7 +55663,7 @@
+ 			const sidebarHistoryHost = useSidebarHistoryHost();
+ 			const modeGroups = tab === "edit" ? modelGroups.map((group) => ({
+ 				...group,
+-				models: group.models.filter((candidate) => describeModel(candidate).supportsEdit)
++				models: group.id === config?.host?.image?.id ? [] : group.models.filter((candidate) => describeModel(candidate).supportsEdit)
+ 			})).filter((group) => group.models.length > 0) : modelGroups;
+ 			const modeModels = [...new Set(modeGroups.flatMap((group) => group.models))];
+ 			const previewStage = (0, react.useRef)(null);
+@@ -55630,6 +55693,7 @@
+ 			}, []);
+ 			(0, react.useEffect)(() => {
+ 				if (ecommerceAnchor === null) return;
++				if (config?.host?.image?.active) { setEcommerceAnchor(null); setError(tt("settings.hostUnsupported")); return; }
+ 				const anchor = ecommerceAnchor;
+ 				const mains = tasks.filter((task) => anchor.mainTaskIds.includes(task.id));
+ 				if (mains.length === 0) return;
+@@ -55661,9 +55725,10 @@
+ 				ecommerceAnchor
+ 			]);
+ 			(0, react.useEffect)(() => {
+-				const preferred = defaultModel !== void 0 && modeModels.includes(defaultModel) ? defaultModel : modeModels[0] ?? "";
++				if (config?.host?.image?.active && modelChannelId === "desktop-managed" && model !== "") return;
++				const preferred = config?.host?.image?.active ? managedModelChoice(config) : defaultModel !== void 0 && modeModels.includes(defaultModel) ? defaultModel : modeModels[0] ?? "";
+ 				const selected = resolveModelChoice(modeGroups, {
+-					channelId: modelChannelId,
++					channelId: config?.host?.image?.active ? config.host.image.id : modelChannelId,
+ 					model: preferred
+ 				}, defaultChannelId);
+ 				setModel(selected.model);
+@@ -55677,7 +55742,7 @@
+ 					if (retained.length > 0) return retained;
+ 					return selected.model === "" ? [] : [modelChoiceKey(selected)];
+ 				});
+-			}, [`${modeGroups.map((group) => `${group.id}:${group.models.join(",")}`).join("|")}\u0000${defaultModel ?? ""}`]);
++			}, [`${config?.host?.image?.active === true}:${config?.desktopImageModelId ?? ""}\u0000${modeGroups.map((group) => `${group.id}:${group.models.join(",")}`).join("|")}\u0000${defaultModel ?? ""}`]);
+ 			const filteredGallery = gallery.filter((entry) => {
+ 				if (galleryFilter === "all") return true;
+ 				if (galleryFilter === "text" || galleryFilter === "edit") return entry.mode === galleryFilter;
+@@ -55780,6 +55845,7 @@
+ 				};
+ 			}, [api, comparison]);
+ 			(0, react.useEffect)(() => {
++				if (scope.getSnapshot().host !== void 0) return;
+ 				let disposed = false;
+ 				let checking = false;
+ 				const check = () => {
+@@ -55817,6 +55883,7 @@
+ 				return () => window.removeEventListener("pointerdown", close, true);
+ 			}, [updateOpen]);
+ 			const applyUpdate = async () => {
++				if (scope.getSnapshot().host !== void 0) return;
+ 				if (update === null || updating) return;
+ 				setUpdating(true);
+ 				setUpdateMessage(null);
+@@ -55915,6 +55982,7 @@
+ 			*  refs cap at MAX_ECOMMERCE_ASSETS; the style group holds a single image
+ 			*  that gets replaced on re-upload. */
+ 			const acceptEcommerceFiles = (files, role = "product") => {
++				if (config?.host?.image?.active) { setError(tt("settings.hostUnsupported")); return; }
+ 				if (files === void 0) return;
+ 				const incoming = Array.from(files).filter((file) => file.type.startsWith("image/") && file.size <= REF_IMAGE_MAX_BYTES);
+ 				if (incoming.length === 0) {
+@@ -55956,6 +56024,7 @@
+ 			};
+ 			/** Run one generation. */
+ 			const handleGenerate = async () => {
++				if (managedSelected && (tab === "edit" || count !== 1 || !["", "auto"].includes(quality) || detail !== "")) { setError(tt("settings.hostUnsupported")); return; }
+ 				if (submitting || tab === "edit" && editReferences.reading) return;
+ 				if (!enabled) {
+ 					openSettingsGuide("disabled");
+@@ -55965,7 +56034,11 @@
+ 					channelId: modelChannelId,
+ 					model
+ 				}, defaultChannelId);
+-				if (!channelReady(selectedChoice.channelId)) {
++				if (selectedChoice.channelId === "desktop-managed" && !modeGroups.some((group) => group.id === selectedChoice.channelId && group.models.includes(selectedChoice.model))) {
++						setError(tt("settings.hostModelStale"));
++						return;
++					}
++					if (!channelReady(selectedChoice.channelId)) {
+ 					openSettingsGuide("generation");
+ 					return;
+ 				}
+@@ -56033,12 +56106,17 @@
+ 				}
+ 			};
+ 			const handleEcommerceGenerate = async () => {
++				if (managedEcommerceUnsupported) { setError(tt("settings.hostUnsupported")); return; }
+ 				if (ecommerceGenerateDisabled) return;
+ 				const selectedChoice = resolveModelChoice(modeGroups, {
+ 					channelId: modelChannelId,
+ 					model
+ 				}, defaultChannelId);
+-				if (!enabled || !channelReady(selectedChoice.channelId)) {
++				if (selectedChoice.channelId === "desktop-managed" && !modeGroups.some((group) => group.id === selectedChoice.channelId && group.models.includes(selectedChoice.model))) {
++						setError(tt("settings.hostModelStale"));
++						return;
++					}
++					if (!enabled || !channelReady(selectedChoice.channelId)) {
+ 					openSettingsGuide("generation");
+ 					return;
+ 				}
+@@ -56545,10 +56623,16 @@
+ 			}, defaultChannelId)]).filter((choice) => modeGroups.some((group) => group.id === choice.channelId && group.models.includes(choice.model)));
+ 			const editLimit = editTargetChoices.length > 0 ? Math.min(...editTargetChoices.map(referenceLimitForChoice)) : 5;
+ 			const referencePolicyWarning = tab === "edit" && editReferences.images.length > editLimit ? tt("edit.modelLimit", { count: editLimit }) : null;
+-			const generateDisabled = submitting || modeModels.length === 0 || promptOverLimit || tab === "edit" && (editReferences.reading || referencePolicyWarning !== null);
++			const managedSelected = config?.host?.image?.active === true && modelChannelId === config.host.image.id;
++			(0, react.useEffect)(() => {
++				if (!managedSelected) return;
++				setQuality("auto"); setCount(1); setDetail("");
++			}, [managedSelected]);
++			const generateDisabled = managedSelected && (tab === "edit" || count !== 1 || !["", "auto"].includes(quality) || detail !== "") || submitting || modeModels.length === 0 || promptOverLimit || tab === "edit" && (editReferences.reading || referencePolicyWarning !== null);
+ 			const ecommerceSlots = ecommerce.slots.filter((slot) => slot.enabled && slot.count > 0);
+ 			const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0);
+-			const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === "" || ecommerce.language === "custom" && effectiveEcommerceLanguage(ecommerce) === "";
++			const managedEcommerceUnsupported = managedSelected && (!['', 'auto'].includes(quality) || detail !== "" || ecommerceAssets.length > 0 || ecommerceSlots.some((slot) => slot.key === "main") && ecommerceSlots.some((slot) => slot.key !== "main"));
++			const ecommerceGenerateDisabled = managedEcommerceUnsupported || submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === "" || ecommerce.language === "custom" && effectiveEcommerceLanguage(ecommerce) === "";
+ 			const ecommerceFileInput = (0, react.useRef)(null);
+ 			/** Which group (主图/风格) the shared file input uploads into. */
+ 			const ecommerceUploadRoleRef = (0, react.useRef)("product");
+@@ -56715,6 +56799,7 @@
+ 				}
+ 			};
+ 			const addPreviewToEdit = () => {
++				if (config?.host?.image?.active) { setError(tt("settings.hostUnsupported")); return; }
+ 				if (previewImage === null || preview === null) return;
+ 				openTab("edit");
+ 				setError(null);
+@@ -57364,9 +57449,9 @@
+ 															children: tt("mode.text")
+ 														}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+ 															active: tab === "edit",
+-															onClick: () => {
+-																setTab("edit");
+-															},
++															disabled: config?.host?.image?.active === true,
++															title: config?.host?.image?.active ? tt("settings.hostUnsupported") : void 0,
++															onClick: () => openTab("edit"),
+ 															className: panel_module_css_default.modePill,
+ 															children: tt("mode.edit")
+ 														})]
+@@ -57427,6 +57512,8 @@
+ 																	type: "button",
+ 																	className: panel_module_css_default.ecommerceAssetAdd,
+ 																	"data-ecommerce-upload": "",
++															disabled: managedSelected,
++															"aria-description": managedSelected ? tt("settings.hostUnsupported") : void 0,
+ 																	title: tt("ecommerce.uploadRef"),
+ 																	onClick: () => {
+ 																		ecommerceUploadRoleRef.current = "product";
+@@ -57448,6 +57535,8 @@
+ 																type: "button",
+ 																className: panel_module_css_default.ecommerceUploadHero,
+ 																"data-ecommerce-upload": "",
++															disabled: managedSelected,
++															"aria-description": managedSelected ? tt("settings.hostUnsupported") : void 0,
+ 																onClick: () => {
+ 																	ecommerceUploadRoleRef.current = "product";
+ 																	ecommerceFileInput.current?.click();
+@@ -57523,6 +57612,8 @@
+ 																	type: "button",
+ 																	className: panel_module_css_default.ecommerceAssetAdd,
+ 																	"data-ecommerce-upload": "",
++															disabled: managedSelected,
++															"aria-description": managedSelected ? tt("settings.hostUnsupported") : void 0,
+ 																	title: tt("ecommerce.styleRefUpload"),
+ 																	onClick: () => {
+ 																		ecommerceUploadRoleRef.current = "style";
+@@ -57748,6 +57839,7 @@
+ 																			value: slot.refRole ?? "product",
+ 																			"data-ecommerce-ref-select": "",
+ 																			"aria-label": `${tt("ecommerce.refSelect")} · ${slot.label}`,
++															disabled: managedSelected,
+ 																			onChange: (value) => setEcommerce((previous) => ({
+ 																				...previous,
+ 																				slots: previous.slots.map((item) => item.key === slot.key ? {
+@@ -57771,6 +57863,7 @@
+ 															className: panel_module_css_default.ecommerceSection,
+ 															children: [
+ 																/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: tt("ecommerce.generation") }),
++																managedEcommerceUnsupported ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { role: "status", children: tt("settings.hostUnsupported") }) : null,
+ 																/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ModelPicker, {
+ 																	groups: modeGroups,
+ 																	value: {
+@@ -57783,17 +57876,16 @@
+ 																	emptyLabel: tt("model.noEditModels"),
+ 																	ariaLabel: tt("model.label"),
+ 																	disabled: submitting,
+-																	onChange: (choice) => {
+-																		setModelChannelId(choice.channelId);
+-																		setModel(choice.model);
+-																	}
++																	onChange: selectImageModel
+ 																}),
+ 																/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+ 																	className: panel_module_css_default.optionRow,
+ 																	children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+ 																		active: quality === option,
++																		disabled: managedSelected,
++																		title: managedSelected ? tt("settings.hostUnsupported") : void 0,
+ 																		onClick: () => {
+-																			setQuality(option);
++																			if (!managedSelected) setQuality(option);
+ 																		},
+ 																		className: panel_module_css_default.optionPill,
+ 																		children: tt(`quality.${option}`)
+@@ -57884,6 +57976,7 @@
+ 																className: panel_module_css_default.optionRow,
+ 																children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+ 																	active: quality === option,
++																	disabled: managedSelected && option !== "auto",
+ 																	onClick: () => {
+ 																		setQuality(option);
+ 																	},
+@@ -57906,6 +57999,7 @@
+ 																	4
+ 																].map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+ 																	active: count === option,
++																	disabled: managedSelected && option !== 1,
+ 																	onClick: () => {
+ 																		setCount(option);
+ 																	},
+@@ -57925,6 +58019,7 @@
+ 																	className: panel_module_css_default.optionRow,
+ 																	children: DETAILS.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+ 																		active: detail === option,
++																		disabled: managedSelected && option !== "",
+ 																		onClick: () => {
+ 																			setDetail(option);
+ 																		},
+@@ -58017,10 +58112,7 @@
+ 														emptyLabel: tt("model.noEditModels"),
+ 														ariaLabel: tt("model.label"),
+ 														disabled: submitting,
+-														onChange: (choice) => {
+-															setModelChannelId(choice.channelId);
+-															setModel(choice.model);
+-														}
++														onChange: selectImageModel
+ 													})]
+ 												}) : null,
+ 												isGeneration ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+@@ -58049,14 +58141,15 @@
+ 																	model: option
+ 																});
+ 																return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+-																	title: option,
++																	title: modelChoiceLabel(group, option),
+ 																	children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+ 																		type: "checkbox",
+ 																		checked: compareModels.includes(key),
++																		"aria-label": modelChoiceLabel(group, option),
+ 																		onChange: () => {
+ 																			setCompareModels((previous) => previous.includes(key) ? previous.filter((value) => value !== key) : [...previous, key]);
+ 																		}
+-																	}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: option })]
++																	}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: modelChoiceLabel(group, option) })]
+ 																}, key);
+ 															})]
+ 														}, group.id || "__default__"))
+@@ -58092,7 +58185,7 @@
+ 									defaultChannelId,
+ 									connected,
+ 									connectedChannelIds,
+-									promptReady,
++									promptReady: enabled && (config?.promptModel ?? "").trim() !== "" && promptEndpointConfigured && promptKeyConfigured,
+ 									history,
+ 									gallery,
+ 									tasks,
+@@ -59240,6 +59333,8 @@
+ 													type: "button",
+ 													className: panel_module_css_default.lightboxEdit,
+ 													onClick: addPreviewToEdit,
++													disabled: config?.host?.image?.active === true,
++													title: config?.host?.image?.active ? tt("settings.hostUnsupported") : void 0,
+ 													children: tt("preview.addToEdit")
+ 												}),
+ 												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+@@ -60618,6 +60713,8 @@
+ 					booleanField("enabled"),
+ 					booleanField("announceToAgent"),
+ 					booleanField("allowAgentImageGeneration"),
++					textField("desktopImageMode"),
++					textField("desktopPromptMode"),
+ 					textField("promptApiUrl"),
+ 					secretField("promptApiKey"),
+ 					textField("promptModel"),
+@@ -60648,6 +60745,9 @@
+ 					enabled: this.form.field("enabled"),
+ 					announceToAgent: this.form.field("announceToAgent"),
+ 					allowAgentImageGeneration: this.form.field("allowAgentImageGeneration"),
++					host: this.scope.getSnapshot().host,
++					desktopImageMode: this.form.field("desktopImageMode"),
++					desktopPromptMode: this.form.field("desktopPromptMode"),
+ 					promptApiUrl: this.form.field("promptApiUrl"),
+ 					promptApiKey: this.form.field("promptApiKey"),
+ 					promptModel: this.form.field("promptModel"),
+@@ -60750,6 +60850,33 @@
+ 		* @param props - locale copy, the card snapshot, and the form actions.
+ 		* @returns the card, or nothing while the namespace is still loading.
+ 		*/
++		function HostServiceField(props) {
++			const { service, field, label, disabled, onChange, t } = props;
++			if (!service) return null;
++			return (0, react_jsx_runtime.jsxs)("div", {
++				className: settings_card_module_css_default.field,
++				"data-dsh-imagegen-host-service": props.kind,
++				children: [
++					(0, react_jsx_runtime.jsxs)("label", { children: [
++						(0, react_jsx_runtime.jsx)("span", { className: settings_card_module_css_default.label, children: label }),
++						(0, react_jsx_runtime.jsx)("select", {
++							className: settings_card_module_css_default.select,
++							value: field.text || "inherit", disabled,
++							onChange: (event) => onChange(event.target.value),
++							children: ["inherit", "custom", "off"].map((value) => (0, react_jsx_runtime.jsx)("option", {
++								value, children: t(value === "inherit" ? "settings.hostInherit" : value === "custom" ? "settings.hostCustom" : "settings.hostOff")
++							}, value))
++						})
++					] }),
++					(0, react_jsx_runtime.jsx)("p", { className: settings_card_module_css_default.hint, role: "status",
++						children: `${service.label} · ${t(service.active ? service.ready ? "channels.statusReady" : "channels.statusIncomplete" : "settings.hostCustomPriority")}${service.active && service.reason ? ` · ${service.reason === "server-only" ? t("settings.hostServerOnly") : service.reason === "models-unavailable" ? t("settings.hostModelsUnavailable") : service.reason}` : ""}` }),
++					service.active && service.availableModels?.length > 0 ? (0, react_jsx_runtime.jsx)("p", {
++						className: settings_card_module_css_default.hint,
++						children: service.availableModels.map((model) => model.name === model.id ? model.id : `${model.name} (${model.id})`).join(" · ")
++					}) : null
++				]
++			});
++		}
+ 		function ImageGenSettingsSection(props) {
+ 			const t = tt;
+ 			useImageGenLanguageTick();
+@@ -61087,16 +61214,16 @@
+ 			const editing = editingId === null ? void 0 : channels.find((channel) => channel.id === editingId);
+ 			const readyChannels = channels.filter((channel) => state.channels.keySet[channel.id] === true && channel.models.length > 0).length;
+ 			const totalModels = channels.reduce((total, channel) => total + channel.models.length, 0);
+-			const channelSummary = channels.length === 0 ? t("settings.summaryNotConfigured") : t("settings.summaryChannels", {
++			const channelSummary = state.host?.image?.active ? state.host.image.label : channels.length === 0 ? t("settings.summaryNotConfigured") : t("settings.summaryChannels", {
+ 				ready: readyChannels,
+ 				total: channels.length
+ 			});
+-			const promptSummary = state.promptModel.text.trim() || t("settings.summaryOptional");
++			const promptSummary = state.host?.prompt?.active ? state.host.prompt.label : state.promptModel.text.trim() || t("settings.summaryOptional");
+ 			const storageSummary = state.storageEnabled.text === "true" ? t("settings.summaryEnabled") : t("settings.summaryDisabled");
+ 			const skillsSummary = state.skillsEnabled.text === "false" ? t("settings.summaryDisabled") : t("settings.summaryEnabled");
+ 			const generalSummary = state.enabled.text === "false" ? t("settings.summaryDisabled") : t("settings.summaryEnabled");
+-			const overallReady = readyChannels > 0;
+-			const headerDescription = channels.length === 0 ? t("settings.headerNeedsChannel") : t("settings.headerSummary", {
++			const overallReady = readyChannels > 0 || state.host?.image?.ready === true;
++			const headerDescription = state.host?.image?.active ? state.host.image.label : channels.length === 0 ? t("settings.headerNeedsChannel") : t("settings.headerSummary", {
+ 				channels: channels.length,
+ 				models: totalModels
+ 			});
+@@ -61222,7 +61349,11 @@
+ 								onToggle: () => {
+ 									setActiveSection(activeSection === "channels" ? null : "channels");
+ 								},
+-								children: [channels.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
++								children: [(0, react_jsx_runtime.jsx)(HostServiceField, {
++										kind: "image", service: state.host?.image, field: state.desktopImageMode,
++										label: t("settings.hostImage"), disabled, t,
++										onChange: (value) => props.edit("desktopImageMode", value)
++									}), channels.length === 0 ? state.host?.image?.active ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+ 									className: settings_card_module_css_default.channelEmpty,
+ 									children: t("channels.empty")
+ 								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+@@ -61415,6 +61546,11 @@
+ 									setActiveSection(activeSection === "prompt" ? null : "prompt");
+ 								},
+ 								children: [
++									(0, react_jsx_runtime.jsx)(HostServiceField, {
++										kind: "prompt", service: state.host?.prompt, field: state.desktopPromptMode,
++										label: t("settings.hostPrompt"), disabled, t,
++										onChange: (value) => props.edit("desktopPromptMode", value)
++									}),
+ 									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+ 										className: settings_card_module_css_default.sectionHeader,
+ 										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", {
+diff --git a/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js b/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js
+new file mode 100644
+--- /dev/null
++++ b/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js
+@@ -0,0 +1,79 @@
++/** Optional, instance-owned host services. Published 1.11.0 lib is the patch input. */
++export const HOST_CHANNEL_ID = 'desktop-managed'
++
++const nonempty = value => typeof value === 'string' && value.trim() !== ''
++const statusReady = status => typeof status === 'boolean' ? status : status?.ready === true || status?.available === true
++const statusReason = status => typeof status?.reason === 'string' ? status.reason : undefined
++export function hostImageActive(value, host) {
++  return !!host?.image && (value.desktopImageMode ?? 'inherit') === 'inherit' &&
++    !(value.channels?.length || nonempty(value.apiUrl) || nonempty(value.apiKey) ||
++      value.imageModels?.length || nonempty(value.defaultChannelId) || nonempty(value.defaultModel) ||
++      Object.values(value.channelSecrets ?? {}).some(nonempty))
++}
++export function hostImageModel(value, host) {
++  const id = value.desktopImageModelId
++  if (id === undefined || id === '') return HOST_CHANNEL_ID
++  return typeof id === 'string' && id.length <= 256 && id === id.trim() && !/[\p{C}\p{Zl}\p{Zp}]/u.test(id) && id !== HOST_CHANNEL_ID
++    ? id : '\u0000Unavailable managed selection'
++}
++export function hostPromptActive(value, host) {
++  return !!host?.prompt && (value.desktopPromptMode ?? 'inherit') === 'inherit' &&
++    ![value.promptApiUrl, value.promptApiKey, value.promptModel].some(nonempty)
++}
++export function hostChannel(host) {
++  return {
++    id: HOST_CHANNEL_ID, name: host.image.label, preset: '', apiUrl: '', apiKey: '',
++    models: host.image.models ?? [{ alias: HOST_CHANNEL_ID, id: HOST_CHANNEL_ID, name: host.image.label }],
++    managed: true, status: () => host.image.status(),
++    generate: (request, signal) => host.image.generate({ ...request,
++      model: request.upstream ?? request.model }, signal)
++  }
++}
++async function statusOf(service, active) {
++  try {
++    const status = await service.status()
++    const safeName = name => typeof name === 'string' && name.length > 0 && name.length <= 256 && name === name.trim() && !/[\p{C}\p{Zl}\p{Zp}]/u.test(name)
++    const label = safeName(status?.label) ? status.label : service.label
++    return { label, active, ready: active && statusReady(status),
++      ...(typeof status?.selection === 'string' && Array.isArray(status.models) && ['request-local', 'server-only'].includes(status.selection)
++        ? { selection: status.selection, availableModels: status.models.map(model => ({ id: model.id, name: model.name })) } : {}),
++      ...(safeName(status?.defaultModel?.id) ? { defaultModel: { id: status.defaultModel.id, name: safeName(status.defaultModel.name) ? status.defaultModel.name : status.defaultModel.id } } : {}),
++      ...(['available', 'default-only'].includes(status?.catalogStatus) ? { catalogStatus: status.catalogStatus } : {}),
++      ...(statusReason(status) !== undefined ? { reason: statusReason(status) } : {}) }
++  } catch {
++    return { label: service.label, active, ready: false, reason: 'host-unavailable' }
++  }
++}
++export async function hostDescriptor(value, host) {
++  if (!host) return undefined
++  const image = host.image ? await statusOf(host.image, hostImageActive(value, host)) : undefined
++  return {
++    ...(image ? { image: { id: HOST_CHANNEL_ID, ...image, models: hostChannel(host).models } } : {}),
++    ...(host.prompt ? { prompt: await statusOf(host.prompt, hostPromptActive(value, host)) } : {})
++  }
++}
++export async function generateWithHost(channel, request, signal) {
++  if (request.mode !== 'text' || request.image || request.images?.length || request.n !== 1 ||
++      !['', 'auto'].includes(request.quality ?? '') || (request.detail ?? '') !== '') {
++    throw new Error('Managed image service supports text generation of one image without quality/detail overrides only')
++  }
++  signal?.throwIfAborted()
++  const status = await channel.status()
++  if (!statusReady(status)) throw new Error(statusReason(status) || 'Managed image service is unavailable')
++  signal?.throwIfAborted()
++  const image = await channel.generate(request, signal)
++  signal?.throwIfAborted()
++  if (!image || typeof image.b64 !== 'string' || !image.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mime)) {
++    throw new Error('Managed image service returned an invalid image')
++  }
++  return { images: [{ b64: image.b64, mime: image.mime }] }
++}
++export async function enhanceWithHost(host, request, signal) {
++  signal?.throwIfAborted()
++  const status = await host.prompt.status()
++  if (!statusReady(status)) throw new Error(statusReason(status) || 'Managed prompt service is unavailable')
++  const prompt = await host.prompt.enhance(request, signal)
++  signal?.throwIfAborted()
++  if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Managed prompt service returned an empty prompt')
++  return prompt.trim()
++}
+diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dickpy/dsh-imagegen/lib/index.js
+--- a/node_modules/@dickpy/dsh-imagegen/lib/index.js
++++ b/node_modules/@dickpy/dsh-imagegen/lib/index.js
+@@ -4089,6 +4089,7 @@
+ 	}
+ };
+ //#endregion
++import { HOST_CHANNEL_ID, hostImageActive, hostImageModel, hostPromptActive, hostChannel, hostDescriptor, generateWithHost, enhanceWithHost } from "./host-adapter.js";
+ //#region src/generation-runtime.ts
+ /**
+ * Shared host-side generation runtime. Both the browser routes and Agent tools
+@@ -4115,7 +4116,7 @@
+ 		const view = this.resolve();
+ 		const channel = view.channels.find((candidate) => candidate.id === request.channelId) ?? view.channels.find((candidate) => candidate.id === view.defaultChannelId) ?? view.channels[0];
+ 		if (channel === void 0) throw new ImageGenError("尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥", "no-channels");
+-		const result = channel.auth === "subscription" && channel.subscription !== void 0 ? { images: await this.generateSubscription(channel.subscription, request, signal) } : await generateImage({
++		const result = channel.managed === true ? await generateWithHost(channel, request, signal) : channel.auth === "subscription" && channel.subscription !== void 0 ? { images: await this.generateSubscription(channel.subscription, request, signal) } : await generateImage({
+ 			apiUrl: channel.apiUrl,
+ 			apiKey: channel.apiKey,
+ 			apiUrlFull: channel.apiUrlFull,
+@@ -7437,10 +7438,15 @@
+ 		};
+ 	};
+ 	const runtime = deps.runtime ?? new ImageGenerationRuntime(channelViewOf, history);
++	const settingsView = async (descriptor) => ({
++		...toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE),
++		...deps.resolveHost === void 0 ? {} : { host: await deps.resolveHost() }
++	});
+ 	/** Resolve an alias (or the channel fallback) into a concrete generation
+ 	*  request: picks the channel (explicit then default), maps alias → upstream
+ 	*  id, and fills the channel snapshot kept on history entries. */
+-	const resolveChannelRequest = (request) => {
++	const resolveChannelRequest = async (request) => {
++		await Promise.all(channelViewOf().channels.filter((channel) => channel.managed === true).map((channel) => channel.status()));
+ 		const view = channelViewOf();
+ 		if (view.channels.length === 0) return {
+ 			ok: false,
+@@ -7452,13 +7458,14 @@
+ 		const target = explicit ?? defaults;
+ 		const asked = request.model.trim();
+ 		if (asked === "") {
+-			const alias = target?.models[0]?.alias ?? "";
++			const alias = target?.managed === true ? view.defaultModel : target?.models[0]?.alias ?? "";
+ 			if (alias === "") return {
+ 				ok: false,
+ 				code: "no-models",
+ 				message: `渠道「${target?.name ?? ""}」尚未配置模型，请先在设置中添加`
+ 			};
+ 			const mapping = target.models.find((model) => model.alias === alias);
++			if (!mapping) return { ok: false, code: "image-model-not-configured", message: "The saved managed image model is unavailable. Select a model again." };
+ 			return {
+ 				ok: true,
+ 				request: {
+@@ -7470,6 +7477,11 @@
+ 				}
+ 			};
+ 		}
++		if (request.channelId === "desktop-managed" && (explicit === void 0 || !explicit.models.some((model) => model.alias === asked))) return {
++			ok: false,
++			code: "image-model-not-configured",
++			message: "The selected managed image model is unavailable. Refresh and select a model again."
++		};
+ 		const hosting = view.channels.filter((channel) => channel.models.some((model) => model.alias === asked));
+ 		if (hosting.length === 0) return {
+ 			ok: false,
+@@ -7570,8 +7582,13 @@
+ 			handler: async (req, res) => {
+ 				if (!guard(req, res, "POST")) return;
+ 				const body = await readJsonBody(req);
++				await Promise.all(channelViewOf().channels.filter((channel) => channel.managed === true).map((channel) => channel.status()));
+ 				const view = channelViewOf();
+ 				const stored = view.channels.find((candidate) => candidate.id === (typeof body?.channelId === "string" ? body.channelId : void 0)) ?? view.channels.find((candidate) => candidate.id === view.defaultChannelId) ?? view.channels[0];
++				if (stored?.managed === true) {
++					writeJson(res, 200, { ok: true, models: stored.models.map((model) => model.alias), modelNames: Object.fromEntries(stored.models.map((model) => [model.alias, model.name ?? model.alias])) });
++					return;
++				}
+ 				const protocol = isChannelProtocolPreference(body?.protocol) ? body.protocol : stored?.protocol;
+ 				const upstream = {
+ 					apiUrl: typeof body?.apiUrl === "string" && body.apiUrl.trim() !== "" ? body.apiUrl.trim() : stored?.apiUrl ?? "",
+@@ -7681,7 +7698,7 @@
+ 				try {
+ 					writeJson(res, 200, {
+ 						ok: true,
+-						prompt: body?.mode === "polish" ? await polishPrompt(resolvePrompt(), prompt) : await enhancePrompt(resolvePrompt(), prompt)
++						prompt: deps.enhancePrompt === void 0 ? body?.mode === "polish" ? await polishPrompt(resolvePrompt(), prompt) : await enhancePrompt(resolvePrompt(), prompt) : await deps.enhancePrompt({ prompt, mode: body?.mode === "polish" ? "polish" : "enhance" }, new AbortController().signal)
+ 					});
+ 				} catch (error) {
+ 					writeJson(res, 200, {
+@@ -7701,7 +7718,7 @@
+ 				writeJson(res, 200, {
+ 					ok: true,
+ 					value: {
+-						namespaces: descriptor === void 0 ? [] : [toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE)],
++						namespaces: descriptor === void 0 ? [] : [await settingsView(descriptor)],
+ 						writable: deps.settings.writable !== false
+ 					}
+ 				});
+@@ -7747,7 +7764,7 @@
+ 				}
+ 				writeJson(res, 200, {
+ 					ok: true,
+-					value: toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE)
++					value: await settingsView(descriptor)
+ 				});
+ 			}
+ 		},
+@@ -7766,7 +7783,7 @@
+ 					});
+ 					return;
+ 				}
+-				const resolved = resolveChannelRequest(parsed);
++				const resolved = await resolveChannelRequest(parsed);
+ 				if (!resolved.ok) {
+ 					writeJson(res, 200, {
+ 						ok: false,
+@@ -7805,7 +7822,7 @@
+ 					});
+ 					return;
+ 				}
+-				const resolved = resolveChannelRequest(parsed);
++				const resolved = await resolveChannelRequest(parsed);
+ 				if (!resolved.ok) {
+ 					writeJson(res, 200, {
+ 						ok: false,
+@@ -7919,6 +7936,10 @@
+ 			path: UPDATE_API.check,
+ 			handler: async (req, res) => {
+ 				if (!guard(req, res, "POST")) return;
++				if (deps.resolveHost !== void 0) {
++					writeJson(res, 200, { ok: false, code: "host-managed", message: "Plugin updates are managed by the host" });
++					return;
++				}
+ 				try {
+ 					writeJson(res, 200, {
+ 						ok: true,
+@@ -7941,6 +7962,10 @@
+ 			path: UPDATE_API.apply,
+ 			handler: async (req, res) => {
+ 				if (!guard(req, res, "POST")) return;
++				if (deps.resolveHost !== void 0) {
++					writeJson(res, 200, { ok: false, code: "host-managed", message: "Plugin updates are managed by the host" });
++					return;
++				}
+ 				const body = await readJsonBody(req);
+ 				const version = body !== void 0 && typeof body.version === "string" ? body.version.trim() : "";
+ 				if (version === "") {
+@@ -9551,7 +9576,7 @@
+ const AGENT_GENERATION_TIMEOUT_MS = 3e5;
+ /** Subscription login and token refresh are checked by the runtime when the task runs. */
+ function hasChannelAuthentication(channel) {
+-	return channel.auth === "subscription" ? channel.subscription !== void 0 : channel.apiUrl.trim() !== "" && channel.apiKey.trim() !== "";
++	return channel.managed === true || (channel.auth === "subscription" ? channel.subscription !== void 0 : channel.apiUrl.trim() !== "" && channel.apiKey.trim() !== "");
+ }
+ function ensureAgentImageConfigured(config, channel) {
+ 	if (!config.enabled) throw new ImageGenError("AI image generation is disabled. Open Settings → Image settings and enable it.", "plugin-disabled");
+@@ -9749,7 +9774,8 @@
+ 	const ensureConfigured = () => {
+ 		ensureAgentImageConfigured(resolve());
+ 	};
+-	const resolveModel = (requested) => {
++	const resolveModel = async (requested) => {
++		await Promise.all(resolve().channels.filter((channel) => channel.managed === true).map((channel) => channel.status()));
+ 		const config = resolve();
+ 		ensureAgentImageConfigured(config);
+ 		const picked = resolveAgentImageModel(config, requested);
+@@ -9821,7 +9847,7 @@
+ 			},
+ 			presentResult: presentImageResult,
+ 			async execute(args, exec) {
+-				const picked = resolveModel(args.model);
++				const picked = await resolveModel(args.model);
+ 				const task = runtime.queue.submit({
+ 					mode: "text",
+ 					model: picked.alias,
+@@ -9883,7 +9909,7 @@
+ 			},
+ 			presentResult: presentImageResult,
+ 			async execute(args, exec) {
+-				const picked = resolveModel(args.model);
++				const picked = await resolveModel(args.model);
+ 				const reference = await ctx.attachments.readImage(restoreRef(args.source_image), exec.signal);
+ 				const task = runtime.queue.submit({
+ 					mode: "edit",
+@@ -12955,6 +12981,9 @@
+ /** The branded settings namespace of this plugin (the card edits it). */
+ const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTINGS_NAMESPACE);
+ const Config = z.object({
++	desktopImageMode: z.union([z.const("inherit"), z.const("custom"), z.const("off")]).default("inherit").volatile(),
++	desktopImageModelId: z.string().default("").volatile(),
++	desktopPromptMode: z.union([z.const("inherit"), z.const("custom"), z.const("off")]).default("inherit").volatile(),
+ 	enabled: z.boolean().default(true).volatile(),
+ 	announceToAgent: z.boolean().default(true).volatile(),
+ 	allowAgentImageGeneration: z.boolean().default(true).volatile(),
+@@ -13030,7 +13059,7 @@
+ 	const table = channels.map((channel) => {
+ 		const aliases = channel.models.map((model) => model.alias).join("、");
+ 		const mark = channel.id === defaultChannelId ? "（默认渠道）" : "";
+-		const key = channel.apiKey === "" ? "（未填密钥）" : "";
++		const key = channel.managed === true ? "（宿主管理）" : channel.apiKey === "" ? "（未填密钥）" : "";
+ 		const models = channel.models.length === 0 ? "未配置模型" : `可用模型：${aliases}`;
+ 		return `渠道「${channel.name}」${mark}[${channel.apiUrl}] ${models}${key}`;
+ 	}).join("；");
+@@ -13099,7 +13128,11 @@
+ * @param ctx - host plugin context carrying webServer/systemPrompt.
+ * @param config - resolved plugin config (schema defaults applied by the loader).
+ */
+-function apply(ctx, config) {
++/** Mount an instance-specific host adapter; apply(ctx, config) remains standalone. */
++function applyWithHost(ctx, config, host) {
++	return apply(ctx, config, host);
++}
++function apply(ctx, config, host) {
+ 	let current = () => config ?? {};
+ 	const resolve = () => {
+ 		const value = unwrapConfig(current());
+@@ -13125,20 +13158,25 @@
+ 				if (legacyKey !== "") secrets["default"] = legacyKey;
+ 			}
+ 		}
++		if (host) {
++			channels = channels.filter((channel) => channel.id !== HOST_CHANNEL_ID);
++			if (value.desktopImageMode === "off") channels = [];
++			else if (hostImageActive(value, host)) channels = [hostChannel(host)];
++		}
+ 		const named = channels.map((channel) => ({
+ 			...channel,
+ 			name: channel.name === "" ? presetById(channel.preset)?.name ?? "未命名渠道" : channel.name
+ 		}));
+ 		const defaultChannelId = typeof value.defaultChannelId === "string" && named.some((channel) => channel.id === value.defaultChannelId) ? value.defaultChannelId : named[0]?.id ?? "";
+ 		const aliases = [...new Set(named.flatMap((channel) => channel.models.map((model) => model.alias)))];
+-		const defaultModel = typeof value.defaultModel === "string" && aliases.includes(value.defaultModel.trim()) ? value.defaultModel.trim() : "";
++		const defaultModel = named[0]?.managed === true ? hostImageModel(value, host) : typeof value.defaultModel === "string" && aliases.includes(value.defaultModel.trim()) ? value.defaultModel.trim() : "";
+ 		return {
+ 			enabled: value.enabled ?? DEFAULT_ENABLED,
+ 			announceToAgent: value.announceToAgent ?? DEFAULT_ANNOUNCE,
+ 			allowAgentImageGeneration: value.allowAgentImageGeneration ?? DEFAULT_ALLOW_AGENT_IMAGE_GENERATION,
+ 			channels: named.map((channel) => ({
+ 				...channel,
+-				apiKey: typeof secrets[channel.id] === "string" ? secrets[channel.id] : ""
++				apiKey: channel.managed === true ? "" : typeof secrets[channel.id] === "string" ? secrets[channel.id] : ""
+ 			})),
+ 			defaultChannelId,
+ 			defaultModel,
+@@ -13173,7 +13211,8 @@
+ 		const value = resolve();
+ 		return {
+ 			channels: value.channels,
+-			defaultChannelId: value.defaultChannelId
++			defaultChannelId: value.defaultChannelId,
++			defaultModel: value.defaultModel
+ 		};
+ 	};
+ 	setStorageSyncHandler((kind, filePath) => {
+@@ -13500,6 +13539,13 @@
+ 					};
+ 				},
+ 				resolveChannels: channelsView,
++				resolveHost: host === void 0 ? void 0 : () => hostDescriptor(unwrapConfig(current()), host),
++				enhancePrompt: host === void 0 ? void 0 : async (request, signal) => {
++					const value = unwrapConfig(current());
++					if (!resolve().enabled || value.desktopPromptMode === "off") throw new Error("Prompt enhancement is disabled");
++					if (hostPromptActive(value, host)) return enhanceWithHost(host, request, signal);
++					return request.mode === "polish" ? polishPrompt(resolvePromptModelConfig(resolve()), request.prompt) : enhancePrompt(resolvePromptModelConfig(resolve()), request.prompt);
++				},
+ 				resolvePrompt: () => resolvePromptModelConfig(resolve()),
+ 				resolveImageModels: () => {
+ 					const value = resolve();
+@@ -13587,4 +13633,4 @@
+ 	};
+ }
+ //#endregion
+-export { CURRENT_VERSION, Config, DIAGNOSTIC_MAX, EDITABLE_PPT_SKILL, IMAGEGEN_GUIDANCE, ImageGenError, ImageGenSettingsNamespace, ImageGenerationRuntime, KNOWN_SKILL_SOURCES, MAX_CANVAS_FILE_BYTES, MAX_EXTRACTED_CHARS, MAX_LAYER_IMAGE_BYTES, MAX_PREVIEW_CHARS, MAX_SKILL_ARCHIVE_BYTES, PptProgressMonitor, PptRuntime, PptTaskStore, SkillRunner, SkillStoreError, SubscriptionManager, addTemplateFavorite, agentSessionFailure, analyzeLayers, appendGallery, apply, applySkillConfigSteps, buildFilePreview, builtinCanvasSkills, canvasSkillCatalog, canvasSkillCopy, canvasStore, checkForUpdate, classifySource, clearDiagnostics, clearGallery, clearTemplateFavoritesMemo, clearTemplateMemo, clearUpdateCache, compareVersions, configNote, configView, createCanvasSkillAgent, createSkillRegistryBackend, extractFileText, fileKindOf, findCanvasSkill, generateImage, inject, inspectSkillMarkdown, installFromArchive, installFromUrl, installUpdate, installableSkillName, isBlockedFileName, isDshSkillName, isEditablePptSkill, isValidSkillName, isZipDirectory, knownSkillUrl, latestSessionImage, listDiagnostics, listGallery, listLibrary, listLocalSkills, listTemplateFavorites, listTemplates, makeRoutes, mergeExternalSkills, mimeFromFileName, missingFields, name, networkErrorFields, normalizeLayerPlan, parseSkillConfigManifest, parseSkillFrontmatter, pptActivity, profileFromProcess, promptCharLimit, putObject, readCanvasSkillConfig, readGalleryImage, readLocalSkill, readSkillConfigFile, readTemplateImage, readZipDirectory, readZipEntry, recipeFor, recipeNames, recordDiagnostic, redactDiagnosticText, refreshTemplates, registerAgentImageTools, registerEditImageCommand, removeGallery, removeSkill, removeTemplateFavorite, resolveAgentImageModel, resolveConfigTarget, resolvePromptModelConfig, safeFileName, sampleTemplates, setSkillLanguage, setSkillTranslate, setStorageSyncHandler, skillConfigKey, skillsRoot, subscriptionOauthRef, syncAllTemplates, testStorage, tierOfExternalSkill, updateGalleryTags, updateInstallTarget, valuesFor, vendorOf };
++export { CURRENT_VERSION, Config, DIAGNOSTIC_MAX, EDITABLE_PPT_SKILL, IMAGEGEN_GUIDANCE, ImageGenError, ImageGenSettingsNamespace, ImageGenerationRuntime, KNOWN_SKILL_SOURCES, MAX_CANVAS_FILE_BYTES, MAX_EXTRACTED_CHARS, MAX_LAYER_IMAGE_BYTES, MAX_PREVIEW_CHARS, MAX_SKILL_ARCHIVE_BYTES, PptProgressMonitor, PptRuntime, PptTaskStore, SkillRunner, SkillStoreError, SubscriptionManager, addTemplateFavorite, agentSessionFailure, analyzeLayers, appendGallery, apply, applyWithHost, applySkillConfigSteps, buildFilePreview, builtinCanvasSkills, canvasSkillCatalog, canvasSkillCopy, canvasStore, checkForUpdate, classifySource, clearDiagnostics, clearGallery, clearTemplateFavoritesMemo, clearTemplateMemo, clearUpdateCache, compareVersions, configNote, configView, createCanvasSkillAgent, createSkillRegistryBackend, extractFileText, fileKindOf, findCanvasSkill, generateImage, inject, inspectSkillMarkdown, installFromArchive, installFromUrl, installUpdate, installableSkillName, isBlockedFileName, isDshSkillName, isEditablePptSkill, isValidSkillName, isZipDirectory, knownSkillUrl, latestSessionImage, listDiagnostics, listGallery, listLibrary, listLocalSkills, listTemplateFavorites, listTemplates, makeRoutes, mergeExternalSkills, mimeFromFileName, missingFields, name, networkErrorFields, normalizeLayerPlan, parseSkillConfigManifest, parseSkillFrontmatter, pptActivity, profileFromProcess, promptCharLimit, putObject, readCanvasSkillConfig, readGalleryImage, readLocalSkill, readSkillConfigFile, readTemplateImage, readZipDirectory, readZipEntry, recipeFor, recipeNames, recordDiagnostic, redactDiagnosticText, refreshTemplates, registerAgentImageTools, registerEditImageCommand, removeGallery, removeSkill, removeTemplateFavorite, resolveAgentImageModel, resolveConfigTarget, resolvePromptModelConfig, safeFileName, sampleTemplates, setSkillLanguage, setSkillTranslate, setStorageSyncHandler, skillConfigKey, skillsRoot, subscriptionOauthRef, syncAllTemplates, testStorage, tierOfExternalSkill, updateGalleryTags, updateInstallTarget, valuesFor, vendorOf };

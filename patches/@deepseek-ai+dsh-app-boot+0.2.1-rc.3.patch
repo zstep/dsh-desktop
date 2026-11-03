@@ -1,5 +1,5 @@
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js b/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
-index 39401ea1b9..ac39ea0c4b 100644
+index 39401ea..0d6a319 100644
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
 @@ -331,8 +331,17 @@ function evaluatePluginCompatibility(manifest, exemptions = {}, runtimeVersion =
@@ -99,7 +99,39 @@ index 39401ea1b9..ac39ea0c4b 100644
  	}
  	const patchPath = join(dir, PROFILE_PATCH_FILENAME);
  	const patches = options.userLayer !== false && existsSync(patchPath) ? loadOverlayPatches(binName, patchPath) : [];
-@@ -2325,7 +2364,8 @@ function preflight(ctx, entries, parentURL, report) {
+@@ -1125,11 +1164,28 @@ function readBundlePatches(binName, context, initialProfile) {
+ * @returns Detached ordered patches; this function does not update the Loader.
+ */
+ function readProfilePatches(binName, context, initialProfile) {
++	const bundles = readBundlePatches(binName, context, initialProfile);
++	const user = initialProfile?.patches ?? loadOptionalPatches(binName, context.patchPath) ?? [];
++	// The installation-owned image studio is a default, not a configuration
++	// override. Seed only this exact module before user settings so ConfigEditor
++	// can persist its volatile preferences. Other CLI/home overrides stay last.
++	let imagegenSource;
++	try { imagegenSource = pathToFileURL(createRequire(context.installAnchor).resolve("dsh-desktop-imagegen")).href; } catch {}
++	const defaults = [];
++	const overlays = context.overlays.map((patch) => {
++		if (patch.id !== void 0 || !Array.isArray(patch.insert)) return patch;
++		const insert = patch.insert.filter((row) => {
++			if (imagegenSource && row.id === "imagegen" && row.name === imagegenSource && row.config === void 0 && !row.group) { defaults.push({ insert: [row] }); return false; }
++			return true;
++		});
++		return { ...patch, insert };
++	});
+ 	const patches = structuredClone([
+-		...readBundlePatches(binName, context, initialProfile),
+-		...initialProfile?.patches ?? loadOptionalPatches(binName, context.patchPath) ?? [],
++		...bundles,
++		...defaults,
++		...user,
+ 		...loadOptionalPatches(binName, join(context.home, "cordis.patch.yml")) ?? [],
+-		...context.overlays
++		...overlays
+ 	]);
+ 	const telemetryPatch = resolveTelemetryPatch(context.telemetryDisabledEnv, composeEntries([patches]).some((row) => row.id === TELEMETRY_ROW_ID));
+ 	if (telemetryPatch !== void 0) patches.push(telemetryPatch);
+@@ -2325,7 +2381,8 @@ function preflight(ctx, entries, parentURL, report) {
  			const manifest = manifestOf(ctx, row.name, base);
  			if (manifest === void 0) return void 0;
  			const issue = evaluatePluginCompatibility(manifest, exemptions);
@@ -109,7 +141,7 @@ index 39401ea1b9..ac39ea0c4b 100644
  		} catch (error) {
  			return `its declared dsh requirements cannot be validated: ${error instanceof Error ? error.message : String(error)}`;
  		}
-@@ -4305,7 +4345,10 @@ var StartupError = class extends Error {
+@@ -4305,7 +4362,10 @@ var StartupError = class extends Error {
  	* @param entries - inactive plugin metadata and original failure values.
  	*/
  	constructor(message, entries) {
@@ -121,7 +153,7 @@ index 39401ea1b9..ac39ea0c4b 100644
  		super(message, failures.length > 0 ? { cause: new AggregateError(failures, "Plugin activation failures") } : void 0);
  		this.entries = entries;
  		Object.defineProperties(this, {
-@@ -4354,7 +4397,7 @@ async function inactiveEntries(ctx, importNow = true) {
+@@ -4354,7 +4414,7 @@ async function inactiveEntries(ctx, importNow = true) {
  				entry,
  				outcome: error === void 0 ? {
  					kind: "failed",
@@ -130,7 +162,7 @@ index 39401ea1b9..ac39ea0c4b 100644
  				} : {
  					kind: "failed",
  					error,
-@@ -4463,13 +4506,22 @@ function startupDiagnostic(binName, failures, required) {
+@@ -4463,13 +4523,22 @@ function startupDiagnostic(binName, failures, required) {
  */
  async function auditStartupEntries(ctx, binName, warn = (line) => void process.stderr.write(line)) {
  	const failures = await inactiveEntries(ctx);
@@ -155,7 +187,7 @@ index 39401ea1b9..ac39ea0c4b 100644
  	})));
  	if (failures.length > 0) warn(activationDiagnostic(binName, failures));
  }
-@@ -4541,7 +4593,11 @@ async function boot(binName, absoluteConfigPath, patches, prepare, bareModuleBas
+@@ -4541,7 +4610,11 @@ async function boot(binName, absoluteConfigPath, patches, prepare, bareModuleBas
  		await auditStartupEntries(ctx, binName);
  		return ctx;
  	} catch (cause) {
@@ -168,14 +200,14 @@ index 39401ea1b9..ac39ea0c4b 100644
  		if (cause instanceof StartupError) {
  			cause.startup = {
  				configurationPath: absoluteConfigPath,
-@@ -4563,4 +4619,4 @@ async function boot(binName, absoluteConfigPath, patches, prepare, bareModuleBas
+@@ -4563,4 +4636,4 @@ async function boot(binName, absoluteConfigPath, patches, prepare, bareModuleBas
  	}
  }
  //#endregion
 -export { DEFAULT_PROFILE_BUNDLES, FAIL_LOUD_RELEASE_TIMEOUT_MS, LOADER_EXPRESSION_SCHEMA, OFFICIAL_ON_DEMAND_CATALOG, ON_DEMAND_BUNDLES, OPTIONAL_BUNDLES, PROFILES_DIR, PROFILE_COMPATIBILITY_FILENAME, PROFILE_PATCH_FILENAME, PROFILE_TEMPLATES, PluginPackages, ProfileRuntimeResolution, ResolutionRestartRequired, StartupError, auditStartupEntries, boot, bundlePatchFiles, bundlePatchPaths, composeEntries, createConfigProjector, createRuntimeResolution, evaluatePluginCompatibility, generateConfigSchema, getDshRuntimeVersion, initProfile, installFailLoud, isNativeConfigSchema, loadEnv, loadLayeredEnv, loadOptionalPatches, loadOverlayPatches, loadProfile, loadProfileDirectory, mountRootInclude, pluginCompatibilityWarning, prepareProfileEntries, prepareProfilePatches, readBundlePatches, readPluginMeta, readProfileCompatibility, readProfileManifest, readProfilePatches, readProfilePlugins, readProfileVersionExemptions, recomposeProfile, reconcileProfilePatches, reconcileProfilePlugins, removeLinkProjections, renderConfigDump, reportSkippedBundles, resolveBundleDir, resolveConfigPath, resolvePluginResource, resolveProfileDir, resolveTelemetryPatch, sanitizeProfile, setProfileVersionExemption, writeProfileBundles, writeProfileManifest };
 +export { reportPluginCompatibility, readDisabledProfileBundles, DEFAULT_PROFILE_BUNDLES, FAIL_LOUD_RELEASE_TIMEOUT_MS, LOADER_EXPRESSION_SCHEMA, OFFICIAL_ON_DEMAND_CATALOG, ON_DEMAND_BUNDLES, OPTIONAL_BUNDLES, PROFILES_DIR, PROFILE_COMPATIBILITY_FILENAME, PROFILE_PATCH_FILENAME, PROFILE_TEMPLATES, PluginPackages, ProfileRuntimeResolution, ResolutionRestartRequired, StartupError, auditStartupEntries, boot, bundlePatchFiles, bundlePatchPaths, composeEntries, createConfigProjector, createRuntimeResolution, evaluatePluginCompatibility, generateConfigSchema, getDshRuntimeVersion, initProfile, installFailLoud, isNativeConfigSchema, loadEnv, loadLayeredEnv, loadOptionalPatches, loadOverlayPatches, loadProfile, loadProfileDirectory, mountRootInclude, pluginCompatibilityWarning, prepareProfileEntries, prepareProfilePatches, readBundlePatches, readPluginMeta, readProfileCompatibility, readProfileManifest, readProfilePatches, readProfilePlugins, readProfileVersionExemptions, recomposeProfile, reconcileProfilePatches, reconcileProfilePlugins, removeLinkProjections, renderConfigDump, reportSkippedBundles, resolveBundleDir, resolveConfigPath, resolvePluginResource, resolveProfileDir, resolveTelemetryPatch, sanitizeProfile, setProfileVersionExemption, writeProfileBundles, writeProfileManifest };
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/index.d.ts b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/index.d.ts
-index 81323a0c08..7aacd3a853 100644
+index 81323a0..7aacd3a 100644
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/index.d.ts
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/index.d.ts
 @@ -12,7 +12,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
@@ -197,7 +229,7 @@ index 81323a0c08..7aacd3a853 100644
  export { ResolutionRestartRequired } from './profile-resolution/resolver.ts';
  /**
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts
-index 9594009b82..caa97182db 100644
+index 9594009..caa9718 100644
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts
 @@ -33,4 +33,6 @@ export declare function evaluatePluginCompatibility(manifest: object, exemptions
@@ -210,7 +242,7 @@ index 9594009b82..caa97182db 100644
 +/** Report an unverified version declaration without blocking installation or loading. */
 +export declare function reportPluginCompatibility(issue: PluginCompatibility): void;
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/profile.d.ts b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/profile.d.ts
-index 0b8d889863..8c3fca36f8 100644
+index 0b8d889..8c3fca3 100644
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/profile.d.ts
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/profile.d.ts
 @@ -213,6 +213,8 @@ export declare class ProfileRuntimeResolution implements RuntimeResolution {

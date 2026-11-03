@@ -512,7 +512,13 @@ contextBridge.exposeInMainWorld(
     acknowledgeRepairDraft: (sessionId: string, token: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('repair-agent:draft/ack', sessionId, token),
     openRepairAgent: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('repair-agent:open'),
     restartHarness: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('harness:restart'),
-    getBuiltInImageGenerationStatus: (): Promise<{ enabled: boolean; marketActive: boolean }> =>
+    getBuiltInImageGenerationStatus: (): Promise<{
+      enabled: boolean
+      marketActive: boolean
+      effectiveSource: 'host' | 'profile' | 'disabled'
+      effectiveEnabled: boolean
+      reason?: string
+    }> =>
       ipcRenderer.invoke('desktop-host-plugin:status'),
     setBuiltInImageGenerationEnabled: (enabled: boolean): Promise<{ ok: boolean; enabled?: boolean; restartRequired?: boolean; reason?: string }> =>
       ipcRenderer.invoke('desktop-host-plugin:set-enabled', enabled),

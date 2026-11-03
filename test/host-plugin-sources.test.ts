@@ -110,11 +110,12 @@ describe('Desktop host plugin sources', () => {
     expect(hostInsertedPluginNames(await readFile(patchPath, 'utf8'), ['dsh-image-generation'])).toEqual(['host-other'])
   })
 
-  it('writes a derived patch when the only host insertion is disabled by default', async () => {
+  it('writes a derived patch when the only host insertion is explicitly disabled', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-host-sources-'))
     directories.push(root)
     const patchPath = join(root, 'desktop.patch.yml')
     await writeFile(patchPath, '- insert:\n    - id: image\n      name: dsh-image-generation\n')
+    await setHostPluginEnabled(root, 'dsh-image-generation', false)
     const outputPath = await prepareHostPluginSourcesPatch(root, patchPath, join(root, 'package.json'))
     expect(outputPath).not.toBe(patchPath)
     expect(parse(await readFile(outputPath, 'utf8'))).toEqual([])

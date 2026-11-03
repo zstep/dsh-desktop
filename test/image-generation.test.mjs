@@ -19,6 +19,7 @@ import { DEFAULTS, MODEL_CATALOG, generate, generationBody, ImageError, profile,
 import { normalizeImage } from '../packages/dsh-image-generation/lib/assets.js'
 import { materialize } from '../packages/dsh-image-generation/lib/storage.js'
 import { previewImage, imageResult } from '../packages/dsh-image-generation/lib/preview.js'
+import { managedPrompt } from '../packages/dsh-image-generation/lib/managed-provider.js'
 import { writerEnvironment } from '../packages/dsh-image-generation/lib/commit.js'
 
 const cleanups = []
@@ -79,6 +80,100 @@ async function fixture() {
   return { ctx, home, workspace, services, settings, log, agent, setMode: value => { mode = value } }
 }
 const saveInput = (provider, baseUrl, revision = 0) => ({ provider, baseUrl, model: DEFAULTS[provider].model, apiKey: 'test-image-key', revision })
+
+describe('Pengbao managed image settings and tool', () => {
+  const status = reason => ({ available: reason === 'available', reason, serviceUrl: 'https://pengbao.ecombus.net', modelSelection: 'server-managed' })
+  it('defaults only with a private bridge, without persisting a provider or secret', async () => {
+    const f = await fixture()
+    const bridge = { status: vi.fn(async () => status('available')), generate: vi.fn() }
+    const settings = createSettings(f.services, vi.fn(), bridge)
+    expect(await settings.describe()).toMatchObject({ revision: 0, provider: 'pengbao', managed: status('available') })
+    expect(await settings.isConfigured()).toBe(true)
+    expect(await readdir(f.home)).not.toContain('.credentials.yaml')
+    expect((await f.settings.describe()).provider).toBe('bytedance')
+    expect((await settings.active()).model_selection).toBe('server-managed')
+  })
+  it('does not wait on image networking in the text prompt path', async () => {
+    const f = await fixture()
+    let resolveStatus
+    const settings = createSettings(f.services, vi.fn(), { status: () => new Promise(resolve => { resolveStatus = resolve }) })
+    expect(await settings.isConfigured({ background: true })).toBe(true)
+    resolveStatus(status('disabled'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(await settings.isConfigured({ background: true })).toBe(false)
+  })
+  it('retains direct choices and profiles, saves managed before key/model validation, and switches back', async () => {
+    const f = await fixture(); const s = await server()
+    await f.settings.save(saveInput('openai', s.baseUrl))
+    const validate = vi.fn(async () => 'model')
+    const settings = createSettings(f.services, validate, { status: async () => status('available'), generate: vi.fn() })
+    expect((await settings.describe()).provider).toBe('openai')
+    const before = await readFile(path.join(f.home, '.credentials.yaml'), 'utf8')
+    expect(before).toContain('test-image-key')
+    const result = await settings.save({ revision: 1, provider: 'pengbao', model: '', baseUrl: 'invalid', apiKey: '' })
+    expect(result).toMatchObject({ revision: 2, provider: 'pengbao', profiles: { openai: { configured: true, validation: 'model' } } })
+    expect(validate).not.toHaveBeenCalled()
+    expect(s.calls).toHaveLength(1)
+    expect(await readFile(path.join(f.home, '.credentials.yaml'), 'utf8')).toContain('test-image-key')
+    await settings.save({ ...saveInput('openai', s.baseUrl, 2), apiKey: '' })
+    expect((await settings.active()).key).toBe('test-image-key')
+    expect(validate).toHaveBeenCalledTimes(1)
+    await settings.save({ provider: 'pengbao', revision: 3 })
+    const detached = createSettings(f.services, validate, null)
+    expect(await detached.describe()).toMatchObject({ provider: 'pengbao', managed: { available: false, reason: 'unavailable' } })
+    await expect(detached.active()).rejects.toMatchObject({ code: 'IMAGE_NETWORK' })
+  })
+  it('uses atomic revisions and does not overwrite read-only, cancelled or unreadable settings', async () => {
+    const f = await fixture()
+    const settings = createSettings(f.services, vi.fn(), { status: async () => status('available') })
+    const results = await Promise.allSettled([settings.save({ provider: 'pengbao', revision: 0 }), settings.save({ provider: 'pengbao', revision: 0 })])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.find(result => result.status === 'rejected').reason.code).toBe('CONFLICT')
+    const controller = new AbortController(); controller.abort()
+    await expect(settings.save({ provider: 'pengbao', revision: 1 }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    vi.spyOn(f.services.credentials, 'describeRecord').mockResolvedValue({ writable: false })
+    await expect(settings.save({ provider: 'pengbao', revision: 1 })).rejects.toMatchObject({ code: 'READ_ONLY' })
+    vi.spyOn(f.services.credentials, 'readRecord').mockRejectedValue(new Error('private-error'))
+    await expect(settings.save({ provider: 'pengbao', revision: 1 })).rejects.toMatchObject({ code: 'LOAD_FAILED' })
+  })
+  it.each(['disabled', 'forbidden', 'unauthenticated', 'unavailable'])('refreshes %s without falling back or blocking chat', async reason => {
+    const f = await fixture(); let current = reason
+    const settings = createSettings(f.services, vi.fn(), { status: async () => status(current), generate: vi.fn() })
+    expect(await settings.describe()).toMatchObject({ provider: 'pengbao', managed: { reason } })
+    expect(await settings.isConfigured()).toBe(false)
+    await expect(settings.active()).rejects.toBeInstanceOf(ImageError)
+    current = 'available'
+    expect(await settings.isConfigured()).toBe(true)
+    expect((await settings.describe()).managed.available).toBe(true)
+  })
+  it('normalizes binary output, omits a fabricated model and reuses policy and preview contracts', async () => {
+    const f = await fixture(); const s = await server()
+    const bridge = { status: async () => status('available'), generate: vi.fn(async () => s.png) }
+    const settings = createSettings(f.services, vi.fn(), bridge)
+    f.ctx.tools.register(imageTool(f.services, settings))
+    const result = await f.ctx.tools.execute({ callId: 'managed', name: 'image_generate', arguments: { prompt: 'A flower', style_context: 'Blue', purpose: 'presentation', aspect_ratio: '16:9' }, agent: f.agent, signal: new AbortController().signal })
+    expect(result.isError, JSON.stringify(result)).toBeFalsy()
+    const value = JSON.parse(result.content[0].text)
+    expect(value).toMatchObject({ provider: 'pengbao', model_selection: 'server-managed', media_type: 'image/png', width: 32, height: 24 })
+    expect(value).not.toHaveProperty('model')
+    expect(imageResult(result.content)).toEqual(value)
+    expect(await sharp(await readFile(path.join(f.workspace, value.workspace_path))).metadata()).toMatchObject({ format: 'png' })
+    expect(bridge.generate.mock.calls[0][0]).toBe(managedPrompt({ prompt: 'A flower', style_context: 'Blue', purpose: 'presentation', aspect_ratio: '16:9' }))
+    expect(JSON.stringify(f.log.mock.calls)).toContain('model_selection=server-managed')
+    f.setMode('read-only')
+    await expect(imageTool(f.services, settings).execute({ prompt: 'Flower' }, { agent: f.agent })).rejects.toMatchObject({ code: 'POLICY' })
+    expect(bridge.generate).toHaveBeenCalledTimes(1)
+  })
+  it('rechecks live workspace permissions and rejects malformed images before committing', async () => {
+    const f = await fixture(); const s = await server()
+    const bridge = { status: async () => status('available'), generate: vi.fn(async () => { f.setMode('read-only'); return s.png }) }
+    const settings = createSettings(f.services, vi.fn(), bridge)
+    await expect(imageTool(f.services, settings).execute({ prompt: 'Flower' }, { agent: f.agent })).rejects.toMatchObject({ code: 'POLICY' })
+    f.setMode('workspace-write'); bridge.generate.mockResolvedValue(Buffer.from('broken'))
+    await expect(imageTool(f.services, settings).execute({ prompt: 'Flower' }, { agent: f.agent })).rejects.toMatchObject({ code: 'IMAGE' })
+    expect(await readdir(f.workspace)).toEqual([])
+  })
+})
 
 describe('image settings save and provider requests', () => {
   it.each(['openai', 'bytedance'])('saves %s with exactly one non-generating request and redacts credentials', async provider => {

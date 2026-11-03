@@ -6,6 +6,14 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const NS = 'settings.imageGeneration'
     const zh = {
+      managed: '鹏宝统一配置', managedModel: '模型由服务器选择', managedHint: '模型和服务地址由鹏宝后台管理，无需单独填写 API Key。', serviceUrl: '服务地址',
+      cloudNotice: '提示词会发送到鹏宝及其配置的生图服务；生成图会保存到当前账号的云端文件，并在本地工作区保存副本。不会创建网页聊天或自动删除云端文件。',
+      managedSaved: '已保存鹏宝统一配置', managedSaving: '正在保存…', refresh: '刷新服务状态', cancel: '取消',
+      managed_available: '鹏宝生图可用', managed_disabled: '管理员已关闭生图服务，请联系管理员开启。', managed_forbidden: '当前账号没有生图权限，请联系管理员。',
+      managed_unauthenticated: '登录已失效，请重新登录鹏宝。', managed_unavailable: '暂时无法连接鹏宝生图服务，请刷新重试。文本聊天不受影响。',
+      IMAGE_DISABLED: '鹏宝生图已关闭，请联系管理员。', IMAGE_FORBIDDEN: '当前账号没有鹏宝生图权限。', IMAGE_AUTH: '请重新登录鹏宝。', IMAGE_NETWORK: '鹏宝生图暂不可用，请重试。',
+      IMAGE_TIMEOUT: '鹏宝生图超时；服务器仍可能已生成并计费。', IMAGE_RESPONSE: '鹏宝返回的图片无效。', IMAGE_TOO_LARGE: '生成的图片超过 20 MiB。', IMAGE_INVALID_REQUEST: '图片描述无效。', IMAGE_BUSY: '鹏宝生图繁忙，请稍后重试。', IMAGE_REVOKED: '生图会话已结束，请重新连接。',
+      effective_market: '当前使用市场版本；此开关仍仅控制内置版本偏好。', effective_disabled: '内置版本当前未生效。',
       previewLoading: '正在加载图片…', previewRetry: '重新加载图片', generatedImage: '生成的图片', title: '生图工具', description: '接入生图，有生图能力的模型', provider: '服务商', bytedance: 'Seedream', openai: 'OpenAI',
       apiKey: 'API Key', keyPlaceholder: '输入服务商的 API Key', savedKey: '输入新 Key 可替换',
       advanced: '高级设置', model: '模型 ID', baseUrl: 'API 地址',
@@ -25,6 +33,14 @@ window.__ModuleLoader__.load({
       UNAVAILABLE: '连接失败，请检查网络和 API 地址后重新保存。', CANCELLED: '校验已取消，可以重新保存。', PROVIDER_ERROR: '服务商暂时不可用，请稍后重新保存。',
     }
     const en = {
+      managed: 'Pengbao unified configuration', managedModel: 'Model selected by the server', managedHint: 'Pengbao manages the model and service address. No separate API key is needed.', serviceUrl: 'Service address',
+      cloudNotice: 'Prompts are sent to Pengbao and its configured image service. Generated images are saved to your account cloud files and copied to the local workspace. No web chat is created and cloud files are not automatically deleted.',
+      managedSaved: 'Pengbao configuration saved', managedSaving: 'Saving…', refresh: 'Refresh service status', cancel: 'Cancel',
+      managed_available: 'Pengbao image generation is available', managed_disabled: 'Image generation is disabled. Ask your administrator to enable it.', managed_forbidden: 'Your account cannot generate images. Contact your administrator.',
+      managed_unauthenticated: 'Your session expired. Sign in to Pengbao again.', managed_unavailable: 'Pengbao image generation is temporarily unavailable. Refresh to retry. Text chat is unaffected.',
+      IMAGE_DISABLED: 'Pengbao image generation is disabled. Contact your administrator.', IMAGE_FORBIDDEN: 'Your account cannot generate images.', IMAGE_AUTH: 'Sign in to Pengbao again.', IMAGE_NETWORK: 'Pengbao image generation is unavailable. Try again.',
+      IMAGE_TIMEOUT: 'Image generation timed out; the server may still have generated and charged for the image.', IMAGE_RESPONSE: 'Pengbao returned an invalid image.', IMAGE_TOO_LARGE: 'The image exceeds 20 MiB.', IMAGE_INVALID_REQUEST: 'Invalid image description.', IMAGE_BUSY: 'Pengbao image generation is busy. Try again later.', IMAGE_REVOKED: 'The image session ended. Reconnect to try again.',
+      effective_market: 'The market version is active; this switch still controls only the built-in preference.', effective_disabled: 'The built-in version is not currently active.',
       previewLoading: 'Loading image…', previewRetry: 'Reload image', generatedImage: 'Generated image', title: 'Image generation', description: 'Connect models with image generation capabilities.', provider: 'Provider', bytedance: 'Seedream', openai: 'OpenAI',
       apiKey: 'API Key', keyPlaceholder: 'Enter your provider API key', savedKey: 'Enter a new key to replace it',
       advanced: 'Advanced settings', model: 'Model ID', baseUrl: 'API URL',
@@ -118,6 +134,8 @@ window.__ModuleLoader__.load({
       const [customModels, setCustomModels] = React.useState({})
       const [loadFailed, setLoadFailed] = React.useState(false)
       const [hostEnabled, setHostEnabled] = React.useState(null)
+      const [hostEffective, setHostEffective] = React.useState(null)
+      const operation = React.useRef(null)
       const [hostPending, setHostPending] = React.useState(false)
       const [hostBusy, setHostBusy] = React.useState(false)
       const [hostError, setHostError] = React.useState(false)
@@ -141,7 +159,9 @@ window.__ModuleLoader__.load({
         setLoading(true); setError('')
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            applySettings(await callApi('settings', {}, signal))
+            const result = await callApi('settings', {}, signal)
+            if (signal.aborted) return
+            applySettings(result)
             if (!signal.aborted) {
               setLoadFailed(false)
               setLoading(false)
@@ -162,14 +182,14 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         const controller = new AbortController(); lifetime.current = controller
         void load(controller.signal)
-        return () => controller.abort()
+        return () => { controller.abort(); operation.current?.abort() }
       }, [load])
       React.useEffect(() => {
         const desktop = globalThis.dshDesktop
         if (!desktop?.getBuiltInImageGenerationStatus) return
         let active = true
         void desktop.getBuiltInImageGenerationStatus().then(result => {
-          if (active) setHostEnabled(result.enabled)
+          if (active) { setHostEnabled(result.enabled); setHostEffective(result) }
         }, () => { if (active) setHostError(true) })
         return () => { active = false }
       }, [])
@@ -191,6 +211,7 @@ window.__ModuleLoader__.load({
         } catch { setHostError(true) }
         finally { setHostBusy(false) }
       }
+      const managed = provider === 'pengbao'
       const draft = drafts[provider]
       const catalog = catalogs[provider] || saved?.catalogs[provider] || emptyCatalogs[provider]
       const writable = saved?.writable !== false && Boolean(saved) && !loadFailed
@@ -202,8 +223,11 @@ window.__ModuleLoader__.load({
       const fetchModels = async () => {
         if (inFlight.current || !saved || loadFailed) return
         inFlight.current = true; setFetching(true); setError(''); setStatus('')
+        const controller = new AbortController(); operation.current = controller
+        const signal = AbortSignal.any([lifetime.current.signal, controller.signal])
         try {
-          const result = await callApi('models', { revision: saved.revision, provider, model: draft.model || undefined, baseUrl: draft.baseUrl, apiKey: draft.apiKey }, lifetime.current.signal)
+          const result = await callApi('models', { revision: saved.revision, provider, model: draft.model || undefined, baseUrl: draft.baseUrl, apiKey: draft.apiKey }, signal)
+          if (signal.aborted) return
           setCatalogs(previous => ({ ...previous, [provider]: result }))
           setCustomModels(previous => ({ ...previous, [provider]: !result.models.includes(draft.model) }))
         } catch (error) { if (!lifetime.current.signal.aborted) setError(error.code || 'UNAVAILABLE') }
@@ -213,16 +237,32 @@ window.__ModuleLoader__.load({
         event.preventDefault()
         if (inFlight.current) return
         if (!saved || loadFailed) { setError('LOAD_FAILED'); return }
-        const nextKey = (draft.apiKey || '').trim()
-        const reuseKey = Boolean(draft.configured || saved.profiles?.[provider]?.configured)
-        if (!nextKey && !reuseKey) { setError('KEY_REQUIRED'); return }
+        const nextKey = (draft?.apiKey || '').trim()
+        const reuseKey = Boolean(draft?.configured || saved.profiles?.[provider]?.configured)
+        if (!managed && !nextKey && !reuseKey) { setError('KEY_REQUIRED'); return }
         inFlight.current = true; setBusy(true); setError(''); setStatus('')
+        const controller = new AbortController(); operation.current = controller
+        const signal = AbortSignal.any([lifetime.current.signal, controller.signal])
         try {
-          const result = await callApi('save', { revision: saved.revision, provider, model: draft.model, baseUrl: draft.baseUrl, apiKey: nextKey }, lifetime.current.signal)
+          const payload = managed ? { revision: saved.revision, provider } : { revision: saved.revision, provider, model: draft.model, baseUrl: draft.baseUrl, apiKey: nextKey }
+          const result = await callApi('save', payload, signal)
+          if (signal.aborted) return
           applySettings(result)
-          setStatus('saved')
-        } catch (error) { if (!lifetime.current.signal.aborted) setError(error.code || 'UNAVAILABLE') }
+          setStatus(managed ? 'managedSaved' : 'saved')
+        } catch (error) { if (!lifetime.current.signal.aborted) setError(signal.aborted ? 'CANCELLED' : error.code || 'UNAVAILABLE') }
         finally { inFlight.current = false; if (!lifetime.current.signal.aborted) setBusy(false) }
+      }
+      const refreshManaged = async () => {
+        if (inFlight.current) return
+        inFlight.current = true; setFetching(true); setError('')
+        const controller = new AbortController(); operation.current = controller
+        const signal = AbortSignal.any([lifetime.current.signal, controller.signal])
+        try {
+          const result = await callApi('settings', {}, signal)
+          if (signal.aborted) return
+          setSaved(previous => ({ ...previous, managed: result.managed }))
+        } catch (error) { if (!lifetime.current.signal.aborted) setError(signal.aborted ? 'CANCELLED' : error.code || 'IMAGE_NETWORK') }
+        finally { inFlight.current = false; if (!lifetime.current.signal.aborted) setFetching(false) }
       }
       const field = (key, label, type = 'text', placeholder) => h('label', { className: 'dshImageField', key },
         t(label), h('input', { name: key, type, value: draft[key], placeholder, autoComplete: 'off', spellCheck: false, onChange: event => edit(key, event.target.value) }))
@@ -234,14 +274,21 @@ window.__ModuleLoader__.load({
           hostEnabled !== null && h('div', { className: 'dshImageHostControl' },
             h('label', null, h('input', { type: 'checkbox', role: 'switch', checked: hostEnabled, disabled: hostBusy, onChange: toggleHost }), t('builtInEnabled')),
             h('p', { className: 'dshImageHint' }, t('builtInHint')),
+            hostEffective?.effectiveSource === 'profile' && h('p', { className: 'dshImageHint' }, t('effective_market')),
+            hostEffective?.effectiveSource !== 'profile' && hostEffective?.effectiveEnabled === false && h('p', { className: 'dshImageHint' }, t('effective_disabled')),
             hostPending && h('button', { className: 'dshImageFetch', type: 'button', disabled: hostBusy, onClick: restartHost }, t('builtInRestart'))),
           hostError && h('p', { className: 'dshImageStatus dshImageError', role: 'alert' }, t('builtInFailed')),
-          loading ? h('p', { className: 'dshImageHint' }, t('loading')) : draft && h(React.Fragment, null,
-            !loadFailed && h('p', { className: 'dshImageHint' }, t(draft.configured ? 'configuredHint' : 'setupHint')),
+          loading ? h('p', { className: 'dshImageHint' }, t('loading')) : (managed || draft) && h(React.Fragment, null,
+            !loadFailed && h('p', { className: 'dshImageHint' }, t(managed ? 'managedHint' : draft.configured ? 'configuredHint' : 'setupHint')),
             h('fieldset', { className: 'dshImageFields', disabled: busy || fetching || !writable },
               h(ImageSelect, { name: 'provider', label: t('provider'), value: provider, disabled: busy || fetching || !writable,
-                options: [{ id: 'bytedance', label: t('bytedance') }, { id: 'openai', label: t('openai') }],
+                options: [...(saved?.managed ? [{ id: 'pengbao', label: t('managed') }] : []), { id: 'bytedance', label: t('bytedance') }, { id: 'openai', label: t('openai') }],
                 onChange: value => { setProvider(value); setStatus(''); setError('') } }),
+              managed ? h(React.Fragment, null,
+                h('label', { className: 'dshImageField' }, t('serviceUrl'), h('input', { name: 'serviceUrl', value: 'https://pengbao.ecombus.net', readOnly: true })),
+                h('p', { className: 'dshImageHint' }, t('managedModel')),
+                h('p', { className: 'dshImageHint' }, t('cloudNotice')),
+                h('p', { className: 'dshImageStatus', role: 'status', 'aria-live': 'polite' }, t(`managed_${saved?.managed?.reason || 'unavailable'}`))) : h(React.Fragment, null,
               field('apiKey', 'apiKey', 'password', t(draft.configured ? 'savedKey' : 'keyPlaceholder')),
               h(ImageSelect, { name: 'model', label: t('modelSelect'), value: customModels[provider] || !catalog.models.includes(draft.model) ? '__custom__' : draft.model, disabled: busy || fetching || !writable,
                 options: [...catalog.models.map(model => ({ id: model, label: model })), { id: '__custom__', label: t('customModel') }],
@@ -249,9 +296,11 @@ window.__ModuleLoader__.load({
               (customModels[provider] || !catalog.models.includes(draft.model)) && field('model', 'model'),
               catalog.canFetch && h('button', { className: 'dshImageFetch', type: 'button', disabled: !(draft.apiKey || '').trim() && !draft.configured, onClick: fetchModels }, t(fetching ? 'fetchingModels' : 'fetchModels')),
               catalog.source === 'provider' && catalog.models.length === 0 && h('p', { className: 'dshImageHint', role: 'status' }, t('emptyModels')),
-              h('details', { className: 'dshImageAdvanced' }, h('summary', null, t('advanced')), field('baseUrl', 'baseUrl'))),
+              h('details', { className: 'dshImageAdvanced' }, h('summary', null, t('advanced')), field('baseUrl', 'baseUrl')))),
             h('div', { className: 'dshImageActions' },
-              h('button', { className: 'dshImageSave', type: 'submit', disabled: busy || fetching || !writable || !(draft.model || '').trim() }, t(busy ? 'saving' : 'save')),
+              managed && h('button', { className: 'dshImageFetch', type: 'button', disabled: busy || fetching, onClick: refreshManaged }, t(fetching ? 'loading' : 'refresh')),
+              (busy || fetching) && h('button', { className: 'dshImageFetch', type: 'button', onClick: () => operation.current?.abort() }, t('cancel')),
+              h('button', { className: 'dshImageSave', type: 'submit', disabled: busy || fetching || !writable || (!managed && !(draft.model || '').trim()) }, t(busy ? managed ? 'managedSaving' : 'saving' : 'save')),
               error === 'LOAD_FAILED' && h('button', { className: 'dshImageFetch', type: 'button', onClick: () => load(lifetime.current.signal) }, t('reload')),
               status && h('p', { className: 'dshImageStatus', role: 'status' }, t(status))),
             saved && !saved.writable && h('p', { className: 'dshImageHint' }, t('readOnly'))),

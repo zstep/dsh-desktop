@@ -68,9 +68,9 @@ import {
   BUILTIN_IMAGE_GENERATION,
   prepareProfileBundleForHostEnable,
   profileHasEnabledBundle,
-  readDisabledHostPlugins,
   setHostPluginEnabled
 } from './state/host-plugin-state'
+import { resolveHostPluginState } from './state/host-plugin-selection'
 import {
   disableProfilePlugin,
   enableProfilePlugin,
@@ -737,7 +737,8 @@ async function activateAccount(session: PengbaoSession): Promise<void> {
   // Activation failure is unwound by the controller through deactivate().
   accountGateway = await startPengbaoGateway({
     jwt: session.token,
-    onFailure: failure => runtime?.note(`[pengbao-gateway] ${JSON.stringify(failure)}`)
+    onFailure: failure => runtime?.note(`[pengbao-gateway] ${JSON.stringify(failure)}`),
+    onImageFailure: failure => runtime?.note(`[pengbao-image-gateway] ${JSON.stringify(failure)}`)
   })
   accountModels = await accountClient!.models()
   assertServableModels(accountModels)
@@ -2062,7 +2063,7 @@ function registerHarnessHandlers(): void {
     assertTrustedMainWindowEvent(event)
     const dshHome = accountHome()
     return {
-      enabled: !(await readDisabledHostPlugins(dshHome)).includes(BUILTIN_IMAGE_GENERATION),
+      ...await resolveHostPluginState(dshHome, BUILTIN_IMAGE_GENERATION),
       marketActive: await profileHasEnabledBundle(dshHome, BUILTIN_IMAGE_GENERATION)
     }
   })
@@ -3698,6 +3699,10 @@ async function bootstrapHarnessAfterVerifiedHandoff(): Promise<void> {
       ? preparePengbaoProviderOverlay(accountHome(), profile, { gatewayUrl: accountGateway.url, models: accountModels })
       : undefined,
     privateModelHandoff: () => accountGateway && { gatewayUrl: accountGateway.url, capabilityToken: accountGateway.capabilityToken },
+    privateImageLease: () => {
+      const gateway = accountGateway
+      return gateway && { gatewayUrl: gateway.url, ...gateway.createImageLease() }
+    },
     launchProcess: (executablePath, args, options) =>
       process.platform === 'darwin'
         ? launchDisclaimedUtilityProcess(utilityProcess, args, options, {

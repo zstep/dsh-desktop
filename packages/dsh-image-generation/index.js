@@ -8,20 +8,22 @@ import { generate, readBounded, safeError } from './lib/provider.js'
 import { assetDirectory, normalizeImage, workspaceFor } from './lib/assets.js'
 import { commitImage, writerPlan } from './lib/commit.js'
 import { previewImage } from './lib/preview.js'
+import { managedPrompt } from './lib/managed-provider.js'
 
 export const name = 'dsh-image-generation'
 export const inject = ['credentials', 'connection', 'tools', 'skills', 'systemPrompt', 'sandboxPolicy', 'sandbox', 'subprocess', 'sessionController']
 export const Config = z.object({})
 export const IMAGE_PROMPT_SECTION = 'tool:image-generation'
-export const UNCONFIGURED_IMAGE_PROMPT = 'Do not call image_generate. Direct the user to Settings > Plugins > Image generation. Never ask for an API key in conversation.'
-export const CONFIGURED_IMAGE_PROMPT = 'For image creation, load the generate-image Skill and call image_generate. Presentations and documents may call it in parallel for multiple visuals. Reuse its PNG workspace path in PPT and Word. The user configures this shared capability in Settings > Plugins > Image generation.'
+export const UNCONFIGURED_IMAGE_PROMPT = 'Do not call image_generate while unavailable. Check Settings > Plugins > Image generation: Pengbao may require sign-in, administrator enablement, permission or a connection retry; custom providers need saved configuration. Never ask for an API key in conversation.'
+export const CONFIGURED_IMAGE_PROMPT = 'For image creation, load the generate-image Skill and call image_generate. Presentations and documents may call it in parallel for multiple visuals. Reuse its PNG workspace path in PPT and Word. The user configures this shared capability in Settings > Plugins > Image generation. In Pengbao mode prompts go to Pengbao and its configured image service; generated files are saved by the backend to the current account cloud files as well as the local workspace. Do not create a web chat or delete cloud files.'
 
 export function imageTool(ctx, settings) {
   return defineTool({
     name: 'image_generate',
-    description: 'Generate one photo, illustration or background through the configured image provider and save an Office-compatible PNG in the session workspace. Requires a saved image configuration. Load the generate-image Skill first. A presentation may call this concurrently for multiple visuals. Keep charts, tables and simple diagrams editable.',
+    description: 'Generate one photo, illustration or background through the configured image provider and save an Office-compatible PNG in the session workspace. Available Pengbao managed mode needs no separate API key or saved provider setup; custom providers require configuration. Load the generate-image Skill first. A presentation may call this concurrently for multiple visuals. Keep charts, tables and simple diagrams editable.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'Visual subject, composition, palette, lighting, and space for document or slide text.' },
+      size: { type: 'string', description: 'Optional exact output dimensions as WIDTHxHEIGHT pixels when explicitly requested. Each side is at most 8192 pixels and total area at most 64 megapixels; omit to use provider defaults.' },
       style_context: { type: 'string', description: 'Shared brand, template and illustration style for consistency across the document.' },
       purpose: { type: 'string', enum: ['general', 'presentation', 'document', 'web', 'marketing'] },
       aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Target composition; actual dimensions are returned. OpenAI uses its closest supported canvas.' },
@@ -31,7 +33,7 @@ export function imageTool(ctx, settings) {
         asset_id: { type: 'string', required: true }, workspace_path: { type: 'string', required: true },
         media_type: { type: 'string', required: true }, width: { type: 'integer', required: true }, height: { type: 'integer', required: true },
         bytes: { type: 'integer', required: true }, sha256: { type: 'string', required: true },
-        provider: { type: 'string', required: true }, model: { type: 'string', required: true },
+        provider: { type: 'string', required: true }, model: { type: 'string' }, model_selection: { type: 'string', enum: ['server-managed'] },
       } },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
@@ -43,15 +45,18 @@ export function imageTool(ctx, settings) {
         const root = await workspaceFor(ctx, exec)
         await assetDirectory(root)
         await writerPlan(ctx, root, exec)
-        const spec = await settings.active()
-        ctx.logger.info('image-generation: generation started; provider=%s model=%s', spec.provider, spec.model)
-        const raw = await generate(spec.provider, spec, spec.key, args, { signal: exec.signal })
+        const spec = await settings.active(exec.signal)
+        if (spec.provider === 'pengbao') ctx.logger.info('image-generation: generation started; provider=pengbao model_selection=server-managed')
+        else ctx.logger.info('image-generation: generation started; provider=%s model=%s', spec.provider, spec.model)
+        const raw = spec.provider === 'pengbao'
+          ? await spec.generate(managedPrompt(args), { signal: exec.signal, ...(args.size === undefined ? {} : { size: args.size }) })
+          : await generate(spec.provider, spec, spec.key, args, { signal: exec.signal })
         const image = await normalizeImage(raw)
         // Recheck live session permissions after a potentially long provider call.
         if (await workspaceFor(ctx, exec) !== root) throw new Error('workspace changed')
         const asset = await commitImage(ctx, root, image.data, exec)
         ctx.logger.info('image-generation: generation saved; provider=%s sha256=%s', spec.provider, asset.sha256)
-        return { ...asset, asset_id: `sha256:${asset.sha256}`, media_type: 'image/png', width: image.width, height: image.height, bytes: image.data.length, provider: spec.provider, model: spec.model }
+        return { ...asset, asset_id: `sha256:${asset.sha256}`, media_type: 'image/png', width: image.width, height: image.height, bytes: image.data.length, provider: spec.provider, ...(spec.provider === 'pengbao' ? { model_selection: 'server-managed' } : { model: spec.model }) }
       } catch (error) {
         const safe = safeError(error)
         ctx.logger.info('image-generation: generation failed; code=%s http=%s provider_code=%s parameter=%s request_id=%s', safe.code, safe.providerStatus, safe.providerCode, safe.parameter, safe.requestId)
@@ -76,7 +81,7 @@ export async function apply(ctx) {
   const registerJson = (path, methods, fetch) => ctx.connection.fetch.register({
     path, methods, requestBody: 'buffered', fetch,
   })
-  registerJson('/api/image-generation.settings', ['GET'], () => jsonResponse(() => settings.describe()))
+  registerJson('/api/image-generation.settings', ['GET'], request => jsonResponse(() => settings.describe(request.signal)))
   for (const suffix of ['save', 'models']) {
     registerJson(`/api/image-generation.${suffix}`, ['POST'], request => jsonResponse(async () => settings[suffix](
       JSON.parse((await readBounded(request, 16_384, request.signal)).toString('utf8')), request.signal,
@@ -96,7 +101,7 @@ export async function apply(ctx) {
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     let configured = false
     try {
-      configured = await settings.isConfigured()
+      configured = await settings.isConfigured({ background: true })
     } catch (error) {
       ctx.logger.info('image-generation: prompt assembly treated configuration as unset; code=%s', safeError(error).code)
     }
