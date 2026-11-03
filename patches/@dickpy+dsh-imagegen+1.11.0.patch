@@ -128,7 +128,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
 +			const image = host.image;
 +			return { ...config, host,
 +				...(config.desktopImageMode === "off" ? { channels: [], imageModels: [] } : image?.active ? {
-+					channels: [{ id: image.id, name: image.label, apiUrl: "", models: image.models ?? [{ alias: image.id, id: image.id, name: image.label }], managed: true }],
++					channels: [{ id: image.id, name: image.name ?? image.label, apiUrl: "", models: image.models ?? [{ alias: image.id, id: image.id, name: image.label }], managed: true }],
 +					defaultChannelId: image.id, defaultModel: managedModelChoice({ ...config, host })
 +				} : {})
 +			};
@@ -580,9 +580,9 @@ new file mode 100644
 +const statusReason = status => typeof status?.reason === 'string' ? status.reason : undefined
 +export function hostImageActive(value, host) {
 +  return !!host?.image && (value.desktopImageMode ?? 'inherit') === 'inherit' &&
++    // Orphaned preferences and secrets cannot configure a channel on their own.
 +    !(value.channels?.length || nonempty(value.apiUrl) || nonempty(value.apiKey) ||
-+      value.imageModels?.length || nonempty(value.defaultChannelId) || nonempty(value.defaultModel) ||
-+      Object.values(value.channelSecrets ?? {}).some(nonempty))
++      value.imageModels?.length)
 +}
 +export function hostImageModel(value, host) {
 +  const id = value.desktopImageModelId
@@ -596,7 +596,7 @@ new file mode 100644
 +}
 +export function hostChannel(host) {
 +  return {
-+    id: HOST_CHANNEL_ID, name: host.image.label, preset: '', apiUrl: '', apiKey: '',
++    id: HOST_CHANNEL_ID, name: host.image.channelName ?? host.image.label, preset: '', apiUrl: '', apiKey: '',
 +    models: host.image.models ?? [{ alias: HOST_CHANNEL_ID, id: HOST_CHANNEL_ID, name: host.image.label }],
 +    managed: true, status: () => host.image.status(),
 +    generate: (request, signal) => host.image.generate({ ...request,
@@ -622,7 +622,7 @@ new file mode 100644
 +  if (!host) return undefined
 +  const image = host.image ? await statusOf(host.image, hostImageActive(value, host)) : undefined
 +  return {
-+    ...(image ? { image: { id: HOST_CHANNEL_ID, ...image, models: hostChannel(host).models } } : {}),
++    ...(image ? { image: { id: HOST_CHANNEL_ID, name: hostChannel(host).name, ...image, models: hostChannel(host).models } } : {}),
 +    ...(host.prompt ? { prompt: await statusOf(host.prompt, hostPromptActive(value, host)) } : {})
 +  }
 +}

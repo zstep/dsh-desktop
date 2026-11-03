@@ -60,7 +60,20 @@ export function apply(ctx) {
 `)
   const patch = join(home, 'imagegen.patch.yml')
   await mkdir(join(home, 'profiles', 'web'), { recursive: true })
-  await writeFile(join(home, 'profiles', 'web', 'cordis.patch.yml'), '- id: agent-default-model\n  config:\n    provider: pengbao\n    model: chat-a\n')
+  // User preferences belong in the editable Profile, not the higher-priority host overlay.
+  await writeFile(join(home, 'profiles', 'web', 'cordis.patch.yml'), `- id: agent-default-model
+  config:
+    provider: pengbao
+    model: chat-a
+- id: imagegen
+  config:
+    desktopImageMode: inherit
+    channels: []
+    defaultChannelId: deleted-channel
+    defaultModel: deleted-model
+    channelSecrets:
+      deleted-channel: orphaned-fixture-secret
+`)
   await writeFile(patch, `${await readFile(join(project, 'build/dsh-desktop-safe.patch.yml'), 'utf8')}
 - insert:
     - id: imagegen
@@ -118,6 +131,12 @@ export function apply(ctx) {
     expect(JSON.stringify(history)).toContain('A blue flower')
     const html = await fetch(snapshot.url, { headers: { Cookie: cookie } }).then(response => response.text())
     expect(html).toContain('dsh-desktop-imagegen')
+    if (process.env.DSH_TEST_IMAGEGEN_CATALOG_GUI === '1') {
+      await driveStudio(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`, true)
+      expect(images).toHaveLength(2)
+      expect((await post('/api/dsh-imagegen/settings/describe')).value.namespaces[0].value.desktopImageModelId).toBe(selectableImageModelIds.at(-1))
+      expect(await post('/api/dsh-imagegen/settings/mutate', { ns: 'dsh-imagegen', ops: [{ op: 'set', path: ['desktopImageModelId'], value: '' }] })).toMatchObject({ ok: true })
+    }
     if (process.env.DSH_TEST_IMAGEGEN_GUI === '1') {
       await driveStudio(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`)
       expect(images).toHaveLength(3)
@@ -137,6 +156,24 @@ export function apply(ctx) {
       }
     }
     expect(images).toHaveLength(generatedCount)
+    const mutate = async (ops: unknown[]) => post('/api/dsh-imagegen/settings/mutate', { ns: 'dsh-imagegen', ops })
+    const imageHost = async () => (await post('/api/dsh-imagegen/settings/describe')).value.namespaces[0].host.image
+    for (const mode of ['off', 'custom']) {
+      expect(await mutate([{ op: 'set', path: ['desktopImageMode'], value: mode }])).toMatchObject({ ok: true })
+      expect(await imageHost()).toMatchObject({ active: false, ready: false })
+      expect(await post('/api/dsh-imagegen/generate', { prompt: 'Must not generate', n: 1 })).toMatchObject({ ok: false })
+    }
+    const customChannels = [{ id: 'custom-fixture', name: 'Custom fixture', apiUrl: 'https://fixture.invalid', models: [{ alias: 'custom-model', id: 'custom-model' }] }]
+    expect(await mutate([
+      { op: 'set', path: ['desktopImageMode'], value: 'inherit' },
+      { op: 'set', path: ['channels'], value: customChannels }
+    ])).toMatchObject({ ok: true })
+    expect(await imageHost()).toMatchObject({ active: false, ready: false })
+    expect(await mutate([{ op: 'set', path: ['channels'], value: [] }])).toMatchObject({ ok: true })
+    expect(await imageHost()).toMatchObject({ active: true, ready: true, models: expect.arrayContaining(selectableImageModelIds.map(id => ({ alias: id, id, name: id }))) })
+    const restored = (await post('/api/dsh-imagegen/settings/describe')).value.namespaces[0].value
+    expect(restored).toMatchObject({ defaultChannelId: 'deleted-channel', defaultModel: 'deleted-model', channels: [] })
+    expect(images).toHaveLength(generatedCount)
     await runtime.stop()
     expect(leases).toHaveLength(1)
     for (const lease of leases) {
@@ -155,7 +192,7 @@ export function apply(ctx) {
   }
 }, process.env.DSH_TEST_IMAGEGEN_GUI === '1' ? 150_000 : 90_000)
 
-async function driveStudio(project: string, home: string, url: string) {
+async function driveStudio(project: string, home: string, url: string, catalogOnly = false) {
   const electron: unknown = createRequire(import.meta.url)('electron')
   if (typeof electron !== 'string') throw new Error('Native Electron executable required')
   const screenshot = join(tmpdir(), `desktop-imagegen-${Date.now()}.png`)
@@ -180,6 +217,7 @@ app.whenReady().then(async()=>{
   const window=new BrowserWindow({width:1400,height:1000,show:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
   window.webContents.on('console-message',event=>console.log('GUI '+event.message));
   await window.loadURL(${JSON.stringify(url)});
+  if(${JSON.stringify(catalogOnly)})await window.webContents.executeJavaScript('(()=>{const original=window.fetch;window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).includes("/api/dsh-imagegen/settings/mutate")){const result=await response.clone().json();if(!result.ok)console.log("GUI-MUTATION-REFUSAL "+JSON.stringify({code:result.code,message:result.message}));}return response;};})()');
   const wait=async(fn,label='UI condition')=>{
     for(let i=0;i<150;i++){if(await fn())return;await new Promise(r=>setTimeout(r,100));}
     console.log('GUI-TIMEOUT '+label+' '+await window.webContents.executeJavaScript('JSON.stringify({text:document.body.innerText,buttons:[...document.querySelectorAll("button")].filter(e=>e.getClientRects().length>0).map(e=>({text:e.innerText,label:e.getAttribute("aria-label"),title:e.title,disabled:e.disabled})),textareas:[...document.querySelectorAll("textarea")].map(e=>({value:e.value,visible:e.getClientRects().length>0})),images:[...document.querySelectorAll("img")].map(e=>({src:e.src.slice(0,100),complete:e.complete,width:e.naturalWidth,height:e.naturalHeight,visible:e.getClientRects().length>0,parent:e.parentElement.outerHTML.slice(0,1200)})),previewGrids:document.querySelectorAll("[data-result-preview-grid]").length})'));
@@ -202,10 +240,27 @@ app.whenReady().then(async()=>{
   await wait(()=>window.webContents.executeJavaScript('!!document.querySelector("textarea")'),'Studio prompt control');
   console.log('GUI-STUDIO '+await window.webContents.executeJavaScript('document.body.innerText'));
   await wait(()=>window.webContents.executeJavaScript('(()=>{const e=[...document.querySelectorAll("button[aria-haspopup=menu]")].find(button=>button.title.includes("GPT Image 1"));if(!e||e.disabled)return false;e.click();return true})()'),'Open managed model menu');
-  await wait(()=>click('GPT Image 1'),'Open managed channel model choices');
+  await wait(()=>click('Pengbao'),'Open managed channel model choices');
   const requiredModels=${JSON.stringify(selectableImageModelIds)};
   await wait(()=>window.webContents.executeJavaScript('JSON.stringify([...document.querySelectorAll("[role=menuitem],[role=menuitemradio]")].filter(e=>e.getClientRects().length>0&&!e.hasAttribute("disabled")&&e.getAttribute("aria-disabled")!=="true").map(e=>e.innerText.trim()))').then(value=>requiredModels.every(id=>JSON.parse(value).includes(id))),'All five managed image models in picker');
   console.log('GUI-MODEL-PICKER '+JSON.stringify(requiredModels));
+  if(${JSON.stringify(catalogOnly)}){
+    for(const id of requiredModels){
+      await wait(()=>click(id),'Select '+id);
+      await wait(()=>window.webContents.executeJavaScript('fetch("/api/dsh-imagegen/settings/describe",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.json()).then(r=>r.value?.namespaces?.some(n=>n.value?.desktopImageModelId==='+JSON.stringify(id)+'))'),'Save '+id);
+      if(id!==requiredModels.at(-1)){
+        await wait(()=>window.webContents.executeJavaScript('(()=>{const e=[...document.querySelectorAll("button[aria-haspopup=menu]")].find(e=>e.getClientRects().length>0&&e.title.includes('+JSON.stringify(id)+'));if(!e||e.disabled)return false;e.click();return true})()'),'Reopen selected model menu');
+        await wait(()=>click('Pengbao'),'Reopen managed channel');
+      }
+    }
+    await window.loadURL(window.webContents.getURL());
+    await wait(()=>click('Image').then(async ok=>ok||await click('生图')),'Reload studio');
+    await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("button[aria-haspopup=menu]")].some(e=>e.getClientRects().length>0&&e.title.includes("gemini-3.1-flash-image"))'),'Reload last selected model');
+    const image=await window.webContents.capturePage();require('fs').writeFileSync(${JSON.stringify(screenshot)},image.toPNG());
+    console.log('GUI-CATALOG-PERSISTENCE all five selections saved; last selection survives reload');
+    console.log('GUI-SCREENSHOT '+${JSON.stringify(screenshot)});
+    app.exit(0);return;
+  }
   await wait(()=>click('DALL·E 3'),'Select DALL·E 3');
   await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("button[aria-haspopup=menu]")].some(button=>button.title.includes("DALL·E 3"))'),'Selected model display');
   const selectedOnServer=()=>window.webContents.executeJavaScript('fetch("/api/dsh-imagegen/settings/describe",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.json()).then(r=>r.value?.namespaces?.some(n=>n.value?.desktopImageModelId==="dall-e-3"))');
@@ -263,7 +318,10 @@ setTimeout(()=>app.exit(2),65000);
   const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve) })
   console.log(output)
   expect(code, output).toBe(0)
-  for (const evidence of ['GUI-LOGO ', 'GUI-MODEL-PICKER '+JSON.stringify(selectableImageModelIds), 'GUI-PERSISTENCE dall-e-3 after full page reload', 'GUI-UNSUPPORTED-EDIT ', 'GUI-UNSUPPORTED-REFERENCES ', 'GUI-UNSUPPORTED-RESULT-EDIT disabled', 'GUI-FRIENDLY-MODEL Fixture Chat Beta', 'GUI-SCREENSHOT ']) {
+  const evidenceLines = catalogOnly
+    ? ['GUI-LOGO ', 'GUI-MODEL-PICKER '+JSON.stringify(selectableImageModelIds), 'GUI-CATALOG-PERSISTENCE all five selections saved; last selection survives reload', 'GUI-SCREENSHOT ']
+    : ['GUI-LOGO ', 'GUI-MODEL-PICKER '+JSON.stringify(selectableImageModelIds), 'GUI-PERSISTENCE dall-e-3 after full page reload', 'GUI-UNSUPPORTED-EDIT ', 'GUI-UNSUPPORTED-REFERENCES ', 'GUI-UNSUPPORTED-RESULT-EDIT disabled', 'GUI-FRIENDLY-MODEL Fixture Chat Beta', 'GUI-SCREENSHOT ']
+  for (const evidence of evidenceLines) {
     expect(output).toContain(evidence)
   }
 }

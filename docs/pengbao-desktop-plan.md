@@ -101,6 +101,17 @@ Harness UI → 本地 Harness Agent → pi-ai → main 中受限模型代理
 - 权限层最初拒绝直接修改已安装的 `@dickpy/dsh-imagegen/lib/{client,index,host-adapter}.js`，当时仅维护独立副本和权威补丁，未换工具绕过。用户随后明确授权更新这三个开发依赖文件并打包；依赖更新和 `imagegen:prepare` 已完成，使用实际安装依赖的 6 文件 231 项回归及类型检查通过。
 - 没有发送真实生图。服务端额外参数可覆盖客户端 `n:1`，且尚未建立获准的安全 UI 自动化路径；无法保证单张预算时不发请求，不读取管理员配置或提取凭据绕过。默认生图失败根因仍未确认。用户已另行要求提交和重新打包；没有改真实 Profile、关闭／重启用户应用、部署后端、改线上配置、推送、签名／公证／发布。
 
+### 2026-11-04 图片渠道继承与 Pengbao 显示修复
+
+- 修复 `channels: []` 时孤立的 `defaultChannelId`、`defaultModel` 或 `channelSecrets` 被误判为已配置自定义服务的问题。旧逻辑会读到实际默认模型名，却将受管服务标为 inactive，导致渠道和可用模型列表为空；隔离回放已复现这三类旧行为。尚未读取用户真实 Profile，不能断言线上具体由哪个残留字段触发。真正的自定义 channels、旧 apiUrl/apiKey/imageModels，以及显式 custom/off 仍优先；不删除或重写原有偏好与 secrets。
+- 渠道名称固定显示 `Pengbao`，模型名称独立显示实际默认或显式选择，例如 `Pengbao/gpt-image-2.5-sunburst`。内部渠道和默认模型身份仍是 `desktop-managed`，默认偏好为空且出站省略 model；显式模型继续保存和转发精确上游 ID。第三方 host 未提供 channelName 时保留 label 兼容回退。
+- 统一定向验证：类型检查、补丁正反向回放和安装文件逐字节比较、6 个测试文件共 239 项通过，`git diff --check` 通过。临时 Profile 的真实 Electron 界面中，五个指定模型均可逐个选择并保存，完整刷新后保留最后的 `gemini-3.1-flash-image`；本轮 GUI 验证限于目录与选择持久化，不代替增强、预览或真实供应商生成验收。补丁回放不是全新 npm ci。
+- GUI fixture 最初把用户偏好放入高优先级启动 overlay，正确触发 ConfigEditor 的不可编辑覆盖保护，出现保存失败。已将 fixture 偏好移入正常可编辑 Profile，启动 overlay 仅插入插件；未放宽配置保护、移除 revision fence 或改动用户真实配置。
+- 完整 `npm test` 实际结果：294 个测试文件通过、7 个失败、1 个跳过；3300 项通过、8 项失败、6 项跳过。失败包括 enterprise menu fixture 的 requestAccountSwitch 缺失（2 项）、本机 Python 缺少 contextlib.chdir、workbench 状态返回 503、PPT 模板预览断言，以及插件市场、host-disabled 插件和 PPT 模板导入超时。未为全绿修改这些范围外代码，不报告完整套件通过。
+- 新 macOS Intel 开发包位于 `dist-dev/imagegen-activation-20261104/`。原生目标验证、完整 build、包内 Harness/bootstrap/原生模块/终端和 695 份依赖清单、Office 编写及 DOCX/PPTX/XLSX 转 PDF 门禁均通过。实际包内 Helper/app.asar 配合临时 Profile、本地 mock 验证：三类孤立残留不阻断 Pengbao、默认省略 model、五个精确 ID 均可保存和派发、重启 Harness 后保留最后选择，原有孤立偏好仍在且 fixture capability 不持久化。包内 smoke 首次漏填 mock 状态响应的 serviceUrl/modelSelection 被严格校验拒绝；补齐 fixture 后通过，未修改产品 guard。
+- DMG 为 374,725,329 字节，SHA-256 `bd0238cb445e4d9bf412fc2005363881ec62f31e33b3527c6b201d5c9bde4fe9`；ZIP 为 375,573,549 字节，SHA-256 `62bf010af83ab6b065f62e72d61d325dde65ab736be7842fe836e843d262a010`。hdiutil verify 和 ZIP 全数据校验通过，codesign 确认未签名；构建仍有既有 renderer config 缺失提示。包来自保留其他 WIP 的完整工作树，不是仅本次提交的干净树构建。
+- 本轮修改保持唯一权威第三方补丁和 managed 包输入，派生客户端由 imagegen:prepare 生成。未做真实收费生图，未修改线上配置、用户 Profile 或现有应用安装；未推送桌面仓库、签名、公证或发布。
+
 ## 实施顺序
 
 ### 1. 固定协议与产品配置

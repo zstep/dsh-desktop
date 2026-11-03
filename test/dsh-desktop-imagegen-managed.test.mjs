@@ -21,6 +21,7 @@ function fixture(listModels) {
 describe('Desktop imagegen managed operations', () => {
   it('uses only the bound server-default image operation and never enhances generation', async () => {
     const { host, bridge, generate, stream } = fixture()
+    expect(host.image.channelName).toBe('Pengbao')
     const result = await host.image.generate({ prompt: 'blue flower', mode: 'text', size: '1024x768', n: 1, quality: 'auto', detail: '' }, new AbortController().signal)
 
     expect(result).toEqual({ b64: png.toString('base64'), mime: 'image/png' })

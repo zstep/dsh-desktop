@@ -59,6 +59,7 @@ export function createManagedOperations({ getBridge, getSelection, stream, listM
   return Object.freeze({
     image: Object.freeze({
       id: 'desktop-managed',
+      channelName: 'Pengbao',
       get label() { return imageLabel() },
       get models() { return imageModels() },
       async status() {

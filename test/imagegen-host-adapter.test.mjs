@@ -62,7 +62,7 @@ test('desktop prompt seam preserves mode and forwards cancellation signal', asyn
   assert.equal(calls[0].signal, signal)
 })
 
-test('host inheritance only applies with no explicit custom settings', () => {
+test('host inheritance only applies with no custom channel or legacy endpoint settings', () => {
   const host = { image: {}, prompt: {} }
   assert.equal(hostImageActive({}, host), true)
   assert.equal(hostImageActive({ channels: [{ id: 'custom' }] }, host), false)
@@ -70,6 +70,46 @@ test('host inheritance only applies with no explicit custom settings', () => {
   assert.equal(hostPromptActive({}, host), true)
   assert.equal(hostPromptActive({ promptModel: 'custom-model' }, host), false)
   assert.equal(hostPromptActive({ desktopPromptMode: 'off' }, host), false)
+})
+
+test('orphaned channel preferences never disable the managed channel or hide its five models', async () => {
+  const ids = ['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2', 'gemini-3-pro-image', 'gemini-3.1-flash-image']
+  const models = [{ alias: 'desktop-managed', id: 'desktop-managed', name: ids[0] },
+    ...ids.map(id => ({ alias: id, id, name: id }))]
+  const host = { image: { label: ids[0], models, status: async () => ({ ready: true, label: ids[0], selection: 'request-local', models: ids.map(id => ({ id, name: id })) }) } }
+  for (const residual of [
+    { defaultChannelId: 'deleted-channel' },
+    { defaultModel: 'deleted-model' },
+    { channelSecrets: { 'deleted-channel': 'orphaned-fixture-secret' } },
+    { defaultChannelId: 'desktop-managed', defaultModel: 'desktop-managed' },
+    { defaultChannelId: 'deleted-channel', defaultModel: 'deleted-model', channelSecrets: { 'deleted-channel': 'orphaned-fixture-secret' } }
+  ]) {
+    for (const mode of [undefined, 'inherit']) {
+      const config = { channels: [], desktopImageMode: mode, ...residual }
+      const original = structuredClone(config)
+      const view = await hostDescriptor(config, host)
+      assert.equal(view.image.active, true)
+      assert.equal(view.image.ready, true)
+      assert.equal(view.image.label, ids[0])
+      assert.deepEqual(view.image.models, models)
+      assert.deepEqual(projectStudio()({ value: config, host: view }).channels[0].models, models)
+      assert.deepEqual(config, original, 'inheritance must not erase saved custom settings')
+      assert.ok(!JSON.stringify(view).includes('orphaned-fixture-secret'))
+    }
+  }
+  for (const custom of [
+    { channels: [{ id: 'custom', apiUrl: 'https://fixture.invalid', models: [] }] },
+    { apiUrl: 'https://fixture.invalid' },
+    { apiKey: 'fixture-custom-key' },
+    { imageModels: ['custom-model'] },
+    { desktopImageMode: 'custom' },
+    { desktopImageMode: 'off' }
+  ]) {
+    const config = { desktopImageMode: 'inherit', channels: [], defaultModel: 'orphaned-model', ...custom }
+    const view = await hostDescriptor(config, host)
+    assert.equal(view.image.active, false)
+    assert.equal(view.image.ready, false)
+  }
 })
 
 test.skipIf(!!process.env.DSH_IMAGEGEN_TEST_LIB)('runtime queue uses instance managed generator and original history append', async () => {
@@ -167,9 +207,23 @@ test('managed preference is isolated from custom settings and rejects malformed 
     assert.ok(hostImageModel({ desktopImageModelId: id }, host).startsWith('\u0000'))
     assert.equal(choiceFromConfig({ desktopImageModelId: id }), hostImageModel({ desktopImageModelId: id }, host))
   }
-  assert.equal(hostImageActive({ desktopImageModelId: 'image-b', defaultModel: 'custom' }, host), false)
+  assert.equal(hostImageActive({ desktopImageModelId: 'image-b', defaultModel: 'custom' }, host), true)
   assert.equal(projectStudio()({ value: { desktopImageModelId: 'removed-model' }, host: { image: { ...host.image, id: 'desktop-managed', active: true } } }).defaultModel, 'removed-model')
   assert.equal(projectStudio()({ value: { desktopImageModelId: 'image-b', defaultModel: 'custom' }, host: { image: { ...host.image, active: false } } }).defaultModel, 'custom')
+})
+
+test('managed channel name stays Pengbao while the default model label refreshes independently', async () => {
+  const host = { image: { channelName: 'Pengbao', label: 'gpt-image-2.5-sunburst',
+    status: async () => ({ ready: true, label: 'gpt-image-2.5-sunburst' }) } }
+  const descriptor = await hostDescriptor({}, host)
+  const projected = projectStudio()({ value: {}, host: descriptor })
+  assert.equal(hostChannel(host).name, 'Pengbao')
+  assert.equal(descriptor.image.name, 'Pengbao')
+  assert.equal(descriptor.image.label, 'gpt-image-2.5-sunburst')
+  assert.equal(projected.channels[0].name, 'Pengbao')
+  assert.equal(projected.channels[0].models[0].name, 'gpt-image-2.5-sunburst')
+  const label = shippedClientFunction('modelChoiceLabel', 'ModelPicker')
+  assert.equal(`${projected.channels[0].name}/${label({ modelNames: { 'desktop-managed': descriptor.image.label } }, 'desktop-managed')}`, 'Pengbao/gpt-image-2.5-sunburst')
 })
 
 test('managed picker writes only dedicated IDs and exposes save failures', async () => {
