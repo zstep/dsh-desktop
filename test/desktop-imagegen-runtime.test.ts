@@ -6,10 +6,12 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import sharp from 'sharp'
 import { build } from 'esbuild'
+import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
 import { expect, it } from 'vitest'
 import { startPengbaoGateway } from '../src/main/enterprise/gateway'
 import { preparePengbaoProviderOverlay } from '../src/main/enterprise/provider-overlay'
 import { HarnessRuntime } from '../src/main/runtime/harness-runtime'
+import { discoverModelServiceConsumers } from '../src/main/state/model-service-discovery'
 import { resolveTestNodeExecutable } from './node-executable'
 
 const selectableImageModelIds = ['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2', 'gemini-3-pro-image', 'gemini-3.1-flash-image']
@@ -22,6 +24,8 @@ it('loads the image studio in a temporary Harness and follows server image / cur
   const png = await sharp({ create: { width: 16, height: 12, channels: 4, background: '#12345680' } }).png().toBuffer()
   const jwt = 'imagegen-runtime-fixture-not-a-real-jwt'
   const images: unknown[] = []
+  const parameterRevision = 'a'.repeat(64)
+  const generationParameters = { contractVersion: 1, revision: parameterRevision, models: [{ id: 'dall-e-3', maxImages: 4, qualities: ['auto', 'low', 'medium', 'high'], details: ['', 'standard', 'high'] }] }
   const chats: unknown[] = []
   let selectedModelAvailable = true
   const imageModels = () => [{ id: 'gpt-image-1', name: 'GPT Image 1' }, ...(selectedModelAvailable ? [{ id: 'dall-e-3', name: 'DALL·E 3' }] : []), ...selectableImageModelIds.map(id => ({ id, name: id }))]
@@ -29,18 +33,20 @@ it('loads the image studio in a temporary Harness and follows server image / cur
     const url = new URL(String(input))
     expect(url.origin).toBe('https://pengbao.ecombus.net')
     expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${jwt}`)
-    if (url.pathname === '/api/config') return Response.json({ features: { enable_image_generation: true } })
+    if (url.pathname === '/api/v1/models') return Response.json({ data: [{ id: 'chat-a', name: 'Fixture Chat Alpha' }, { id: 'chat-b', name: 'Fixture Chat Beta' }] })
+    if (url.pathname === '/api/config') return Response.json({ features: { enable_image_generation: true }, default_models: 'chat-a' })
     if (url.pathname === '/api/v1/auths/') return Response.json({ role: 'user', permissions: { features: { image_generation: true } }, token: jwt })
     if (url.pathname === '/api/v1/images/metadata') return Response.json({
       defaultModel: { id: 'gpt-image-1', name: 'GPT Image 1' }, selection: 'request-local', catalogStatus: 'available',
-      models: imageModels()
+      models: imageModels(), generationParameters
     }, { headers: { 'X-Image-Model-Selection': 'request-local-v1' } })
     if (url.pathname === '/api/v1/images/models') return Response.json(imageModels(), { headers: { 'X-Image-Model-Selection': 'request-local-v1' } })
     if (url.pathname === '/api/v1/images/generations') {
-      images.push(JSON.parse(String(init?.body)))
-      return Response.json([{ id: 'fixture', url: '/api/v1/files/fixture/content' }])
+      const input = JSON.parse(String(init?.body))
+      images.push(input)
+      return Response.json(Array.from({ length: input.n ?? 1 }, (_, index) => ({ id: `fixture-${index}`, url: `/api/v1/files/fixture-${index}/content` })))
     }
-    if (url.pathname === '/api/v1/files/fixture/content') return new Response(png, { headers: { 'content-type': 'image/png' } })
+    if (/^\/api\/v1\/files\/fixture-[0-3]\/content$/.test(url.pathname)) return new Response(png, { headers: { 'content-type': 'image/png' } })
     if (url.pathname === '/api/v1/chat/completions') {
       chats.push(JSON.parse(String(init?.body)))
       return new Response('data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n\ndata: {"choices":[{"delta":{"content":"A blue flower in soft light"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -58,6 +64,29 @@ export function apply(ctx) {
   }});
 }
 `)
+  const consumerId = 'fixture-model-service-consumer'
+  const profileDirectory = join(home, 'profiles', 'web')
+  const consumerDirectory = join(profileDirectory, 'node_modules', consumerId)
+  await mkdir(consumerDirectory, { recursive: true })
+  await writeFile(join(consumerDirectory, 'package.json'), JSON.stringify({ name: consumerId, version: '1.0.0', type: 'module', main: 'index.js',
+    dsh: { bundle: { patch: 'cordis.patch.yml' }, modelService: { contractVersion: 1, capabilities: ['chat.completions', 'image.generate'] } } }))
+  await writeFile(join(consumerDirectory, 'cordis.patch.yml'), `- insert:\n    - id: fixture-model-service-consumer\n      name: ${consumerId}\n`)
+  await writeFile(join(consumerDirectory, 'index.js'), `
+export const inject=['modelService','connection'];
+export function apply(ctx){
+  const scope=ctx.modelService.forConsumer('fixture-model-service-consumer');
+  ctx.effect(()=>()=>scope.dispose());
+  ctx.connection.fetch.register({path:'/api/model-service-fixture/use',methods:['POST'],fetch:async request=>{
+    const input=await request.json();
+    try{
+      if(input.action==='image'){const bytes=await scope.image.generate('Fixture facade image');return Response.json({bytes:bytes.byteLength})}
+      let text='';for await(const event of scope.chat.stream({messages:[{role:'user',content:[{type:'text',text:'Fixture facade chat'}]}]})){if(event.type==='text-delta')text+=event.text}
+      return Response.json({text});
+    }catch(error){return Response.json({code:error.code||'FAILED'})}
+  }});
+}
+`)
+  await writeFile(join(profileDirectory, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: [...PROFILE_TEMPLATES.web!.bundles, consumerId] } } }))
   const patch = join(home, 'imagegen.patch.yml')
   await mkdir(join(home, 'profiles', 'web'), { recursive: true })
   // User preferences belong in the editable Profile, not the higher-priority host overlay.
@@ -88,6 +117,9 @@ export function apply(ctx) {
     dshPatchPath: patch, dshSafePatchPath: join(project, 'build/dsh-desktop-safe.patch.yml'),
     dshHome: home, logPath: join(home, 'runtime.log'), preferredPort: 0, startupTimeoutMs: process.env.DSH_TEST_IMAGEGEN_GUI === '1' ? 60_000 : 30_000,
     privateModelHandoff: () => ({ gatewayUrl: gateway.url, capabilityToken: gateway.capabilityToken }),
+    privateModelServiceGrant: capabilities => gateway.createModelServiceGrant(capabilities),
+    privateModelServiceConsumers: (profile, sourcePatch, overlays) => discoverModelServiceConsumers(home, profile,
+      join(project, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), sourcePatch, overlays),
     providerOverlay: profile => preparePengbaoProviderOverlay(home, profile, { gatewayUrl: gateway.url, models: [{ id: 'chat-a', name: 'Fixture Chat Alpha' }, { id: 'chat-b', name: 'Fixture Chat Beta' }] }),
     privateImageLease: () => { const lease = gateway.createImageLease(); leases.push(lease); return { gatewayUrl: gateway.url, ...lease } },
     launchProcess: (executable, args, options) => spawn(executable, args, options), onChanged() {}
@@ -105,6 +137,43 @@ export function apply(ctx) {
       expect(response.status, await response.clone().text() + '\n' + runtime.snapshot().logs.join('\n')).toBe(200)
       return response.json()
     }
+    const overview = async () => {
+      const response = await fetch(`${snapshot.url}/api/model-service.overview`, { headers: { Cookie: cookie } })
+      expect(response.status, await response.clone().text() + '\n' + runtime.snapshot().logs.join('\n')).toBe(200)
+      return response.json()
+    }
+    const initialOverview = await overview()
+    expect(initialOverview.consumers).toContainEqual(expect.objectContaining({ id: consumerId, state: 'not-connected', adapter: 'facade' }))
+    expect(initialOverview.video).toEqual({ available: false, reason: 'unverified' })
+    expect(initialOverview.editable).toEqual({ chat: false, image: false })
+    expect(initialOverview.consumers).toContainEqual(expect.objectContaining({ id: 'dsh-desktop-imagegen', state: 'already-connected' }))
+    expect(initialOverview.consumers.map((consumer: { id: string }) => consumer.id)).not.toEqual(expect.arrayContaining(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']))
+    expect(await post('/api/model-service-fixture/use')).toEqual({ code: 'FORBIDDEN' })
+
+    const skipped = await post('/api/model-service.plan', { action: 'connect-all', skipConsumerIds: [consumerId] })
+    expect(skipped.candidates).toContainEqual({ id: consumerId, state: 'skipped' })
+    expect(skipped.changes).toHaveLength(0)
+    const connectionPlan = await post('/api/model-service.plan', { action: 'connect-all' })
+    expect(connectionPlan.candidates).toContainEqual({ id: consumerId, state: 'ready' })
+    const connectionReceipt = await post('/api/model-service.apply', { planId: connectionPlan.id })
+    expect((await overview()).consumers).toContainEqual(expect.objectContaining({ id: consumerId, state: 'connected' }))
+    expect(await post('/api/model-service-fixture/use'), runtime.snapshot().logs.join('\\n')).toEqual({ text: 'A blue flower in soft light' })
+    expect(chats.at(-1)).toMatchObject({ model: 'chat-a' })
+    expect(await post('/api/model-service-fixture/use', { action: 'image' })).toEqual({ bytes: png.byteLength })
+    expect(images.at(-1)).toMatchObject({ prompt: 'Fixture facade image' })
+    const persistedConnections = await readFile(join(profileDirectory, 'cordis.patch.yml'), 'utf8')
+    expect(persistedConnections).toContain(consumerId)
+    expect(persistedConnections).not.toContain(jwt)
+    expect((await overview()).defaults.chat.model).toBe('chat-a')
+    expect(await post('/api/model-service.rollback', { receiptId: connectionReceipt.receiptId })).toMatchObject({ state: 'rolled-back' })
+    expect(await post('/api/model-service-fixture/use')).toEqual({ code: 'FORBIDDEN' })
+
+    if (process.env.DSH_TEST_MODEL_SERVICE_GUI === '1') {
+      await driveModelConnections(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`)
+      expect((await overview()).consumers).toContainEqual(expect.objectContaining({ id: consumerId, state: 'not-connected' }))
+    }
+    images.length = 0
+    chats.length = 0
     const described = await post('/api/dsh-imagegen/settings/describe')
     const namespaces = described.value?.namespaces ?? []
     expect(namespaces, JSON.stringify(described)).toContainEqual(expect.objectContaining({ host: expect.objectContaining({ image: expect.objectContaining({ active: true, ready: true, models: expect.arrayContaining([{ alias: 'gpt-image-1', id: 'gpt-image-1', name: 'GPT Image 1' }, { alias: 'desktop-managed', id: 'desktop-managed', name: 'GPT Image 1' }]), label: 'GPT Image 1' }), prompt: expect.objectContaining({ active: true, ready: true, label: 'Fixture Chat Alpha' }) }) }))
@@ -132,21 +201,33 @@ export function apply(ctx) {
     const html = await fetch(snapshot.url, { headers: { Cookie: cookie } }).then(response => response.text())
     expect(html).toContain('dsh-desktop-imagegen')
     if (process.env.DSH_TEST_IMAGEGEN_CATALOG_GUI === '1') {
-      await driveStudio(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`, true)
+      await driveStudio(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`, true, png.toString('base64'))
       expect(images).toHaveLength(2)
       expect((await post('/api/dsh-imagegen/settings/describe')).value.namespaces[0].value.desktopImageModelId).toBe(selectableImageModelIds.at(-1))
       expect(await post('/api/dsh-imagegen/settings/mutate', { ns: 'dsh-imagegen', ops: [{ op: 'set', path: ['desktopImageModelId'], value: '' }] })).toMatchObject({ ok: true })
     }
     if (process.env.DSH_TEST_IMAGEGEN_GUI === '1') {
-      await driveStudio(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`)
+      try {
+        await driveStudio(project, home, `${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`, false, png.toString('base64'))
+      } catch (error) {
+        console.log('GUI-RUNTIME-FAILURE '+JSON.stringify({ images, logs: runtime.snapshot().logs }))
+        throw error
+      }
       expect(images).toHaveLength(3)
-      expect(images[2]).toMatchObject({ model: 'dall-e-3' })
+      expect(images[2]).toMatchObject({ model: 'dall-e-3', n: 2, quality: 'high', detail: 'standard', parameterContractVersion: 1, parameterRevision })
       expect(chats).toHaveLength(3)
       expect(chats[2]).toMatchObject({ model: 'chat-b' })
       expect((await post('/api/dsh-imagegen/settings/describe')).value.namespaces[0].value.desktopImageModelId).toBe('dall-e-3')
       expect(await post('/api/dsh-imagegen/generate', { prompt: 'Saved model without an explicit request model', n: 1 })).toMatchObject({ ok: true })
       expect(images[3]).toMatchObject({ model: 'dall-e-3', prompt: 'Saved model without an explicit request model' })
     }
+    const beforeBatch = images.length
+    const batch = await post('/api/dsh-imagegen/generate', { prompt: 'Two declared images', model: 'dall-e-3', channelId: 'desktop-managed', n: 2, quality: 'high', detail: 'standard', parameterContractVersion: 1, parameterRevision })
+    expect(batch).toMatchObject({ ok: true, images: [expect.objectContaining({ mime: 'image/png' }), expect.objectContaining({ mime: 'image/png' })] })
+    expect(images).toHaveLength(beforeBatch + 1)
+    expect(images.at(-1)).toMatchObject({ n: 2, quality: 'high', detail: 'standard', parameterContractVersion: 1, parameterRevision })
+    const batchHistory = await post('/api/dsh-imagegen/history/list')
+    expect(JSON.stringify(batchHistory)).toContain('Two declared images')
     const generatedCount = images.length
     selectedModelAvailable = false
     for (const path of ['/api/dsh-imagegen/generate', '/api/dsh-imagegen/tasks/submit']) {
@@ -190,9 +271,77 @@ export function apply(ctx) {
     await gateway.stop()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
-}, process.env.DSH_TEST_IMAGEGEN_GUI === '1' ? 150_000 : 90_000)
+}, process.env.DSH_TEST_IMAGEGEN_GUI === '1' || process.env.DSH_TEST_MODEL_SERVICE_GUI === '1' ? 180_000 : 90_000)
 
-async function driveStudio(project: string, home: string, url: string, catalogOnly = false) {
+async function driveModelConnections(project: string, home: string, url: string) {
+  const electron: unknown = createRequire(import.meta.url)('electron')
+  if (typeof electron !== 'string') throw new Error('Native Electron executable required')
+  const screenshot = join(tmpdir(), `desktop-model-connections-${Date.now()}.png`)
+  const script = join(home, 'model-connections-gui.cjs')
+  await build({
+    stdin: { resolveDir: project, loader: 'js', contents: `
+const {app,BrowserWindow}=require('electron');
+const {registerDesktopScheme,installDesktopProtocol}=require(${JSON.stringify(join(project, 'src/main/desktop-protocol.ts'))});
+const assert=require('node:assert/strict');
+app.setPath('userData',${JSON.stringify(join(home, 'model-gui-data'))});
+app.enableSandbox();
+registerDesktopScheme();
+app.whenReady().then(async()=>{
+  installDesktopProtocol(name=>require('node:path').join(${JSON.stringify(join(project, 'build'))},name));
+  const window=new BrowserWindow({width:1200,height:1050,show:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
+  window.webContents.on('console-message',event=>console.log('MODEL-GUI '+event.message));
+  const js=source=>window.webContents.executeJavaScript(source);
+  const wait=async(fn,label)=>{for(let i=0;i<150;i++){if(await fn())return;await new Promise(r=>setTimeout(r,100))}throw Error(label+' timed out: '+await js('document.body.innerText'))};
+  const click=labels=>js('(()=>{const labels='+JSON.stringify(labels)+';const root=document.querySelector("[data-testid=desktop-model-service-settings]")||document;const e=[...root.querySelectorAll("button,a,[role=button],[role=tab],[role=menuitem]")].find(e=>!e.disabled&&e.getClientRects().length&&labels.includes((e.innerText||e.getAttribute("aria-label")||e.title||"").trim()));if(!e)return false;e.click();return true})()');
+  const open=async()=>{
+    await wait(()=>js('document.querySelectorAll("button").length>0'),'Shell');
+    await wait(()=>click(['Settings','设置']),'Open settings');
+    await wait(()=>click(['Pengbao model foundation','鹏宝模型底座']),'Open primary model foundation');
+    await wait(()=>js('!!document.querySelector("[data-testid=desktop-model-service-settings]")'),'Read primary model catalog');
+  };
+  await window.loadURL(${JSON.stringify(url)});
+  await js('(()=>{const original=window.fetch;window.fetch=async(...args)=>{const response=await original(...args);if(!response.ok&&String(args[0]).includes("model-service"))console.log("MODEL-API-ERROR "+response.status+" "+await response.clone().text());return response}})()');
+  await open();
+  await wait(()=>js('(()=>{const root=document.querySelector("[data-testid=desktop-model-service-settings]");const cards=root?.querySelectorAll(".dshModelServiceCard")||[];return cards.length>=2&&!cards[0].querySelector("select")&&!cards[1].querySelector("select")&&root.innerText.includes("chat-a")&&root.innerText.includes("gpt-image-1")})()'),'Read-only server defaults');
+  await wait(()=>js('(()=>{const root=document.querySelector("[role=dialog]");const e=[...(root||document).querySelectorAll("button,[role=tab]")].find(e=>e.getClientRects().length&&["Built-in plugins","内置插件"].includes(e.innerText.trim()));if(!e)return false;e.click();return true})()'),'Open compatibility plugin settings');
+  await wait(()=>click(['Model connections','模型连接']),'Open compatibility model settings');
+  await wait(()=>js('!!document.querySelector("[data-testid=desktop-model-service-settings]")'),'Same model component through legacy entry');
+  await wait(()=>click(['Connect all compatible plugins','连接所有兼容插件']),'Preview connections');
+  await wait(()=>js('document.querySelectorAll("[role=dialog] input[type=checkbox]").length===1'),'Connection preview');
+  await js('document.querySelector("[role=dialog] input[type=checkbox]").click()');
+  await wait(()=>js('(()=>{const e=document.querySelector("[role=dialog] input[type=checkbox]");return e&&!e.checked&&!e.disabled})()'),'Skip candidate');
+  await js('document.querySelector("[role=dialog] input[type=checkbox]").click()');
+  await wait(()=>js('(()=>{const e=document.querySelector("[role=dialog] input[type=checkbox]");return e&&e.checked&&!e.disabled})()'),'Reinclude candidate');
+  await wait(()=>click(['Apply','应用']),'Apply connection');
+  await wait(()=>js('fetch("/api/model-service.overview").then(r=>r.json()).then(v=>v.consumers.some(c=>c.id==="fixture-model-service-consumer"&&c.state==="connected"))'),'Persisted binding');
+  await window.loadURL(window.webContents.getURL());
+  await open();
+  assert.equal(await js('document.querySelector("[data-testid=desktop-model-service-settings]").innerText.includes("fixture-model-service-consumer")'),true);
+  await wait(()=>click(['Undo last change','撤销上次变更']),'Rollback after reload');
+  await wait(()=>js('fetch("/api/model-service.overview").then(r=>r.json()).then(v=>v.consumers.some(c=>c.id==="fixture-model-service-consumer"&&c.state==="not-connected"))'),'Rollback binding');
+  await wait(()=>js('(()=>{const root=document.querySelector("[data-testid=desktop-model-service-settings]");return root&&[...root.querySelectorAll("select")].every(e=>!e.disabled)&&[...root.querySelectorAll(".dshModelServiceCard")].some(e=>e.innerText.includes("fixture-model-service-consumer")&&/未连接|Not connected/.test(e.innerText))})()'),'Settled rollback UI');
+  await wait(()=>js('[...document.querySelectorAll("img")].some(e=>e.src==="dsh-desktop://desktop/pengbao-b2-mark.png"&&e.complete&&e.naturalWidth>0)'),'Real desktop logo');
+  await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  const image=await window.webContents.capturePage();require('node:fs').writeFileSync(${JSON.stringify(screenshot)},image.toPNG());
+  console.log('MODEL-GUI-PASSED defaults preview skip reinclude apply reload rollback');
+  console.log('MODEL-GUI-SCREENSHOT '+${JSON.stringify(screenshot)});
+  app.exit(0);
+}).catch(error=>{console.error(error);app.exit(1)});
+setTimeout(()=>app.exit(2),65000);
+` }, bundle: true, platform: 'node', format: 'cjs', external: ['electron'], outfile: script
+  })
+  const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: home }; delete env.ELECTRON_RUN_AS_NODE
+  const child = spawn(electron, [script], { cwd: project, env, signal: AbortSignal.timeout(70_000), stdio: 'pipe' })
+  let output = ''
+  child.stdout.on('data', part => { output += String(part) })
+  child.stderr.on('data', part => { output += String(part) })
+  const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve) })
+  console.log(output)
+  expect(code, output).toBe(0)
+  expect(output).toContain('MODEL-GUI-PASSED')
+}
+
+async function driveStudio(project: string, home: string, url: string, catalogOnly = false, expectedPngBase64 = '') {
   const electron: unknown = createRequire(import.meta.url)('electron')
   if (typeof electron !== 'string') throw new Error('Native Electron executable required')
   const screenshot = join(tmpdir(), `desktop-imagegen-${Date.now()}.png`)
@@ -215,7 +364,14 @@ registerDesktopScheme();
 app.whenReady().then(async()=>{
   installDesktopProtocol(name=>require('node:path').join(${JSON.stringify(join(project, 'build'))},name));
   const window=new BrowserWindow({width:1400,height:1000,show:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
+  const downloads=[];
+  window.webContents.session.on('will-download',(_event,item)=>{
+    const target=require('node:path').join(${JSON.stringify(home)},'fixture-'+item.getFilename());
+    item.setSavePath(target);
+    item.once('done',(_event,state)=>{if(state==='completed')downloads.push(target)});
+  });
   window.webContents.on('console-message',event=>console.log('GUI '+event.message));
+  window.webContents.session.webRequest.onCompleted({urls:['http://127.0.0.1/*']},details=>{if(details.url.includes('/tasks/'))console.log('GUI-TASK-HTTP '+JSON.stringify({path:new URL(details.url).pathname,status:details.statusCode}));});
   await window.loadURL(${JSON.stringify(url)});
   if(${JSON.stringify(catalogOnly)})await window.webContents.executeJavaScript('(()=>{const original=window.fetch;window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).includes("/api/dsh-imagegen/settings/mutate")){const result=await response.clone().json();if(!result.ok)console.log("GUI-MUTATION-REFUSAL "+JSON.stringify({code:result.code,message:result.message}));}return response;};})()');
   const wait=async(fn,label='UI condition')=>{
@@ -239,6 +395,7 @@ app.whenReady().then(async()=>{
   await wait(()=>click('Image').then(async ok=>ok||await click('生图')),'Image studio navigation');
   await wait(()=>window.webContents.executeJavaScript('!!document.querySelector("textarea")'),'Studio prompt control');
   console.log('GUI-STUDIO '+await window.webContents.executeJavaScript('document.body.innerText'));
+  await wait(()=>window.webContents.executeJavaScript('(()=>{const q=document.querySelector("[data-testid=imagegen-quality-high]");const n=document.querySelector("[data-testid=imagegen-count-2]");const d=document.querySelector("[data-testid=imagegen-detail-high]");const status=document.querySelector("[data-managed-parameter-status]");return q?.disabled&&n?.disabled&&d?.disabled&&!!status?.innerText})()'),'Undeclared model options disabled with reason');
   await wait(()=>window.webContents.executeJavaScript('(()=>{const e=[...document.querySelectorAll("button[aria-haspopup=menu]")].find(button=>button.title.includes("GPT Image 1"));if(!e||e.disabled)return false;e.click();return true})()'),'Open managed model menu');
   await wait(()=>click('Pengbao'),'Open managed channel model choices');
   const requiredModels=${JSON.stringify(selectableImageModelIds)};
@@ -286,11 +443,19 @@ app.whenReady().then(async()=>{
   assert.ok(referenceControls.length>0&&referenceControls.every(e=>e.disabled&&e.description),'Managed reference image uploads must be disabled with an explanation');
   console.log('GUI-UNSUPPORTED-REFERENCES '+JSON.stringify(referenceControls));
   await wait(()=>click('Standard').then(async ok=>ok||await click('普通生图')),'Return to standard workspace');
+  const parameter = id => window.webContents.executeJavaScript('(()=>{const e=[...document.querySelectorAll("[data-testid='+id+']")].find(e=>e.getClientRects().length>0);if(!e||e.disabled)return false;e.click();return true})()');
+  await wait(()=>parameter('imagegen-quality-high'),'Select declared provider quality');
+  await wait(()=>parameter('imagegen-count-2'),'Select declared batch count');
+  await wait(()=>parameter('imagegen-detail-standard'),'Select declared generation detail');
   await window.webContents.executeJavaScript('(()=>{const e=[...document.querySelectorAll("textarea")].find(e=>e.getClientRects().length>0);Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(e,"A blue flower");e.dispatchEvent(new Event("input",{bubbles:true}))})()');
   await wait(()=>click('Enhance').then(async ok=>ok||await click('增强')),'Prompt enhance action');
   await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("textarea")].some(e=>e.value==="A blue flower in soft light")'),'Enhanced prompt response');
   await wait(()=>click('Generate').then(async ok=>ok||await click('开始生成')),'Generate action');
-  await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("[data-result-preview-grid] img")].some(e=>e.getClientRects().length>0&&e.complete&&e.naturalWidth===16&&e.naturalHeight===12)&&[...document.querySelectorAll("button")].some(e=>!e.disabled&&["Generate","开始生成"].includes(e.innerText.trim()))'),'Generated preview loaded and generate action available');
+  await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("[data-result-preview-grid] img")].filter(e=>e.getClientRects().length>0&&e.complete&&e.naturalWidth===16&&e.naturalHeight===12).length===2&&[...document.querySelectorAll("button")].some(e=>!e.disabled&&["Generate","开始生成"].includes(e.innerText.trim()))'),'Two generated previews loaded and generate action available');
+  await window.webContents.executeJavaScript('(()=>{const links=[...document.querySelectorAll("a[download]")].filter(e=>e.getClientRects().length>0&&e.download.startsWith("dsh-image-"));if(links.length!==2)throw Error("Expected two independently savable images");links.forEach(e=>e.click())})()');
+  await wait(async()=>downloads.length===2,'Save both generated images into temporary profile');
+  for(const target of downloads)assert.equal(require('node:fs').readFileSync(target).toString('base64'),${JSON.stringify(expectedPngBase64)});
+  console.log('GUI-BATCH-SAVED '+downloads.length);
   await window.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   await new Promise(resolve=>setTimeout(resolve,500));
   console.log('GUI-RESULT '+await window.webContents.executeJavaScript('JSON.stringify({text:document.body.innerText.slice(-1200),images:[...document.querySelectorAll("[data-result-preview-grid] img")].map(e=>({src:e.src.slice(0,60),width:e.naturalWidth,height:e.naturalHeight,rect:e.getBoundingClientRect().toJSON()}))})'));
@@ -303,6 +468,9 @@ app.whenReady().then(async()=>{
   await wait(()=>click('Settings').then(async ok=>ok||await click('设置')),'Open settings');
   await wait(()=>click('Image settings').then(async ok=>ok||await click('生图配置')),'Open image settings');
   await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("[data-dsh-imagegen-settings-panel]")].some(e=>e.getClientRects().length>0&&e.innerText.includes("Fixture Chat Beta"))'),'Friendly prompt model display');
+  await wait(()=>click('Manage model foundation').then(async ok=>ok||await click('管理模型底座')),'Open image settings foundation shortcut');
+  await wait(()=>window.webContents.executeJavaScript('!!document.querySelector("[data-testid=desktop-model-service-settings]")'),'Foundation shortcut navigates to the same settings component');
+  console.log('GUI-FOUNDATION-SHORTCUT primary settings component opened');
   console.log('GUI-FRIENDLY-MODEL Fixture Chat Beta');
   app.exit(0);
 }).catch(error=>{console.error(error);app.exit(1)});

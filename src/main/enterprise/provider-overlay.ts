@@ -26,7 +26,8 @@ function providerProfile(route: PengbaoProviderRoute): Record<string, unknown> {
     defaultInput: ['text'],
     models: route.models.map((model) => ({
       id: model.id,
-      ...(model.name === undefined ? {} : { name: model.name })
+      ...(model.name === undefined ? {} : { name: model.name }),
+      input: model.input?.includes('image') ? ['text', 'image'] : ['text']
     }))
   }
 }

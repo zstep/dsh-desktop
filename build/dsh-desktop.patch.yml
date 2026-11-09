@@ -35,6 +35,7 @@
       name: dsh-desktop-workbenches
       config:
         root: !!js dshHomePath('desktop-workbenches')
+        catalogUrl: https://market.dshdesktop.com/index.json
 
     - id: dsh-desktop-onboarding
       name: dsh-desktop-onboarding
@@ -45,9 +46,10 @@
     - id: dsh-desktop-market-installer
       name: dsh-desktop-market-installer
 
-    # Installation-owned image studio; Profile-installed imagegen takes precedence.
-    - id: imagegen
-      name: dsh-desktop-imagegen
+    # The host-owned model service publishes typed operations backed by the
+    # private per-runtime grant; consumers never receive its token or URL.
+    - id: dsh-desktop-model-service
+      name: dsh-desktop-model-service
 
     # One shared image tool for conversations and Office workflows.
     - id: dsh-image-generation

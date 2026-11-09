@@ -1,10 +1,17 @@
+import { isAbsolute, resolve } from 'node:path'
+
 /** Development overrides isolate concurrent worktrees without changing production identity. */
 export function developmentEnvironment(development: boolean, defaultHarnessPort: number, env: NodeJS.ProcessEnv = process.env): {
+  userData?: string
   profile: string
   harnessPort: number
   mobilePort: number
 } {
   if (!development) return { profile: 'dsh-desktop', harnessPort: defaultHarnessPort, mobilePort: 43127 }
+  const userData = env.DSH_DEV_USER_DATA
+  if (userData !== undefined && (!isAbsolute(userData) || resolve(userData) === resolve('/'))) {
+    throw new Error('DSH_DEV_USER_DATA must be an absolute non-root directory.')
+  }
   const profile = env.DSH_DEV_PROFILE || 'dsh-desktop-dev'
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(profile) || profile === 'dsh-desktop') {
     throw new Error('DSH_DEV_PROFILE must be a separate development directory name.')
@@ -20,5 +27,5 @@ export function developmentEnvironment(development: boolean, defaultHarnessPort:
   const harnessPort = port(env.DSH_DEV_HARNESS_PORT, defaultHarnessPort + 1, 'DSH_DEV_HARNESS_PORT')
   const mobilePort = port(env.DSH_DEV_MOBILE_PORT, 43128, 'DSH_DEV_MOBILE_PORT')
   if (harnessPort === mobilePort) throw new Error('Development Harness and mobile ports must differ.')
-  return { profile, harnessPort, mobilePort }
+  return { userData, profile, harnessPort, mobilePort }
 }

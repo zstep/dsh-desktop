@@ -61,6 +61,7 @@ window.__ModuleLoader__.load({
     }
     const css = `
       /* Match the Host PluginCard design contract; its component is internal. */
+      @media(prefers-reduced-motion:reduce){.dshImageCard,.dshImageChevron{transition:none}}
       .dshImageCard{list-style:none;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);border-radius:16px;transition:border-color .16s,background .16s}
       .dshImageCard:hover{border-color:var(--dsw-alias-label-dimmed)}.dshImageCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
       .dshImageHeader{appearance:none;display:flex;align-items:center;gap:12px;width:100%;padding:14px 16px;background:transparent;border:0;border-radius:12px;text-align:left;color:inherit;font:inherit;cursor:pointer}
@@ -308,9 +309,9 @@ window.__ModuleLoader__.load({
     }
     function generatedResult(event) {
       const native = event.type === 'tool/result' && event.surfaceOp === 'append'
-      const dispatched = event.type === 'tool/code-dispatch' && event.data.name === 'image_generate'
+      const dispatched = (event.type === 'tool/ptc-dispatch' || event.type === 'tool/code-dispatch') && event.data.name === 'image_generate'
       if (!native && !dispatched) return
-      const result = native ? event.data.message?.content?.[0] : event.data
+      const result = native ? event.data.message : event.data
       const id = native ? event.data.message?.source?.callId : event.data.subCallId
       if (!id || result?.isError || !Array.isArray(result?.content)) return
       for (const block of result.content) {
@@ -339,7 +340,7 @@ window.__ModuleLoader__.load({
           anchorSeq, location, visibility: 'visible', data: context.state }
       },
     }
-    function GeneratedImage({ node, loadImage, renderMessageImages, t }) {
+    function GeneratedImage({ node, loadImage, renderFactorySlot, t }) {
       const image = node.data
       const [url, setUrl] = React.useState(null)
       const [error, setError] = React.useState(false)
@@ -356,7 +357,7 @@ window.__ModuleLoader__.load({
       }, [loadImage, image.sha256, attempt])
       if (error) return h('button', { type: 'button', className: 'dshImageFetch', onClick: () => setAttempt(value => value + 1) }, t('previewRetry'))
       if (!url) return h('p', { className: 'dshImageHint', role: 'status' }, t('previewLoading'))
-      return renderMessageImages({ images: [{ preview: { url, width: image.width, height: image.height, name: t('generatedImage') } }], align: 'start' })
+      return renderFactorySlot('conversation.images.content', { images: [{ preview: { url, width: image.width, height: image.height, name: t('generatedImage') } }], align: 'start' })
     }
     function previewLoader(sessionId) {
       return async (sha, signal) => {

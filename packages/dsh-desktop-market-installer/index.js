@@ -21,6 +21,7 @@ import {
 } from './generations/registry.mjs'
 import { DEFAULT_NPM_REGISTRY, resolveMarketRegistry } from './market-registry.mjs'
 import { forgetPlugin } from './plugin-state.mjs'
+import { provisionDefaultPlugins } from './default-plugins.mjs'
 import { SIDELINE_MARKER } from './pnpm-runner.mjs'
 import { removeTree } from './remove-tree.mjs'
 import { hideConsoleCmdAssignment, hideConsoleImportArguments } from './windows-hide-console.mjs'
@@ -953,6 +954,17 @@ export async function apply(ctx) {
   ctx.provide('desktopPnpm', desktopPnpm)
   ctx.provide('profileBundlePackageBackend', profileBundlePackageBackend)
   ctx.effect(() => () => desktopPnpm.dispose(), 'dsh-desktop-market-installer: desktop pnpm')
+  // Optional services become available after composition. Never hold ready on
+  // market I/O, and never seed/provision the recovery Profile.
+  ctx.inject(['pluginMarket', 'pluginManager'], (marketCtx) => marketCtx.effect(() => {
+    const lifetime = new AbortController()
+    const manager = marketCtx.pluginManager
+    const profileDir = manager.profile?.dir
+    if (typeof profileDir !== 'string' || resolve(profileDir) !== resolve(directory)) return
+    const report = error => process.stderr.write(`dsh-desktop: default plugin provisioning: ${error instanceof Error ? error.message : String(error)}\n`)
+    void provisionDefaultPlugins({ home, pluginMarket: marketCtx.pluginMarket, pluginManager: manager, signal: lifetime.signal, report }).catch(report)
+    return () => lifetime.abort()
+  }, 'dsh-desktop-market-installer: default plugins'))
 
   const runProfileCommand = async (args, action) => {
     const handle = desktopPnpm.runPlugin(args, directory)

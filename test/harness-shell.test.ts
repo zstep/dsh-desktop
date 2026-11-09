@@ -291,6 +291,127 @@ describe('packaged Harness shell', () => {
     await expect(shell.waitUntilReady()).rejects.toThrow()
   })
 
+  it('lets the image painting route wait beyond 30 seconds without replaying the request', async () => {
+    vi.useFakeTimers()
+    let complete!: (response: Response) => void
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(authResponse()).mockResolvedValueOnce(Response.json({ injections: [] }))
+      .mockImplementationOnce((_url, init) => new Promise((resolve, reject) => {
+        complete = resolve
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+    shell = new HarnessShell({ frontendRoot: root, fetch: fetcher })
+    await shell.connect('http://127.0.0.1:9999')
+    const pending = shell.handle(request('plugins/copylee-image-gen/paint', { method: 'POST', body: '{}' }))
+    await vi.advanceTimersByTimeAsync(90_000)
+    expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(false)
+    complete(Response.json({ items: [{ operation: 'edit' }] }))
+    const response = await pending
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ items: [{ operation: 'edit' }] })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['api/pluginMarket/search'])('lets %s finish after the ordinary deadline without replay', async path => {
+    vi.useFakeTimers()
+    let complete!: (response: Response) => void
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(authResponse()).mockResolvedValueOnce(Response.json({ injections: [] }))
+      .mockImplementationOnce((_url, init) => new Promise((resolve, reject) => {
+        complete = resolve
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+    shell = new HarnessShell({ frontendRoot: root, fetch: fetcher })
+    await shell.connect('http://127.0.0.1:9999')
+    const pending = shell.handle(request(path, { method: 'POST', body: '{}' }))
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(false)
+    complete(Response.json({ total: 4092 }))
+    const response = await pending
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ total: 4092 })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([
+    ['api/pluginMarket/search', 'POST', 100_000],
+    ['api/pluginMarket/search', 'GET', 30_000],
+    ['api/pluginMarket/search/other', 'POST', 30_000],
+    ['api/pluginMarket/search-extra', 'POST', 30_000],
+    ['api/pluginMarket/listIndexes', 'POST', 30_000],
+    ['api/pluginMarket/setIndexes', 'POST', 30_000],
+    ['api/pluginMarket/getPlugin', 'POST', 30_000],
+    ['plugins/copylee-image-gen/paint', 'POST', 240_000],
+    ['plugins/copylee-image-gen/paint', 'GET', 30_000],
+    ['plugins/copylee-image-gen/paint/other', 'POST', 30_000],
+    ['plugins/copylee-image-gen/paint-extra', 'POST', 30_000],
+    ['api/echo', 'POST', 30_000]
+  ])('bounds %s %s header waits to %i ms and returns a safe JSON timeout', async (path, method, deadline) => {
+    vi.useFakeTimers()
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(authResponse()).mockResolvedValueOnce(Response.json({ injections: [] }))
+      .mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('private upstream details')), { once: true })
+      }))
+    shell = new HarnessShell({ frontendRoot: root, fetch: fetcher })
+    await shell.connect('http://127.0.0.1:9999')
+    const pending = shell.handle(request(path, { method }))
+    await vi.advanceTimersByTimeAsync(deadline - 1)
+    expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    const response = await pending
+    expect(response.status).toBe(504)
+    expect(response.headers.get('content-type')).toContain('application/json')
+    const body = await response.json()
+    expect(body.error).toContain('timed out')
+    expect(body.error).not.toContain('private')
+    if (deadline === 240_000) expect(body.error).toContain('charged')
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([400, 401, 429, 502])('preserves the painting backend HTTP %i error without retrying', async status => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(authResponse()).mockResolvedValueOnce(Response.json({ injections: [] }))
+      .mockResolvedValueOnce(Response.json({ error: 'provider rejected request' }, { status }))
+    shell = new HarnessShell({ frontendRoot: root, fetch: fetcher })
+    await shell.connect('http://127.0.0.1:9999')
+    const response = await shell.handle(request('plugins/copylee-image-gen/paint', { method: 'POST' }))
+    expect(response.status).toBe(status)
+    expect(await response.json()).toEqual({ error: 'provider rejected request' })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([
+    ['plugins/copylee-image-gen/paint', 'renderer'],
+    ['plugins/copylee-image-gen/paint', 'reset'],
+    ['api/pluginMarket/search', 'renderer'],
+    ['api/pluginMarket/search', 'reset']
+  ])('cancels pending %s requests on %s and rejects late results', async (path, source) => {
+    vi.useFakeTimers()
+    let complete!: (response: Response) => void
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(authResponse()).mockResolvedValueOnce(Response.json({ injections: [] }))
+      .mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    shell = new HarnessShell({ frontendRoot: root, fetch: fetcher })
+    await shell.connect('http://127.0.0.1:9999')
+    const controller = new AbortController()
+    const pending = shell.handle(request(path, { method: 'POST', signal: controller.signal }))
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(false)
+    if (source === 'renderer') controller.abort()
+    else shell.reset()
+    expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(true)
+    complete(Response.json({ items: ['stale private result'] }))
+    const response = await pending
+    expect(response.status).toBe(502)
+    expect(await response.text()).not.toContain('private')
+    expect(vi.getTimerCount()).toBe(0)
+    expect(fetcher).toHaveBeenCalledTimes(3)
+  })
+
   it('streams immediately and forwards renderer cancellation/reset to the upstream stream', async () => {
     const cancelled = vi.fn()
     const upstream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('first')) }, cancel: cancelled })

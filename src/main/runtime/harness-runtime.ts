@@ -7,6 +7,9 @@ import { createServer } from 'node:net'
 import { dirname, join, posix, win32 } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import type { RuntimePhase, RuntimeSnapshot } from '../../shared/contracts'
+import type { ModelServiceConsumer } from '../state/model-service-discovery'
+import { parsePrivatePluginConfigurationPacket, type PrivatePluginConfigurationPacket } from '../../shared/private-plugin-configuration'
+import type { ModelServiceCapability, PrivateModelServicePacket } from '../../shared/model-service'
 import { SAFE_MODE_PROFILE } from '../state/safe-mode-profile'
 import { prepareHostDisabledPluginsPatch } from '../state/host-disabled-plugins'
 import { prepareHostPluginSourcesPatch } from '../state/host-plugin-sources'
@@ -48,8 +51,14 @@ export interface HarnessRuntimeOptions {
   onChanged(snapshot: RuntimeSnapshot): void
   /** Optional main-process-only provider capability for the next launch. */
   privateModelHandoff?: () => PrivateModelHandoff | undefined
+  /** Discover exact, enabled profile consumers before issuing their scoped grants. */
+  privateModelServiceConsumers?: (profile: string, desktopPatchPath?: string, additionalOverlayPaths?: readonly string[]) => Promise<readonly ModelServiceConsumer[]>
+  /** Issue a scoped chat grant for the legacy model consumer. */
+  privateModelServiceGrant?: (capabilities: readonly ModelServiceCapability[]) => PrivateModelServiceGrant | undefined
   /** Issued only for the selected in-box image plugin; revoked with this launch. */
   privateImageLease?: () => PrivateImageLease | undefined
+  /** Host-only configuration broker, scoped and revoked with this launch. */
+  privatePluginConfigurationLease?: (profile: string, overlays: readonly string[]) => PrivatePluginConfigurationLease | undefined | Promise<PrivatePluginConfigurationLease | undefined>
   /**
    * Optional extra `--patch` overlay (for the account's model route), resolved
    * per launch so it can merge the profile's current user layer. Appended after
@@ -69,9 +78,18 @@ export interface HarnessChildProcess extends EventEmitter {
 
 /** This value never travels through launch arguments, the environment, or profile files. */
 export interface PrivateModelHandoff {
-  gatewayUrl: string
-  capabilityToken: string
+  gatewayUrl?: string
+  capabilityToken?: string
+  modelService?: PrivateModelServicePacket
+  consumers?: readonly ModelServiceConsumer[]
   image?: { gatewayUrl: string; capabilityToken: string }
+  pluginConfiguration?: PrivatePluginConfigurationPacket
+}
+
+export interface PrivatePluginConfigurationLease extends PrivatePluginConfigurationPacket { revoke(): void }
+
+export type PrivateModelServiceGrant = PrivateModelServicePacket & {
+  revoke(): void
 }
 
 export interface PrivateImageLease {
@@ -82,6 +100,14 @@ export interface PrivateImageLease {
 
 const PRIVATE_HANDOFF_MARKER = 'DSH_DESKTOP_PRIVATE_MODEL_HANDOFF'
 const PRIVATE_HANDOFF_TIMEOUT_MS = 5_000
+const MAX_PRIVATE_PACKET_BYTES = 256 * 1024
+const validPrivateGateway = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(value)) return false
+  const port = Number(value.slice(value.lastIndexOf(':') + 1))
+  return Number.isInteger(port) && port > 0 && port <= 65535
+}
+const validPrivateToken = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{32,512}$/.test(value)
 
 function privateHandoffSpawnOptions(
   options: SpawnOptionsWithoutStdio,
@@ -101,8 +127,103 @@ export function deliverPrivateHandoff(
   child: HarnessChildProcess,
   handoff: PrivateModelHandoff,
   isCurrent: () => boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  modelService?: PrivateModelServicePacket,
+  consumers: readonly ModelServiceConsumer[] = []
 ): Promise<void> {
+  type ConsumerPacket = {
+    id: string
+    version?: string
+    status: ModelServiceConsumer['status']
+    capabilities: ModelServiceCapability[]
+    adapter?: ModelServiceConsumer['adapter']
+  }
+  let registry: ConsumerPacket[]
+  let safeHandoff: PrivateModelHandoff
+  let safeModelService: PrivateModelServicePacket | undefined
+  try {
+    if (!handoff || typeof handoff !== 'object' || Array.isArray(handoff)) throw new Error('Invalid private model handoff')
+    if (!Array.isArray(consumers) || consumers.length > 512) throw new Error('Invalid private model consumers')
+    const ids = new Set<string>()
+    registry = consumers.map((value): ConsumerPacket => {
+      const item: unknown = value
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid private model consumers')
+      const candidate = item as Record<string, unknown>
+      const id = candidate.id
+      const version = candidate.version
+      const status = candidate.status
+      const capabilities = candidate.capabilities
+      const adapter = candidate.adapter
+      if (typeof id !== 'string' || id.length > 256 || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(id) || ids.has(id) ||
+        (version !== undefined && (typeof version !== 'string' || version.length > 128 || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version))) ||
+        (status !== 'declared' && status !== 'needs-adapter' && status !== 'invalid-declaration') || !Array.isArray(capabilities) ||
+        capabilities.length > 16 || capabilities.some(capability => capability !== 'chat.completions' && capability !== 'image.generate') ||
+        new Set(capabilities).size !== capabilities.length ||
+        (adapter !== undefined && adapter !== 'llm-pi-ai' && adapter !== 'desktop-imagegen' && adapter !== 'image-generation')) {
+        throw new Error('Invalid private model consumers')
+      }
+      ids.add(id)
+      return {
+        id,
+        ...(version === undefined ? {} : { version }),
+        status,
+        capabilities: [...capabilities],
+        ...(adapter === undefined ? {} : { adapter })
+      }
+    })
+    if (Buffer.byteLength(JSON.stringify(registry)) > MAX_PRIVATE_PACKET_BYTES) throw new Error('Private model consumers exceed IPC size limit')
+
+    const handoffRecord = handoff as Record<string, unknown>
+    if (Object.keys(handoffRecord).some(key => !['gatewayUrl', 'capabilityToken', 'modelService', 'consumers', 'image', 'pluginConfiguration'].includes(key)) ||
+      handoff.consumers !== undefined && !Array.isArray(handoff.consumers)) {
+      throw new Error('Invalid private model handoff')
+    }
+    if (handoff.consumers !== undefined) {
+      const suppliedRegistry: readonly ModelServiceConsumer[] = handoff.consumers
+      if (suppliedRegistry.length !== registry.length || suppliedRegistry.some((item: ModelServiceConsumer, index: number) => {
+        const normalized = registry[index]
+        return !normalized || item.id !== normalized.id || item.version !== normalized.version || item.status !== normalized.status ||
+          item.adapter !== normalized.adapter || item.capabilities.length !== normalized.capabilities.length ||
+          item.capabilities.some((capability, capabilityIndex) => capability !== normalized.capabilities[capabilityIndex])
+      })) throw new Error('Private model handoff consumers do not match discovery')
+    }
+    const gatewayUrl = handoff.gatewayUrl
+    const capabilityToken = handoff.capabilityToken
+    if ((gatewayUrl !== undefined || capabilityToken !== undefined) &&
+      (!validPrivateGateway(gatewayUrl) || !validPrivateToken(capabilityToken))) {
+      throw new Error('Invalid private model handoff')
+    }
+    const image = handoff.image
+    if (image !== undefined && (!image || typeof image !== 'object' ||
+      Object.keys(image).some(key => key !== 'gatewayUrl' && key !== 'capabilityToken') ||
+      !validPrivateGateway(image.gatewayUrl) || !validPrivateToken(image.capabilityToken))) {
+      throw new Error('Invalid private model handoff')
+    }
+    if (handoff.pluginConfiguration !== undefined) parsePrivatePluginConfigurationPacket(handoff.pluginConfiguration)
+    const modelServiceInput = modelService ?? handoff.modelService
+    if (modelServiceInput !== undefined) {
+      if (!modelServiceInput || typeof modelServiceInput !== 'object' ||
+        !validPrivateGateway(modelServiceInput.gatewayUrl) || !validPrivateToken(modelServiceInput.capabilityToken) ||
+        modelServiceInput.contractVersion !== 1 || !Array.isArray(modelServiceInput.capabilities) || modelServiceInput.capabilities.length !== 1 ||
+        modelServiceInput.capabilities[0] !== 'chat.completions') {
+        throw new Error('Invalid private model service packet')
+      }
+      safeModelService = {
+        contractVersion: 1,
+        gatewayUrl: modelServiceInput.gatewayUrl,
+        capabilityToken: modelServiceInput.capabilityToken,
+        capabilities: [...modelServiceInput.capabilities]
+      }
+    }
+    safeHandoff = {
+      ...(gatewayUrl === undefined ? {} : { gatewayUrl }),
+      ...(capabilityToken === undefined ? {} : { capabilityToken }),
+      ...(image === undefined ? {} : { image: { gatewayUrl: image.gatewayUrl, capabilityToken: image.capabilityToken } }),
+      ...(handoff.pluginConfiguration === undefined ? {} : { pluginConfiguration: parsePrivatePluginConfigurationPacket(handoff.pluginConfiguration) })
+    }
+    const fullPacket = { ...safeHandoff, ...(safeModelService ? { modelService: safeModelService } : {}), consumers: registry }
+    if (Buffer.byteLength(JSON.stringify(fullPacket)) > MAX_PRIVATE_PACKET_BYTES) throw new Error('Private model handoff exceeds IPC size limit')
+  } catch (error) { return Promise.reject(error) }
   return new Promise((resolve, reject) => {
     let finished = false
     let sent = false
@@ -129,9 +250,10 @@ export function deliverPrivateHandoff(
         sent = true
         if (!child.send) return finish(new Error('Harness child has no private message channel'))
         try {
-          if (child.send({ kind: 'dsh-desktop:private-model-delivery', ...handoff }, (error) => {
+          child.send({ kind: 'dsh-desktop:private-model-delivery', ...safeHandoff,
+            ...(safeModelService ? { modelService: safeModelService } : {}), consumers: registry }, (error) => {
             if (error) finish(new Error('Could not send private model handoff'))
-          }) === false) finish(new Error('Harness private message channel is unavailable'))
+          })
         } catch {
           finish(new Error('Could not send private model handoff'))
         }
@@ -551,6 +673,8 @@ export class HarnessRuntime {
   private child?: HarnessChildProcess
   private privateHandoffAbort?: AbortController
   private imageLease?: PrivateImageLease
+  private modelServiceGrant?: PrivateModelServiceGrant
+  private pluginConfigurationLease?: PrivatePluginConfigurationLease
   private launchGeneration = 0
   private logStream?: WriteStream
   private phase: RuntimePhase = 'idle'
@@ -710,15 +834,46 @@ export class HarnessRuntime {
 
     let child: HarnessChildProcess
     let handoff: PrivateModelHandoff | undefined
+    let discoveredConsumers: ModelServiceConsumer[] = []
+    let modelServiceGrant: PrivateModelServiceGrant | undefined
+    let pluginConfigurationLease: PrivatePluginConfigurationLease | undefined
+    let privateDelivery = false
     if (launchGeneration !== this.launchGeneration) return
     try {
+      const consumers = this.options.privateModelServiceConsumers
+        ? [...await this.options.privateModelServiceConsumers(profile, sourcePatchPath, patchPaths.slice(1))]
+        : []
+      if (launchGeneration !== this.launchGeneration) return
+      const builtInChat = { id: '@deepseek-ai/dsh-llm-pi-ai', version: '0.2.1-rc.3', status: 'declared' as const, capabilities: ['chat.completions' as const], adapter: 'llm-pi-ai' as const }
+      if (!this.options.privateModelServiceConsumers && this.options.privateModelServiceGrant) consumers.push(builtInChat)
+      discoveredConsumers = consumers
+      if (launchGeneration !== this.launchGeneration) return
       handoff = this.options.privateModelHandoff?.()
-      if (handoff && this.options.privateImageLease && profile !== SAFE_MODE_PROFILE) {
+      pluginConfigurationLease = await this.options.privatePluginConfigurationLease?.(profile, patchPaths)
+      if (launchGeneration !== this.launchGeneration) { pluginConfigurationLease?.revoke(); pluginConfigurationLease = undefined; return }
+      if (pluginConfigurationLease) {
+        this.pluginConfigurationLease = pluginConfigurationLease
+        handoff = { ...handoff, pluginConfiguration: {
+          contractVersion: pluginConfigurationLease.contractVersion,
+          gatewayUrl: pluginConfigurationLease.gatewayUrl,
+          capabilityToken: pluginConfigurationLease.capabilityToken
+        } }
+      }
+      if (!this.options.privateModelServiceConsumers && !consumers.some(consumer => consumer.id === builtInChat.id) && (handoff || this.options.privateModelServiceGrant)) {
+        consumers.push(builtInChat)
+        discoveredConsumers = consumers
+      }
+      const chatConsumers = consumers.filter(consumer => consumer.status === 'declared' && consumer.capabilities.includes('chat.completions'))
+      const declaredCapabilities = chatConsumers.length ? ['chat.completions' as const] : []
+      if (this.options.privateModelServiceConsumers && !chatConsumers.length && handoff && !handoff.pluginConfiguration) handoff = undefined
+      if (this.options.privateImageLease && profile !== SAFE_MODE_PROFILE) {
         const selections = await Promise.all([BUILTIN_IMAGE_GENERATION, BUILTIN_IMAGEGEN].map(
           name => resolveHostPluginState(this.options.dshHome, name)
         ))
         if (launchGeneration !== this.launchGeneration) return
-        if (selections.some(selection => selection.effectiveSource === 'host' && selection.effectiveEnabled)) {
+        const hasDeclaredImageConsumer = consumers.some(consumer => consumer.status === 'declared' && consumer.capabilities.includes('image.generate'))
+        const legacyHostImage = !this.options.privateModelServiceConsumers && selections.some(selection => selection.effectiveSource === 'host' && selection.effectiveEnabled)
+        if (hasDeclaredImageConsumer || legacyHostImage) {
           this.imageLease = this.options.privateImageLease()
           if (this.imageLease) {
             handoff = { ...handoff, image: {
@@ -728,10 +883,33 @@ export class HarnessRuntime {
           }
         }
       }
-      if (handoff && (!/^https?:\/\/127\.0\.0\.1:\d+$/.test(handoff.gatewayUrl) ||
-        !/^[A-Za-z0-9_-]{32,}$/.test(handoff.capabilityToken) ||
-        (handoff.image && (!/^http:\/\/127\.0\.0\.1:\d+$/.test(handoff.image.gatewayUrl) ||
-          !/^[A-Za-z0-9_-]{32,}$/.test(handoff.image.capabilityToken))))) {
+      if (declaredCapabilities.length > 0) {
+        modelServiceGrant = this.options.privateModelServiceGrant?.(declaredCapabilities)
+        if (modelServiceGrant) this.modelServiceGrant = modelServiceGrant
+      }
+      if (launchGeneration !== this.launchGeneration) {
+        this.revokeModelServiceGrant()
+        return
+      }
+      if (modelServiceGrant) {
+        if (!validPrivateGateway(modelServiceGrant.gatewayUrl) || !validPrivateToken(modelServiceGrant.capabilityToken) ||
+          modelServiceGrant.contractVersion !== 1 || modelServiceGrant.capabilities.length !== 1 ||
+          modelServiceGrant.capabilities.some(capability => capability !== 'chat.completions')) {
+          throw new Error('Invalid model service grant')
+        }
+      }
+      if (modelServiceGrant && !handoff) {
+        handoff = { gatewayUrl: modelServiceGrant.gatewayUrl, capabilityToken: modelServiceGrant.capabilityToken }
+      }
+      if (modelServiceGrant && handoff) {
+        handoff = { ...handoff, gatewayUrl: modelServiceGrant.gatewayUrl, capabilityToken: modelServiceGrant.capabilityToken }
+      }
+      privateDelivery = Boolean(handoff?.pluginConfiguration || handoff && validPrivateGateway(handoff.gatewayUrl) && validPrivateToken(handoff.capabilityToken) || modelServiceGrant || this.imageLease || (this.options.privateModelServiceConsumers && discoveredConsumers.length > 0))
+      if (handoff && (handoff.gatewayUrl !== undefined || handoff.capabilityToken !== undefined) &&
+        (!validPrivateGateway(handoff.gatewayUrl) || !validPrivateToken(handoff.capabilityToken))) {
+        throw new Error('Invalid private model handoff')
+      }
+      if (handoff?.image && (!validPrivateGateway(handoff.image.gatewayUrl) || !validPrivateToken(handoff.image.capabilityToken))) {
         throw new Error('Invalid private model handoff')
       }
       child = this.options.launchProcess(
@@ -748,37 +926,36 @@ export class HarnessRuntime {
             runnerPath: this.options.pnpmRunnerPath,
             hideConsoleBootstrapPath: this.options.hideConsoleBootstrapPath
           }
-        ), handoff !== undefined)
+        ), privateDelivery)
       )
     } catch (error) {
+      if (pluginConfigurationLease && this.pluginConfigurationLease !== pluginConfigurationLease) {
+        pluginConfigurationLease.revoke()
+      }
+      this.revokeImageLease()
+      this.revokeModelServiceGrant()
       const message = error instanceof Error ? error.message : String(error)
       this.writeLog(`[utility] launch failed: ${message}`)
       this.setState('failed', `Harness could not start: ${message}`)
       return
     }
     this.child = child
+    const modelGrant = this.modelServiceGrant
     const imageLease = this.imageLease
+    const configurationLease = this.pluginConfigurationLease
     const revokeChildImageLease = () => {
+      if (configurationLease && this.pluginConfigurationLease === configurationLease) this.revokeModelServiceGrant()
       if (imageLease && this.imageLease === imageLease) this.revokeImageLease()
+      if (modelGrant && this.modelServiceGrant === modelGrant) this.revokeModelServiceGrant()
     }
     child.once('error', revokeChildImageLease)
     child.once('exit', revokeChildImageLease)
-    if (handoff) {
-      const abort = new AbortController()
-      this.privateHandoffAbort = abort
-      try {
-        await deliverPrivateHandoff(child, handoff, () => this.child === child && launchGeneration === this.launchGeneration, abort.signal)
-      } catch (error) {
-        if (this.child !== child) return
-        this.child = undefined
-        this.revokeImageLease()
-        await this.stopChild(child)
-        this.setState('failed', error instanceof Error ? error.message : 'Private model handoff failed')
-        return
-      } finally {
-        if (this.privateHandoffAbort === abort) this.privateHandoffAbort = undefined
-      }
-    }
+    const servicePacket = modelServiceGrant ? {
+      contractVersion: modelServiceGrant.contractVersion,
+      gatewayUrl: modelServiceGrant.gatewayUrl,
+      capabilityToken: modelServiceGrant.capabilityToken,
+      capabilities: [...modelServiceGrant.capabilities]
+    } satisfies PrivateModelServicePacket : undefined
     let fatalMemoryFailure = false
     let memoryEvidenceTail = ''
 
@@ -804,6 +981,8 @@ export class HarnessRuntime {
       this.launchToken = undefined
       this.writeLog('[desktop] Harness entry failed during startup; stopping immediately')
       this.setState('failed', `Harness could not start.\n${cause}`)
+      this.revokeImageLease()
+      this.revokeModelServiceGrant()
       void this.stopChild(child).catch((error) => {
         const detail = error instanceof Error ? error.message : String(error)
         this.writeLog(`[desktop] failed to stop rejected Harness launch: ${detail}`)
@@ -814,6 +993,8 @@ export class HarnessRuntime {
       this.writeLog(`[node] ${error.stack ?? error.message}`)
       if (this.child !== child) return
       this.child = undefined
+      this.revokeModelServiceGrant()
+      this.revokeImageLease()
       this.setState('failed', `Harness could not start: ${error.message}`)
     })
     child.once('exit', (code, signal) => {
@@ -822,6 +1003,8 @@ export class HarnessRuntime {
       this.writeLog(`[node] Harness process exited (${detail})`)
       if (this.child !== child) return
       this.child = undefined
+      this.revokeImageLease()
+      this.revokeModelServiceGrant()
       const cause = extractFailureCause(this.logLines)
       this.setState(
         'failed',
@@ -832,6 +1015,28 @@ ${cause}`
         fatalMemoryFailure || isMemoryExit('', code ?? -1) ? 'memory-exhausted' : undefined
       )
     })
+
+    // Drain output and observe early process failures before awaiting private IPC.
+    // A child can reject/bootstrap-log immediately, before acknowledging handoff.
+    if (privateDelivery) {
+      const abort = new AbortController()
+      this.privateHandoffAbort = abort
+      try {
+        await deliverPrivateHandoff(child, handoff ?? {}, () => this.child === child && launchGeneration === this.launchGeneration,
+          abort.signal, servicePacket, discoveredConsumers)
+      } catch (error) {
+        if (this.child !== child) return
+        this.child = undefined
+        this.revokeImageLease()
+        this.revokeModelServiceGrant()
+        await this.stopChild(child)
+        this.setState('failed', error instanceof Error ? error.message : 'Private model handoff failed')
+        return
+      } finally {
+        if (this.privateHandoffAbort === abort) this.privateHandoffAbort = undefined
+      }
+    }
+    if (this.child !== child || launchGeneration !== this.launchGeneration) return
 
     const startedAt = Date.now()
     const progressTimer = setInterval(
@@ -848,6 +1053,7 @@ ${cause}`
     if (this.child !== child) return
     if (!ready) {
       this.revokeImageLease()
+      this.revokeModelServiceGrant()
       await this.stopChild(child)
       this.setState(
         'failed',
@@ -862,6 +1068,15 @@ ${cause}`
     this.setState('ready', 'Harness is ready.')
   }
 
+  private revokeModelServiceGrant(): void {
+    const pluginConfiguration = this.pluginConfigurationLease
+    this.pluginConfigurationLease = undefined
+    pluginConfiguration?.revoke()
+    const grant = this.modelServiceGrant
+    this.modelServiceGrant = undefined
+    grant?.revoke()
+  }
+
   private revokeImageLease(): void {
     const lease = this.imageLease
     this.imageLease = undefined
@@ -871,6 +1086,7 @@ ${cause}`
   async stop(): Promise<void> {
     ++this.launchGeneration
     this.revokeImageLease()
+    this.revokeModelServiceGrant()
     this.privateHandoffAbort?.abort()
     const child = this.child
     if (!child) {
@@ -907,7 +1123,7 @@ ${cause}`
     failureReason?: RuntimeSnapshot['failureReason']
   ): void {
     this.phase = phase
-    if (phase === 'failed') this.revokeImageLease()
+    if (phase === 'failed') { this.revokeImageLease(); this.revokeModelServiceGrant() }
     this.message = message
     this.failureReason = failureReason
     this.options.onChanged(this.snapshot())

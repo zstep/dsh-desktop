@@ -3,7 +3,8 @@ index 9700d03..cdec226 100644
 --- a/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js
 @@ -93,6 +93,23 @@ window.__ModuleLoader__.load({
- 			if (!/^https?:/u.test(base) && !base.startsWith("dsh-app://app/") || !isAbsoluteWorkspacePath(path) || /^[/\\]{2}/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)) return void 0;
+-			if (!/^https?:/u.test(base) && !base.startsWith("dsh-app://app/") || !isAbsoluteWorkspacePath(path) || /^[/\\]{2}/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)) return void 0;
++			if (!/^https?:/u.test(base) && !base.startsWith("dsh-app://app/") && !base.startsWith("dsh-desktop://harness/") || !isAbsoluteWorkspacePath(path) || /^[/\\]{2}/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)) return void 0;
  			return new URL(`api/file?path=${encodeURIComponent(path)}`, base).href;
  		}
 +		function hostPathForOpen(cwd, path) {

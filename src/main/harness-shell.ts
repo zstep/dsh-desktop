@@ -5,6 +5,10 @@ import { isHarnessShellUrl, type HarnessBootPayload } from '../shared/harness-bo
 export { HARNESS_SHELL_URL, isHarnessShellUrl } from '../shared/harness-boot'
 const SHELL_ORIGIN = 'dsh-desktop://harness'
 const TIMEOUT_MS = 30_000
+// Painting returns its JSON only after generation/editing and image storage finish.
+const IMAGE_PAINT_TIMEOUT_MS = 240_000
+// Market search waits for the index's bounded 90-second download and parsing.
+const MARKET_SEARCH_TIMEOUT_MS = 100_000
 const RESPONSE_PRIVATE_HEADERS = ['set-cookie', 'content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'te', 'trailer', 'upgrade', 'proxy-authenticate', 'proxy-authorization']
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -115,20 +119,26 @@ export class HarnessShell {
     return { injections: payload.injections, streamBaseUrl: backend.origin }
   }
 
-  private operation(signal?: AbortSignal): { signal: AbortSignal, finish: () => void, headersReceived: () => void } {
+  private operation(signal?: AbortSignal, timeoutMs = TIMEOUT_MS): { signal: AbortSignal, finish: () => void, headersReceived: () => void, timedOut: () => boolean } {
     const controller = new AbortController()
     this.active.add(controller)
     const abort = (): void => controller.abort(signal?.reason)
     if (signal?.aborted) abort()
     else signal?.addEventListener('abort', abort, { once: true })
-    const timer = setTimeout(() => controller.abort(new Error('Harness request timed out')), TIMEOUT_MS)
+    let timedOut = false
+    const timer = setTimeout(() => {
+      if (!controller.signal.aborted) {
+        timedOut = true
+        controller.abort(new Error('Harness request timed out'))
+      }
+    }, timeoutMs)
     timer.unref()
     const finish = (): void => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
       this.active.delete(controller)
     }
-    return { signal: controller.signal, finish, headersReceived: () => clearTimeout(timer) }
+    return { signal: controller.signal, finish, headersReceived: () => clearTimeout(timer), timedOut: () => timedOut }
   }
 
   connect(value: string, token?: string): Promise<HarnessShellBoot> {
@@ -219,7 +229,10 @@ export class HarnessShell {
     if (url.pathname.startsWith('/assets') || /%(?:2f|5c|25)/i.test(url.pathname) || url.pathname.includes('\\')) return new Response('Not found', { status: 404 })
     const backend = this.backend
     if (!backend) return new Response('Harness unavailable', { status: 503, headers: { 'cache-control': 'no-store' } })
-    const operation = this.operation(request.signal)
+    const painting = request.method === 'POST' && url.pathname === '/plugins/copylee-image-gen/paint'
+    const marketSearch = request.method === 'POST' && url.pathname === '/api/pluginMarket/search'
+    const timeoutMs = painting ? IMAGE_PAINT_TIMEOUT_MS : marketSearch ? MARKET_SEARCH_TIMEOUT_MS : TIMEOUT_MS
+    const operation = this.operation(request.signal, timeoutMs)
     try {
       const headers = new Headers(request.headers)
       for (const name of ['host', 'origin', 'cookie', 'sec-fetch-site']) headers.delete(name)
@@ -280,6 +293,11 @@ export class HarnessShell {
       return new Response(body, { status: response.status, statusText: response.statusText, headers: responseHeaders })
     } catch {
       operation.finish()
+      if (operation.timedOut()) return Response.json({
+        error: painting
+          ? 'Image operation timed out. The server may still have generated and charged for the image. Do not automatically retry.'
+          : 'Harness request timed out.'
+      }, { status: 504, headers: { 'cache-control': 'no-store' } })
       return new Response('Harness proxy failed', { status: 502 })
     }
   }

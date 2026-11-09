@@ -191,6 +191,7 @@ export async function apply(ctx) {
     dshHome: home,
     logPath: join(home, 'harness.log'),
     startupTimeoutMs: 30_000,
+    preferredPort: 0,
     // Node mode here uses the same real Electron runtime as the packaged CLI.
     launchProcess: (executable, args, options) => spawn(executable, args, { ...options, env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' } }),
     onChanged() {}

@@ -1,0 +1,116 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { registerPrivatePluginConfiguration } from '../private.js'
+import { configurationDigest, installPluginConfigurationRuntime, pluginConfigurationReference } from '../plugin-configuration-runtime.js'
+
+test('protects runtime references from Loader persistence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-plugin-runtime-'))
+  const profileDir = join(root, 'profile')
+  const gatewayUrl = 'http://127.0.0.1:43127'
+  const hostToken = 'h'.repeat(32)
+  const leaseToken = 'l'.repeat(32)
+  const bindingId = 'binding-one'
+  const raw = { endpoint: pluginConfigurationReference(bindingId, 'endpoint'), credential: pluginConfigurationReference(bindingId, 'credential'), model: 'chat-model' }
+  const record = {
+    identity: { bindingId, entryId: 'fixture-plugin', namespace: 'fixture-plugin', packageName: 'fixture-plugin', packageVersion: '1.0.0', revision: 0, schemaDigest: 'a'.repeat(64), evidenceDigest: 'b'.repeat(64) },
+    policy: { bindingId, entryId: 'fixture-plugin', packageName: 'fixture-plugin', packageVersion: '1.0.0', capabilities: ['chat.completions', 'image.generate'], models: ['claude-opus-5-5', 'gpt-image-2.5-sunburst'] },
+    files: [{ path: 'package.json', digest: 'c'.repeat(64) }],
+    configDigest: configurationDigest(raw)
+  }
+  await mkdir(profileDir, { recursive: true })
+  registerPrivatePluginConfiguration({ contractVersion: 1, gatewayUrl, capabilityToken: hostToken })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body)
+    if (request.leaseId) return new Response('{}', { headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ contractVersion: 1, gatewayUrl, leaseId: 'lease-one', capabilityToken: leaseToken }), { headers: { 'content-type': 'application/json' } })
+  }
+  const listeners = new Map()
+  const rootContext = {}
+  const entry = { options: { id: 'fixture-plugin' } }
+  const ctx = {
+    root: rootContext,
+    get(name) { assert.equal(name, 'profileContext'); return { dir: profileDir, name: 'web' } },
+    on(name, callback) { listeners.set(name, callback); return () => listeners.delete(name) },
+    effect() {},
+    logger: { warn() {} }
+  }
+  const fiber = { entry, parent: { fiber: { entry: {} } } }
+  let runtime
+  try {
+    runtime = await installPluginConfigurationRuntime(ctx)
+    await runtime.activate(record, configurationDigest(raw))
+    const configHook = listeners.get('internal/config')
+    const updateHook = listeners.get('internal/update')
+    assert.ok(configHook)
+    assert.ok(updateHook)
+    const resolved = configHook.call(fiber, raw, () => raw)
+    assert.deepEqual(resolved, { endpoint: `${gatewayUrl}/v1`, credential: leaseToken, model: 'chat-model' })
+    let forwarded
+    const patches = { path: 'profile/cordis.patch.yml', patches: [{ id: 'fixture-plugin', config: raw }] }
+    updateHook.call(fiber, patches, false, (...args) => { forwarded = args; return 'ok' })
+    assert.equal(forwarded[0], patches)
+    assert.equal(forwarded[1], false)
+    const live = { path: 'profile/cordis.patch.yml', patches: [{ id: 'fixture-plugin', config: { token: leaseToken } }] }
+    assert.throws(() => updateHook.call(fiber, live, false, () => 'unreachable'), { code: 'PERSISTED_RUNTIME_CREDENTIAL' })
+  } finally {
+    await runtime?.dispose()
+    globalThis.fetch = originalFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('resolve tolerates plugins without a raw configuration', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-plugin-runtime-'))
+  const profileDir = join(root, 'profile')
+  const gatewayUrl = 'http://127.0.0.1:43127'
+  const hostToken = 'h'.repeat(32)
+  const leaseToken = 'l'.repeat(32)
+  const bindingId = 'binding-two'
+  const raw = { endpoint: pluginConfigurationReference(bindingId, 'endpoint') }
+  const record = {
+    identity: { bindingId, entryId: 'fixture-plugin', namespace: 'fixture-plugin', packageName: 'fixture-plugin', packageVersion: '1.0.0', revision: 0, schemaDigest: 'a'.repeat(64), evidenceDigest: 'b'.repeat(64) },
+    policy: { bindingId, entryId: 'fixture-plugin', packageName: 'fixture-plugin', packageVersion: '1.0.0', capabilities: ['chat.completions', 'image.generate'], models: ['claude-opus-5-5', 'gpt-image-2.5-sunburst'] },
+    files: [{ path: 'package.json', digest: 'c'.repeat(64) }],
+    configDigest: configurationDigest(raw)
+  }
+  await mkdir(profileDir, { recursive: true })
+  // The private registration is a process singleton; the first test registered it.
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body)
+    if (request.leaseId) return new Response('{}', { headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ contractVersion: 1, gatewayUrl, leaseId: 'lease-two', capabilityToken: leaseToken }), { headers: { 'content-type': 'application/json' } })
+  }
+  const listeners = new Map()
+  const rootContext = {}
+  const entry = { options: { id: 'fixture-plugin' } }
+  const ctx = {
+    root: rootContext,
+    get(name) { assert.equal(name, 'profileContext'); return { dir: profileDir, name: 'web' } },
+    on(name, callback) { listeners.set(name, callback); return () => listeners.delete(name) },
+    effect() {},
+    logger: { warn() {} }
+  }
+  const fiber = { entry, parent: { fiber: { entry: {} } } }
+  let runtime
+  try {
+    runtime = await installPluginConfigurationRuntime(ctx)
+    await runtime.activate(record, configurationDigest(raw))
+    const configHook = listeners.get('internal/config')
+    assert.ok(configHook)
+    // Plugins without a config file invoke the hook with raw === undefined.
+    const unrelated = configHook.call({ ...fiber, entry: { options: { id: 'other-plugin' } } }, undefined, () => 'default-resolved')
+    assert.equal(unrelated, 'default-resolved')
+    // A bound entry whose raw configuration disappeared falls back to defaults.
+    const stale = configHook.call(fiber, undefined, () => 'default-resolved')
+    assert.equal(stale, 'default-resolved')
+  } finally {
+    await runtime?.dispose()
+    globalThis.fetch = originalFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})

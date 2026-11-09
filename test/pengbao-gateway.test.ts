@@ -32,11 +32,11 @@ async function gatewayFor(handler: (req: IncomingMessage, res: ServerResponse) =
   return gateway
 }
 
-function request(gateway: PengbaoGateway, options: { method?: string; path?: string; headers?: Record<string, string>; body?: string; noAuth?: boolean } = {}): Promise<{ status: number; body: string; headers: IncomingMessage['headers'] }> {
+function request(gateway: PengbaoGateway, options: { method?: string; path?: string; headers?: Record<string, string>; body?: string; noAuth?: boolean; token?: string } = {}): Promise<{ status: number; body: string; headers: IncomingMessage['headers'] }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(`${gateway.url}${options.path ?? '/v1/models'}`, {
       method: options.method ?? 'GET',
-      headers: { ...(options.noAuth ? {} : { Authorization: `Bearer ${gateway.capabilityToken}` }), ...options.headers }
+      headers: { ...(options.noAuth ? {} : { Authorization: `Bearer ${options.token ?? gateway.capabilityToken}` }), ...options.headers }
     }, res => {
       let body = ''
       res.on('data', chunk => { body += chunk })
@@ -110,6 +110,23 @@ describe('Pengbao gateway', () => {
     expect(seen.url).toBe('/api/v1/models')
   })
 
+  it('preserves image input inside messages without granting image-generation access', async () => {
+    const messages = [{ role: 'user', content: [
+      { type: 'text', text: 'Describe this fixture' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=', detail: 'low' } }
+    ] }]
+    let forwarded: unknown
+    const gateway = await gatewayFor(async (req, res) => {
+      let text = ''
+      for await (const chunk of req) text += chunk
+      forwarded = JSON.parse(text)
+      res.end('{"choices":[]}')
+    })
+    expect((await request(gateway, chat({ model: 'vision', messages }))).status).toBe(200)
+    expect(forwarded).toEqual({ model: 'vision', messages, tools: [] })
+    expect((await request(gateway, { method: 'POST', path: '/v1/images/generations', body: '{}' })).status).toBe(401)
+  })
+
   it.each(['chat_id', 'id', 'session_id', 'parent_id', 'tool_ids', 'metadata', 'features', 'files'])('rejects cloud orchestration %s before upstream', async key => {
     const upstream = vi.fn((_req: IncomingMessage, res: ServerResponse) => { res.end('{}') })
     const gateway = await gatewayFor(upstream)
@@ -148,8 +165,28 @@ describe('Pengbao gateway', () => {
     expect(result.headers['set-cookie']).toBeUndefined()
     expect(result.headers['x-internal']).toBeUndefined()
     expect(onFailure).toHaveBeenCalledOnce()
-    expect(onFailure.mock.calls[0]).toEqual([{ kind: 'upstream-http', upstreamStatus: status, elapsedMs: expect.any(Number) }])
+    expect(onFailure.mock.calls[0]).toEqual([{ requestId: expect.stringMatching(/^pb-[a-f0-9]{32}$/), kind: 'upstream-http', upstreamStatus: status, elapsedMs: expect.any(Number), phase: 'headers', bytesReceived: 0, upstreamHeadersMs: expect.any(Number) }])
     if (status === 504) expect(JSON.parse(result.body).error.message).toContain('timed out')
+  })
+
+  it('generates a fresh correlation ID per attempt and ignores caller-supplied IDs', async () => {
+    const onFailure = vi.fn()
+    const ids: string[] = []
+    const gateway = await gatewayFor((req, res) => {
+      ids.push(String(req.headers['x-pengbao-request-id']))
+      res.writeHead(504)
+      res.end('private-jwt')
+    }, { onFailure })
+    for (let i = 0; i < 2; i++) {
+      const result = await request(gateway, { ...chat({ model: 'm', messages: [] }), headers: { 'X-Pengbao-Request-Id': 'private-jwt' } })
+      expect(result.status).toBe(504)
+      expect(result.headers['x-pengbao-request-id']).toBeUndefined()
+      expect(result.body).not.toContain(ids[i])
+      expect(onFailure.mock.calls[i]?.[0].requestId).toBe(ids[i])
+    }
+    expect(ids.every(id => /^pb-[a-f0-9]{32}$/.test(id))).toBe(true)
+    expect(new Set(ids).size).toBe(2)
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain('private-jwt')
   })
 
   it('does not replay timed-out requests or invalidate the account route', async () => {
@@ -176,7 +213,93 @@ describe('Pengbao gateway', () => {
     const result = await request(gateway)
     expect(result.status).toBe(502)
     expect(result.body).not.toMatch(/private-jwt|INTERNAL|diagnostic/)
-    expect(onFailure.mock.calls[0]).toEqual([{ kind: 'transport', elapsedMs: expect.any(Number) }])
+    expect(onFailure.mock.calls[0]).toEqual([{ requestId: expect.stringMatching(/^pb-[a-f0-9]{32}$/), kind: 'transport', elapsedMs: expect.any(Number), phase: 'request', bytesReceived: 0 }])
+  })
+
+  it.each([false, true])('distinguishes a post-header reset with body bytes=%s without replay or sensitive diagnostics', async withBody => {
+    const onFailure = vi.fn()
+    let upstreamStream: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetcher = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        upstreamStream = controller
+        if (withBody) controller.enqueue(new TextEncoder().encode('data: private-jwt\n\n'))
+      }
+    }), { headers: { 'content-type': 'text/event-stream' } }))
+    const gateway = await gatewayFor(() => {}, { fetch: fetcher, onFailure })
+    const response = await fetch(`${gateway.url}/v1/models`, { headers: { Authorization: `Bearer ${gateway.capabilityToken}` } })
+    expect(response.status).toBe(200)
+    const reader = response.body?.getReader()
+    if (!reader || !upstreamStream) throw new Error('missing stream')
+    if (withBody) expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: private-jwt\n\n')
+    const failedRead = reader.read()
+    upstreamStream.error(new Error('private-jwt INTERNAL', { cause: { code: 'UND_ERR_SOCKET', message: 'private-jwt' } }))
+    await expect(failedRead).rejects.toThrow()
+    await vi.waitFor(() => expect(onFailure).toHaveBeenCalledOnce())
+    expect(onFailure.mock.calls[0]?.[0]).toEqual({
+      requestId: expect.stringMatching(/^pb-[a-f0-9]{32}$/), kind: 'transport', upstreamStatus: 200, phase: withBody ? 'body' : 'headers',
+      bytesReceived: withBody ? Buffer.byteLength('data: private-jwt\n\n') : 0,
+      elapsedMs: expect.any(Number), upstreamHeadersMs: expect.any(Number), transportCode: 'UND_ERR_SOCKET',
+      ...(withBody ? { firstByteMs: expect.any(Number), lastByteMs: expect.any(Number) } : {})
+    })
+    expect(JSON.stringify(onFailure.mock.calls)).not.toMatch(/private-jwt|INTERNAL|message/)
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('does not include unknown transport codes in diagnostics', async () => {
+    const onFailure = vi.fn()
+    const gateway = await gatewayFor(() => {}, { onFailure, fetch: async () => {
+      throw new Error('private-jwt', { cause: { code: 'private-jwt' } })
+    } })
+    expect((await request(gateway)).status).toBe(502)
+    expect(onFailure.mock.calls[0]?.[0]).not.toHaveProperty('transportCode')
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain('private-jwt')
+  })
+
+  it('classifies a silent upstream deadline separately from downstream cancellation', async () => {
+    const onFailure = vi.fn()
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal
+      if (!signal) throw new Error('missing signal')
+      return new Promise<Response>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('private-jwt')), { once: true }))
+    })
+    const gateway = await gatewayFor(() => {}, { onFailure, timeoutMs: 100, fetch: fetcher })
+    expect((await request(gateway)).status).toBe(504)
+    expect(onFailure).toHaveBeenCalledOnce()
+    expect(onFailure.mock.calls[0]?.[0]).toMatchObject({ kind: 'timeout', phase: 'request', bytesReceived: 0, abortReason: 'deadline' })
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it.each([false, true])('attributes a post-header deadline with body bytes=%s to the local timer', async withBody => {
+    const onFailure = vi.fn()
+    const cancel = vi.fn()
+    const fetcher = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { if (withBody) controller.enqueue(new TextEncoder().encode('data: first\n\n')) },
+      cancel
+    }), { headers: { 'content-type': 'text/event-stream' } }))
+    const gateway = await gatewayFor(() => {}, { onFailure, timeoutMs: 250, fetch: fetcher })
+    const response = await fetch(`${gateway.url}/v1/models`, { headers: { Authorization: `Bearer ${gateway.capabilityToken}` } })
+    expect(response.status).toBe(200)
+    await expect(response.text()).rejects.toThrow()
+    expect(onFailure).toHaveBeenCalledOnce()
+    expect(onFailure.mock.calls[0]?.[0]).toMatchObject({ kind: 'timeout', phase: withBody ? 'body' : 'headers', abortReason: 'deadline', upstreamStatus: 200 })
+    expect(onFailure.mock.calls[0]?.[0]).not.toHaveProperty('transportCode')
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a quiet interval and subsequent SSE bytes without inventing an idle deadline', async () => {
+    const onFailure = vi.fn()
+    let upstreamStream: ReadableStreamDefaultController<Uint8Array> | undefined
+    const gateway = await gatewayFor(() => {}, { onFailure, timeoutMs: 2000, fetch: async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { upstreamStream = controller }
+    }), { headers: { 'content-type': 'text/event-stream' } }) })
+    const response = await fetch(`${gateway.url}/v1/models`, { headers: { Authorization: `Bearer ${gateway.capabilityToken}` } })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    if (!upstreamStream) throw new Error('missing stream')
+    upstreamStream.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+    upstreamStream.close()
+    expect(await response.text()).toBe('data: [DONE]\n\n')
+    expect(onFailure).not.toHaveBeenCalled()
   })
 
   it('limits bodies, invalid JSON, concurrency, and request duration', async () => {
@@ -194,11 +317,12 @@ describe('Pengbao gateway', () => {
 
   it('streams before completion and cancels the upstream reader on downstream disconnect', async () => {
     let closed = false
+    const onFailure = vi.fn()
     const gateway = await gatewayFor((_req, res) => {
       res.on('close', () => { closed = true })
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write('data: first\n\n')
-    })
+    }, { onFailure })
     await new Promise<void>((resolve, reject) => {
       const req = httpRequest(`${gateway.url}/v1/models`, { headers: { Authorization: `Bearer ${gateway.capabilityToken}` } }, res => {
         res.once('data', chunk => {
@@ -211,6 +335,8 @@ describe('Pengbao gateway', () => {
       req.end()
     })
     await vi.waitFor(() => expect(closed).toBe(true))
+    await vi.waitFor(() => expect(onFailure).toHaveBeenCalledOnce())
+    expect(onFailure.mock.calls[0]?.[0]).toMatchObject({ kind: 'cancelled', abortReason: 'downstream', phase: 'body', bytesReceived: Buffer.byteLength('data: first\n\n') })
   })
 
   it('applies downstream backpressure instead of reading the entire upstream stream', async () => {
@@ -238,6 +364,70 @@ describe('Pengbao gateway', () => {
     expect(pulls).toBeLessThan(512)
     response.destroy()
     await vi.waitFor(() => expect(cancel).toHaveBeenCalled())
+  })
+
+  it('revokes only its own grants and aborts only their active requests', async () => {
+    const signals: AbortSignal[] = []
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal
+      if (!signal) throw new Error('missing signal')
+      signals.push(signal)
+      return new Promise<Response>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }))
+    })
+    const gateway = await gatewayFor(() => {}, { fetch: fetcher })
+    const first = gateway.createModelServiceGrant(['chat.completions'])
+    const second = gateway.createModelServiceGrant(['chat.completions'])
+    expect(first).toMatchObject({ contractVersion: 1, gatewayUrl: gateway.url, capabilities: ['chat.completions'] })
+
+    const firstRequest = request(gateway, { token: first.capabilityToken }).catch(() => undefined)
+    await vi.waitFor(() => expect(signals).toHaveLength(1))
+    const secondRequest = request(gateway, { token: second.capabilityToken }).catch(() => undefined)
+    await vi.waitFor(() => expect(signals).toHaveLength(2))
+    const legacyRequest = request(gateway).catch(() => undefined)
+    await vi.waitFor(() => expect(signals).toHaveLength(3))
+
+    first.revoke()
+    await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true))
+    expect(signals[1]?.aborted).toBe(false)
+    expect(signals[2]?.aborted).toBe(false)
+    expect((await request(gateway, { token: first.capabilityToken })).status).toBe(401)
+    await Promise.all([firstRequest])
+    second.revoke()
+    expect((await request(gateway, { token: second.capabilityToken })).status).toBe(401)
+    await secondRequest
+    await gateway.stop()
+    await legacyRequest
+    expect(fetcher).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps sibling requests registered after one request completes', async () => {
+    const signals: AbortSignal[] = []
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal
+      if (!signal) throw new Error('missing signal')
+      signals.push(signal)
+      if (signals.length === 1) return Response.json({ data: [] })
+      return new Promise<Response>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }))
+    })
+    const gateway = await gatewayFor(() => {}, { fetch: fetcher })
+    const grant = gateway.createModelServiceGrant(['chat.completions'])
+    expect((await request(gateway, { token: grant.capabilityToken })).status).toBe(200)
+    const pending = request(gateway, { token: grant.capabilityToken }).catch(() => undefined)
+    await vi.waitFor(() => expect(signals).toHaveLength(2))
+
+    grant.revoke()
+    await vi.waitFor(() => expect(signals[1]?.aborted).toBe(true))
+    expect(signals[0]?.aborted).toBe(false)
+    await pending
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects unsupported and duplicate model service scopes', async () => {
+    const gateway = await gatewayFor(() => {})
+    expect(() => gateway.createModelServiceGrant([])).toThrow('Unsupported model service grant')
+    expect(() => gateway.createModelServiceGrant(['chat.completions', 'chat.completions'])).toThrow('Unsupported model service grant')
+    expect(() => gateway.createModelServiceGrant(['video.generate'] as unknown as Parameters<typeof gateway.createModelServiceGrant>[0])).toThrow('Unsupported model service grant')
+    expect(() => gateway.createModelServiceGrant(['image.generate'])).toThrow('Unsupported model service grant')
   })
 
   it('stop aborts every upstream request, closes clients, and is idempotent', async () => {

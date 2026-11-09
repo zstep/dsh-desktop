@@ -4,9 +4,19 @@ import { developmentEnvironment } from '../src/main/development-environment'
 describe('development worktree isolation', () => {
   it('keeps defaults and ignores development overrides in production', () => {
     expect(developmentEnvironment(false, 43129, { DSH_DEV_PROFILE: '../unsafe', DSH_DEV_HARNESS_PORT: 'invalid' }))
-      .toEqual({ profile: 'dsh-desktop', harnessPort: 43129, mobilePort: 43127 })
+      .toEqual({ userData: undefined, profile: 'dsh-desktop', harnessPort: 43129, mobilePort: 43127 })
     expect(developmentEnvironment(true, 43129, {}))
-      .toEqual({ profile: 'dsh-desktop-dev', harnessPort: 43130, mobilePort: 43128 })
+      .toEqual({ userData: undefined, profile: 'dsh-desktop-dev', harnessPort: 43130, mobilePort: 43128 })
+  })
+
+  it('accepts an explicit absolute userData directory for isolated packaged runs', () => {
+    expect(developmentEnvironment(true, 43129, {
+      DSH_DEV_USER_DATA: '/tmp/dsh-isolated-user-data'
+    }).userData).toBe('/tmp/dsh-isolated-user-data')
+  })
+
+  it.each(['relative', '/', ''])('rejects unsafe userData directory %s', userData => {
+    expect(() => developmentEnvironment(true, 43129, { DSH_DEV_USER_DATA: userData })).toThrow('DSH_DEV_USER_DATA')
   })
 
   it('uses distinct profile and loopback ports for a second worktree', () => {

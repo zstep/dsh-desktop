@@ -71,6 +71,7 @@ import {
   setHostPluginEnabled
 } from './state/host-plugin-state'
 import { resolveHostPluginState } from './state/host-plugin-selection'
+import { discoverModelServiceConsumers } from './state/model-service-discovery'
 import {
   disableProfilePlugin,
   enableProfilePlugin,
@@ -131,6 +132,7 @@ import {
 } from './state/generation-migration'
 import { migrateUserPresetPersonaPrefixes } from './state/persona-prefix-migration'
 import { runProfileStartupMaintenance } from './state/profile-startup-maintenance'
+import { ensurePluginMarketDefaults } from './state/plugin-market-defaults'
 import { cleanupPluginOwnedComponents } from './state/plugin-component-cleanup'
 import {
   cleanupVerifiedRemovalBackup,
@@ -750,7 +752,10 @@ async function activateAccount(session: PengbaoSession): Promise<void> {
 
 function configureAppIdentity(): void {
   app.setName(developmentBuild ? `${PENGBAO_PRODUCT.nameEn} Dev` : PENGBAO_PRODUCT.nameEn)
-  app.setPath('userData', join(app.getPath('appData'), developmentBuild ? `${PENGBAO_PRODUCT.dataDirectory}-dev` : PENGBAO_PRODUCT.dataDirectory))
+  const userData = developmentBuild && developmentConfig.userData
+    ? developmentConfig.userData
+    : join(app.getPath('appData'), developmentBuild ? `${PENGBAO_PRODUCT.dataDirectory}-dev` : PENGBAO_PRODUCT.dataDirectory)
+  app.setPath('userData', userData)
 }
 
 async function syncNativeTheme(window: BrowserWindow): Promise<void> {
@@ -1801,6 +1806,13 @@ function launchHarness(): Promise<void> {
     await migratePersonaPrefixesBeforeStart(dshHome)
     await migrateLegacyAgentPresets(dshHome, (line) => runtime.note(line))
     runtime.note('[desktop] preset migrations done; starting Harness')
+    if (maintenance.migration.outcome !== 'maintenance-deferred' && maintenance.migration.outcome !== 'deferred-failure') {
+      try {
+        if (await ensurePluginMarketDefaults(dshHome, dshEntryPath())) runtime.note('[desktop] initialized bundled plugin discovery')
+      } catch (error) {
+        runtime.note(`[desktop] plugin discovery initialization deferred: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     if (processRecovery.blocked) return
     await runtime.start(launchDirectory)
     if (processRecovery.blocked) return
@@ -3699,6 +3711,16 @@ async function bootstrapHarnessAfterVerifiedHandoff(): Promise<void> {
       ? preparePengbaoProviderOverlay(accountHome(), profile, { gatewayUrl: accountGateway.url, models: accountModels })
       : undefined,
     privateModelHandoff: () => accountGateway && { gatewayUrl: accountGateway.url, capabilityToken: accountGateway.capabilityToken },
+    privateModelServiceGrant: capabilities => accountGateway?.createModelServiceGrant(capabilities),
+    privatePluginConfigurationLease: profile => {
+      const gateway = accountGateway
+      if (!gateway || profile === SAFE_MODE_PROFILE) return undefined
+      // The plugin controller validates the analyzed plan, package evidence and
+      // explicit user confirmation. The host only mints the scoped lease.
+      return gateway.createPluginConfigurationLease()
+    },
+    privateModelServiceConsumers: async (profile, patchPath, overlays) => discoverModelServiceConsumers(
+      accountHome(), profile, dshEntryPath(), patchPath ?? desktopResourcePath('dsh-desktop.patch.yml'), overlays),
     privateImageLease: () => {
       const gateway = accountGateway
       return gateway && { gatewayUrl: gateway.url, ...gateway.createImageLease() }

@@ -24,6 +24,10 @@
       "types": "./generations/package-backend.d.ts",
       "default": "./generations/package-backend.mjs"
     },
+    "./default-plugins": {
+      "types": "./default-plugins.d.mts",
+      "default": "./default-plugins.mjs"
+    },
     "./plugin-state": {
       "types": "./plugin-state.d.ts",
       "default": "./plugin-state.mjs"

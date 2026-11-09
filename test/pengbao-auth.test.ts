@@ -57,6 +57,44 @@ describe('Pengbao client', () => {
   })
 
 
+  it('parses comma-separated server defaults with strict deduplication and trimming', async () => {
+    const seen: string[] = []
+    const client = new PengbaoClient({ fetch: async (url, init) => {
+      seen.push(String(url))
+      expect(init?.redirect).toBe('error')
+      return Response.json({ default_models: ' chat-a,chat-b ' })
+    } })
+    client.setToken('secret-jwt')
+    await expect(client.modelDefaults()).resolves.toEqual({ defaultModels: ['chat-a', 'chat-b'] })
+    expect(seen).toEqual(['https://pengbao.ecombus.net/api/config'])
+  })
+
+  it('prefers server display aliases over names without changing model IDs or vision capabilities', async () => {
+    const client = new PengbaoClient({ fetch: async () => Response.json({ data: [
+      { id: 'chat-id', alias: '聊天别名', name: 'Underlying model name' },
+      { id: 'vision-id', alias: 'Vision alias', name: 'Vision provider name', info: { meta: { capabilities: { vision: true } } } },
+      { id: 'name-only', name: 'Name fallback' },
+      { id: 'empty-alias', alias: '', name: 'Empty alias fallback' },
+      { id: 'invalid-alias', alias: 42, name: 'Non-string alias fallback' },
+      { id: 'id-only' }
+    ] }) })
+    client.setToken('secret-jwt')
+    await expect(client.models()).resolves.toEqual([
+      { id: 'chat-id', name: '聊天别名', input: ['text'] },
+      { id: 'vision-id', name: 'Vision alias', input: ['text', 'image'] },
+      { id: 'name-only', name: 'Name fallback', input: ['text'] },
+      { id: 'empty-alias', name: 'Empty alias fallback', input: ['text'] },
+      { id: 'invalid-alias', name: 'Non-string alias fallback', input: ['text'] },
+      { id: 'id-only', input: ['text'] }
+    ])
+  })
+
+  it('rejects malformed server defaults', async () => {
+    const client = new PengbaoClient({ fetch: async () => Response.json({ default_models: 'chat-a, chat-a' }) })
+    client.setToken('secret-jwt')
+    await expect(client.modelDefaults()).rejects.toMatchObject({ message: 'Invalid response from Pengbao' })
+  })
+
   it('rejects malformed success responses', async () => {
     expect(() => new PengbaoClient({ server: 'https://pengbao.ecombus.net/api?token=x' })).toThrow('Invalid Pengbao server URL')
     const client = new PengbaoClient({ fetch: async () => new Response(JSON.stringify({ token: 'jwt' }), { status: 200 }) })

@@ -1,4 +1,5 @@
 import { ImageError, MAX_IMAGE_BYTES, readBounded, safeError } from './provider.js'
+import { parseImageParameters, imageDiagnostic, IMAGE_BATCH_BYTES } from 'dsh-desktop-model-service/image-contract'
 
 export const PENGBAO_SERVICE_URL = 'https://pengbao.ecombus.net'
 const REASONS = new Set(['available', 'disabled', 'forbidden', 'unauthenticated', 'unavailable'])
@@ -7,7 +8,10 @@ const FAILURES = {
   IMAGE_FORBIDDEN: ['Your Pengbao account cannot generate images. Contact your administrator.', 403],
   IMAGE_AUTH: ['Sign in to Pengbao again to generate images.', 401],
   IMAGE_NETWORK: ['Pengbao image generation is temporarily unavailable.', 503],
-  IMAGE_TIMEOUT: ['Pengbao image generation timed out. The server may still have generated and charged for the image.', 504],
+  IMAGE_TIMEOUT: ['The local Pengbao image generation deadline expired. The server may still complete generation and you may be charged for the image. This request will not be retried automatically.', 504],
+  IMAGE_UPSTREAM_TIMEOUT: ['Pengbao image generation returned HTTP 504 (upstream timeout). The server may still complete generation and you may be charged for the image. This request will not be retried automatically.', 504],
+  IMAGE_TIMEOUT_UNKNOWN: ['The image service returned HTTP 504. The timeout source is unknown. The server may still complete generation and charge for the image. This request will not be retried automatically.', 504],
+  IMAGE_PARAMETERS_UNSUPPORTED: ['The image parameters are unsupported or have changed. Refresh model capabilities.', 400],
   IMAGE_RESPONSE: ['Pengbao returned an invalid image response.', 502],
   IMAGE_TOO_LARGE: ['The generated image exceeds 20 MiB.', 502],
   IMAGE_INVALID_REQUEST: ['The image description is invalid.', 400],
@@ -48,7 +52,10 @@ function catalogResult(result) {
     }
   }
   if (result.catalogStatus !== undefined && !['available', 'default-only'].includes(result.catalogStatus)) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
+  let generationParameters
+  try { generationParameters = parseImageParameters(result.generationParameters) } catch { /* Fail closed for advanced options only. */ }
   return { models, selection: result.selection,
+    ...(generationParameters ? { generationParameters } : {}),
     ...(defaultModel === undefined ? {} : { defaultModel }),
     ...(result.catalogStatus === undefined ? {} : { catalogStatus: result.catalogStatus }) }
 }
@@ -58,7 +65,8 @@ function catalogResult(result) {
  * @returns {undefined | Readonly<{
  *   status: (options?: {signal?: AbortSignal}) => Promise<{available: boolean, reason: string, serviceUrl: string, modelSelection: 'server-managed'}>,
  *   models: (options?: {signal?: AbortSignal}) => Promise<{models: {id: string, name: string}[], selection: 'request-local' | 'server-only', defaultModel?: {id: string, name: string}|null, catalogStatus?: 'available'|'default-only'}>,
- *   generate: (prompt: string, options?: {size?: string, model?: string, signal?: AbortSignal}) => Promise<Buffer>
+ *   generate: (prompt: string, options?: {size?: string, model?: string, signal?: AbortSignal}) => Promise<Buffer>,
+ *   generateMany: (prompt: string, options: import('dsh-desktop-model-service').ImageGenerateManyOptions) => Promise<import('dsh-desktop-model-service').ImageBatchResult>
  * }>}
  */
 export function getDesktopImageBridge() { return bridge }
@@ -76,30 +84,44 @@ export function registerDesktopImageBridge({ gatewayUrl, capabilityToken } = {})
     || typeof capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,512}$/.test(capabilityToken)) throw new Error('Invalid desktop image bridge registration.')
   const base = `${url.origin}/v1/image-generation`
   async function request(operation, prompt, options = {}) {
-    if (operation === 'generate' && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
-    if (operation === 'generate' && options.size !== undefined) {
-      const dimensions = typeof options.size === 'string' ? options.size.split('x').map(Number) : []
-      const width = dimensions[0] ?? 0
-      const height = dimensions[1] ?? 0
-      if (typeof options.size !== 'string' || !/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(options.size) || width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    const generate = operation === 'generate' || operation === 'generate-many'
+    const batch = operation === 'generate-many'
+    if (batch && ((!Number.isSafeInteger(options.n) || options.n < 1 || options.n > 4) ||
+      (options.parameterContractVersion !== undefined && options.parameterContractVersion !== 1) ||
+      (options.parameterRevision !== undefined && (typeof options.parameterRevision !== 'string' || !/^[a-f0-9]{64}$/.test(options.parameterRevision))))) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    if (generate && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    if (generate && options.size !== undefined) {
+      if (typeof options.size !== 'string' || options.size.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(options.size)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+      if (!/^(?:1|2|4)K$/.test(options.size) && !/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(options.size)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+      if (/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(options.size)) {
+        const dimensions = options.size.split('x').map(Number)
+        const width = dimensions[0] ?? 0
+        const height = dimensions[1] ?? 0
+        if (width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+      }
     }
-    if (operation === 'generate' && options.model !== undefined && !validModelId(options.model)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    if (generate && options.model !== undefined && !validModelId(options.model)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    if (generate && options.n !== undefined && (!Number.isSafeInteger(options.n) || options.n < 1 || options.n > 4)) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    if (generate && options.quality !== undefined && (typeof options.quality !== 'string' || options.quality.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(options.quality))) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
+    if (generate && options.detail !== undefined && (typeof options.detail !== 'string' || options.detail.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(options.detail))) throw new ImageError('IMAGE_INVALID_REQUEST', ...FAILURES.IMAGE_INVALID_REQUEST)
     // Keep the generation/download phase below the 240-second tool budget,
     // reserving time for status, PNG normalization and the sandbox commit.
-    const signal = AbortSignal.any([AbortSignal.timeout(operation === 'generate' ? 210_000 : 15_000), ...(options.signal ? [options.signal] : [])])
+    const signal = AbortSignal.any([AbortSignal.timeout(generate ? 210_000 : 15_000), ...(options.signal ? [options.signal] : [])])
     try {
       signal.throwIfAborted()
       const response = await fetch(`${base}/${operation}`, {
-        method: operation === 'generate' ? 'POST' : 'GET', redirect: 'error', signal,
-        headers: { Authorization: `Bearer ${capabilityToken}`, ...(operation === 'generate' ? { 'Content-Type': 'application/json' } : {}) },
-        ...(operation === 'generate' ? { body: JSON.stringify({ prompt, ...(options.size === undefined ? {} : { size: options.size }), ...(options.model === undefined ? {} : { model: options.model.trim() }) }) } : {}),
+        method: generate ? 'POST' : 'GET', redirect: 'error', signal,
+        headers: { Authorization: `Bearer ${capabilityToken}`, ...(generate ? { 'Content-Type': 'application/json' } : {}) },
+        ...(generate ? { body: JSON.stringify({ prompt, ...(options.size === undefined ? {} : { size: options.size }), ...(options.model === undefined ? {} : { model: options.model.trim() }), ...(options.n === undefined ? {} : { n: options.n }), ...(options.quality === undefined ? {} : { quality: options.quality }), ...(options.detail === undefined ? {} : { detail: options.detail }), ...(batch ? { ...(options.parameterContractVersion === undefined ? {} : { parameterContractVersion: options.parameterContractVersion }), ...(options.parameterRevision === undefined ? {} : { parameterRevision: options.parameterRevision }) } : {}) }) } : {}),
       })
       if (!response.ok) {
-        let code
-        try { code = JSON.parse((await readBounded(response, 16_384, signal)).toString('utf8'))?.error?.code }
+        let code, diagnostic
+        try { const payload = JSON.parse((await readBounded(response, 16_384, signal)).toString('utf8'))?.error; code = payload?.code; diagnostic = imageDiagnostic(payload?.diagnostic) }
         catch { signal.throwIfAborted() /* Ignore all free-form gateway error text. */ }
-        const safeCode = Object.hasOwn(FAILURES, code) ? code : 'IMAGE_NETWORK'
-        throw new ImageError(safeCode, ...FAILURES[safeCode])
+        const safeCode = Object.hasOwn(FAILURES, code) ? code : response.status === 504 ? 'IMAGE_TIMEOUT_UNKNOWN' : 'IMAGE_NETWORK'
+        const failure = new ImageError(safeCode, ...FAILURES[safeCode])
+        if (diagnostic && diagnostic.code === safeCode) failure.diagnostic = diagnostic
+        throw failure
       }
       if (operation === 'status') {
         const result = JSON.parse((await readBounded(response, 16_384, signal)).toString('utf8'))
@@ -118,6 +140,33 @@ export function registerDesktopImageBridge({ gatewayUrl, capabilityToken } = {})
         }
         return catalogResult(result)
       }
+      if (batch) {
+        if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
+        let result
+        try { result = JSON.parse((await readBounded(response, Math.ceil(IMAGE_BATCH_BYTES * 4 / 3) + 65_536, signal)).toString('utf8')) }
+        catch (error) { signal.throwIfAborted(); if (error instanceof ImageError) throw error; throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE) }
+        if (!result || result.requested !== options.n || !Array.isArray(result.images) || !Array.isArray(result.failures) ||
+          result.images.length + result.failures.length !== options.n || result.complete !== (result.failures.length === 0)) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
+        const seen = new Set(); let total = 0
+        const index = value => { if (!Number.isSafeInteger(value) || value < 0 || value >= options.n || seen.has(value)) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE); seen.add(value); return value }
+        const images = result.images.map(image => {
+          index(image?.index)
+          if (!['image/png', 'image/jpeg', 'image/webp'].includes(image.mime) || typeof image.b64 !== 'string' || image.b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.b64)) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
+          if (image.b64.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3)) throw new ImageError('IMAGE_TOO_LARGE', ...FAILURES.IMAGE_TOO_LARGE)
+          const data = Buffer.from(image.b64, 'base64'); total += data.length
+          if (data.toString('base64') !== image.b64) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
+          if (!data.length || data.length > MAX_IMAGE_BYTES || total > IMAGE_BATCH_BYTES) throw new ImageError('IMAGE_TOO_LARGE', ...FAILURES.IMAGE_TOO_LARGE)
+          const valid = image.mime === 'image/png' ? data.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : image.mime === 'image/jpeg' ? data.length >= 3 && data[0] === 255 && data[1] === 216 && data[2] === 255 : data.length >= 12 && data.toString('ascii',0,4) === 'RIFF' && data.toString('ascii',8,12) === 'WEBP'
+          if (!valid) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
+          return { index: image.index, data, mime: image.mime }
+        })
+        const failures = result.failures.map(failure => {
+          const code = Object.hasOwn(FAILURES, failure?.code) ? failure.code : 'IMAGE_RESPONSE'
+          const diagnostic = imageDiagnostic(failure?.diagnostic)
+          return { index: index(failure?.index), code, ...(diagnostic?.code === code ? { diagnostic } : {}) }
+        })
+        return { requested: options.n, images, failures, complete: result.complete }
+      }
       const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase()
       if (!['image/png', 'image/jpeg', 'image/webp'].includes(type)) throw new ImageError('IMAGE_RESPONSE', ...FAILURES.IMAGE_RESPONSE)
       const data = await readBounded(response, MAX_IMAGE_BYTES, signal)
@@ -125,9 +174,9 @@ export function registerDesktopImageBridge({ gatewayUrl, capabilityToken } = {})
       return data
     } catch (error) {
       if (error?.name === 'TimeoutError') throw new ImageError('IMAGE_TIMEOUT', ...FAILURES.IMAGE_TIMEOUT)
-      if (error?.name === 'AbortError' && operation === 'generate') throw new ImageError('CANCELLED', 'Image operation cancelled. The server may still have generated and charged for the image.', 499)
+      if (error?.name === 'AbortError' && generate) throw new ImageError('CANCELLED', 'Image operation cancelled. The server may still have generated and charged for the image.', 499)
       throw safeError(error)
     }
   }
-  bridge = Object.freeze({ status: options => request('status', undefined, options), models: options => request('models', undefined, options), generate: (prompt, options) => request('generate', prompt, options) })
+  bridge = Object.freeze({ status: options => request('status', undefined, options), models: options => request('models', undefined, options), generate: (prompt, options) => request('generate', prompt, options), generateMany: (prompt, options) => request('generate-many', prompt, options) })
 }

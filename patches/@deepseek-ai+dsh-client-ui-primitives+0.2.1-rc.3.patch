@@ -2,6 +2,14 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/index.js b/n
 index 2831e1d4de..d1f1337e61 100644
 --- a/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/index.js
+@@ -11537,6 +11537,6 @@ function vocabularyImageUrl(url) {
+ 	try {
+ 		const protocol = new URL(url).protocol;
+-		return protocol === "http:" || protocol === "https:" || protocol === "blob:" || protocol === "data:" || url.startsWith("dsh-app://app/api/file?") ? url : void 0;
++		return protocol === "http:" || protocol === "https:" || protocol === "blob:" || protocol === "data:" || url.startsWith("dsh-app://app/api/file?") || url.startsWith("dsh-desktop://harness/api/file?") ? url : void 0;
+ 	} catch {
+ 		return;
+ 	}
 @@ -11652,7 +11652,7 @@ function renderNode(node, key, context) {
  				"aria-label": mention.label,
  				onClick: mention.open,

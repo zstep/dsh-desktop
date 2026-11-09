@@ -43,11 +43,26 @@ describe('workbench submission status', () => {
     await expect(readSubmissionStatus(LINK, { fetchImpl: async () => new Response('', { status: 403 }) })).rejects.toThrow(/limiting requests/)
   })
 
+  it('keeps submission lookups disabled without an explicitly configured market', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-workbench-status-disabled-'))
+    try {
+      const routes = []
+      apply({ effect: fn => fn(), inject() {}, reflect: { provide() {} }, connection: { fetch: { register(route) { routes.push(route) } } } }, { root })
+      const route = routes.find(value => value.path === '/api/desktop-workbenches/submission-status')
+      const fetchImpl = github(pull())
+      vi.stubGlobal('fetch', fetchImpl)
+      const response = await route.fetch(new Request(`http://localhost/api/desktop-workbenches/submission-status?url=${encodeURIComponent(LINK)}`))
+      expect(response.status).toBe(503)
+      expect((await response.json()).error).toMatch(/not configured/)
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it('serves the status through the local host without storing it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-workbench-status-'))
     try {
       const routes = []
-      apply({ effect: fn => fn(), inject() {}, reflect: { provide() {} }, connection: { fetch: { register(route) { routes.push(route) } } } }, { root })
+      apply({ effect: fn => fn(), inject() {}, reflect: { provide() {} }, connection: { fetch: { register(route) { routes.push(route) } } } }, { root, catalogUrl: 'https://example.test/workbench-catalog.json' })
       const route = routes.find(value => value.path === '/api/desktop-workbenches/submission-status')
       vi.stubGlobal('fetch', github(pull()))
       const ok = await route.fetch(new Request(`http://localhost/api/desktop-workbenches/submission-status?url=${encodeURIComponent(LINK)}`))

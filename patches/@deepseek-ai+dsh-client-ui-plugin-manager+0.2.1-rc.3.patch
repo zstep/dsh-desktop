@@ -1,0 +1,120 @@
+diff --git a/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js
+index 5b7c726..4c1b234 100644
+--- a/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js
++++ b/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js
+@@ -172,7 +172,7 @@ window.__ModuleLoader__.load({
+ 			installConfirmedTitle: "安装插件",
+ 			installConfirmedRefused: "无法安装此插件",
+ 			installProblemInvalid: "无法识别这个包名或地址：{reason}",
+-			installProblemInstalled: "该插件已安装。如需升级，请卸载后重新安装",
++			installProblemInstalled: "该插件已安装。请在市场选择要安装的准确版本",
+ 			installProblemShipped: "该插件随 DSH 提供，升级 DSH 即可获得新版本",
+ 			installProblemNotFound: "未找到相关插件",
+ 			installProblemNotPackage: "该路径不存在或不是有效的插件包",
+@@ -284,7 +284,7 @@ window.__ModuleLoader__.load({
+ 			reasonUnaddressable: "当前 profile 的 patch 无法唯一定位这一项",
+ 			reasonUnknownPlugin: "找不到该插件",
+ 			reasonInvalidSpec: "请输入有效的包名或地址",
+-			reasonAlreadyInstalled: "这个包已经安装；要安装其他版本，请先卸载它",
++			reasonAlreadyInstalled: "这个包已经安装；请在市场选择其他准确版本",
+ 			reasonAmbiguousInstall: "无法从依赖变更中确定安装了哪一个包",
+ 			reasonNotBundle: "这个包没有声明组合包，不能作为插件管理",
+ 			reasonNotRemovable: "这个包不属于当前 profile，或者是插件管理所需的组件",
+@@ -396,7 +396,7 @@ window.__ModuleLoader__.load({
+ 			installConfirmedTitle: "Install plugin",
+ 			installConfirmedRefused: "This plugin cannot be installed",
+ 			installProblemInvalid: "This is not a package name or address that can be installed: {reason}",
+-			installProblemInstalled: "This plugin is already installed. To upgrade it, uninstall it and install it again",
++			installProblemInstalled: "This plugin is already installed. Choose an exact version in Discover to update it",
+ 			installProblemShipped: "This plugin ships with DSH; upgrading DSH updates it",
+ 			installProblemNotFound: "No such plugin was found",
+ 			installProblemNotPackage: "The path does not exist or is not a valid plugin package",
+@@ -508,7 +508,7 @@ window.__ModuleLoader__.load({
+ 			reasonUnaddressable: "The profile patch cannot address this one uniquely.",
+ 			reasonUnknownPlugin: "No such plugin.",
+ 			reasonInvalidSpec: "Enter a valid package name or address.",
+-			reasonAlreadyInstalled: "This package is already installed; uninstall it before installing another version.",
++			reasonAlreadyInstalled: "This package is already installed; choose another exact version in Discover.",
+ 			reasonAmbiguousInstall: "Which package was installed cannot be told from the dependency change.",
+ 			reasonNotBundle: "This package declares no bundle, so it cannot be managed as a plugin.",
+ 			reasonNotRemovable: "This package is not owned by the profile, or plugin management needs it.",
+@@ -1042,11 +1042,19 @@ window.__ModuleLoader__.load({
+ 						this.ctx.get("productAnalytics")?.track("plugin_add_button_click", {});
+ 						this.openDialog();
+ 					},
+-					installFrom: ({ spec, registry, title, version }) => {
++					installFrom: ({ spec, registry, title, version, expectedName, npmIntegrity }) => {
+ 						if (!this.openDialog()) return;
++						const current = this.getSnapshot().packages.find(pkg => pkg.name === expectedName);
++						if (current?.availability === "installation") return;
+ 						this.transientRegistry = registry !== void 0;
+ 						this.patchInstall({
+ 							spec,
++							...expectedName === void 0 ? {} : { subject: {
++								status: "accepted", kind: "registry", bundle: true, spec,
++								name: expectedName, version, expectedName, expectedVersion: version,
++								npmIntegrity, replace: current?.installed === true,
++								selection: current?.enabled ?? true, saveExact: true
++							} },
+ 							confirmed: {
+ 								title,
+ 								version
+@@ -1167,18 +1175,7 @@ window.__ModuleLoader__.load({
+ 							this.openCatalogInstall(pkg, target, pkg.enabled);
+ 							return;
+ 						}
+-						this.run(packageName, {
+-							packageName,
+-							action: "uninstall"
+-						}, async () => {
+-							const removed = await this.ctx.remote.pluginManager.removeBundle(packageName);
+-							if (removed.ok && removed.value.error?.code === "stop-profile") {
+-								this.openCatalogInstall(pkg, target, pkg.enabled);
+-								return;
+-							}
+-							this.applied(removed, packageName);
+-							this.openCatalogInstall(pkg, target, pkg.enabled);
+-						});
++						this.openCatalogInstall(pkg, target, pkg.enabled);
+ 					},
+ 					uninstall: (packageName) => {
+ 						this.pendingConfirm = () => this.run(packageName, {
+@@ -1440,7 +1437,9 @@ window.__ModuleLoader__.load({
+ 					spec: target.spec,
+ 					registry: registry.kind === "custom" ? registry.url : registry.registry,
+ 					selection: enabled,
+-					...local ? {} : { saveExact: true }
++					expectedName: pkg.name,
++						replace: pkg.installed === true,
++						...local ? {} : { saveExact: true, expectedVersion: target.version }
+ 				};
+ 				this.patch({ install: {
+ 					...IDLE_INSTALL,
+@@ -1596,7 +1595,11 @@ window.__ModuleLoader__.load({
+ 					enabled: subject.selection ?? false,
+ 					requestId,
+ 					registry,
+-					...subject.saveExact === void 0 ? {} : { saveExact: subject.saveExact },
++					expectedName: subject.expectedName,
++						expectedVersion: subject.expectedVersion,
++						npmIntegrity: subject.npmIntegrity,
++						replace: subject.replace,
++						...subject.saveExact === void 0 ? {} : { saveExact: subject.saveExact },
+ 					...approvedBuilds === void 0 ? {} : { approvedBuilds: [...approvedBuilds] }
+ 				});
+ 				if (this.disposed || this.request !== request) return;
+diff --git a/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts b/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts
+index a59ab02..ce79c28 100644
+--- a/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts
++++ b/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts
+@@ -79,6 +79,10 @@ export interface PluginActivationOwnerProps {
+ }
+ /** An exact version a tab asks the Plugins page to install, with the text the install dialog shows for it. */
+ export interface PluginTabInstall {
++    /** Exact package identity selected by the tab; enables verified in-place replacement. */
++    readonly expectedName?: string;
++    /** Optional registry integrity, when the contributing catalog provides it. */
++    readonly npmIntegrity?: string;
+     /** The install spec, such as `name@version` or a pinned `git+https` URL. */
+     readonly spec: string;
+     /** The registry to ask first for this install only; absent keeps the dialog's registry choice. */

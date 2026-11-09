@@ -1,0 +1,35 @@
+{
+  "name": "dsh-desktop-model-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": { "types": "./index.d.ts", "import": "./index.js", "default": "./index.js" },
+    "./private": { "types": "./private.d.ts", "import": "./private.js", "default": "./private.js" },
+    "./plugin-configuration-runtime": { "types": "./plugin-configuration-runtime.d.ts", "import": "./plugin-configuration-runtime.js", "default": "./plugin-configuration-runtime.js" },
+    "./image-contract": { "types": "./image-contract.d.ts", "import": "./image-contract.js", "default": "./image-contract.js" },
+    "./client": "./client.js",
+    "./config-bindings": { "types": "./config-bindings.d.ts", "import": "./config-bindings.js", "default": "./config-bindings.js" },
+    "./plugin-config-analysis": { "types": "./plugin-config-analysis.d.ts", "import": "./plugin-config-analysis.js", "default": "./plugin-config-analysis.js" },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": ["@deepseek-ai/dsh-client-ui-settings"],
+      "platform": "web"
+    },
+    "modelService": {
+      "contractVersion": 1,
+      "capabilities": ["chat.completions", "image.generate"]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3"
+  },
+  "license": "MIT"
+}

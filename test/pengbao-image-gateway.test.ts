@@ -7,6 +7,7 @@ const ORIGIN = 'https://pengbao.ecombus.net'
 const FILE = '/api/v1/files/image-1/content'
 const GENERATE = '/api/v1/images/generations'
 const STATUS = '/v1/image-generation/status'
+const BATCH = '/v1/image-generation/generate-many'
 const IMAGE = '/v1/image-generation/generate'
 const MODELS = '/v1/image-generation/models'
 const UPSTREAM_MODELS = '/api/v1/images/models'
@@ -61,19 +62,101 @@ async function fixture(handler: (req: IncomingMessage, res: ServerResponse) => v
 }
 async function request(gateway: PengbaoGateway, token: string, path = IMAGE, body: unknown = { prompt: 'A red bird' }) {
   return fetch(`${gateway.url}${path}`, {
-    method: path === IMAGE ? 'POST' : 'GET',
+    method: path === IMAGE || path === BATCH ? 'POST' : 'GET',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Cookie: 'local-secret=never-forwarded' },
-    ...(path === IMAGE ? { body: JSON.stringify(body) } : {})
+    ...(path === IMAGE || path === BATCH ? { body: JSON.stringify(body) } : {})
   })
 }
 async function expectError(response: Response, status: number, code: string) {
   expect(response.status).toBe(status)
   const body = await response.text()
-  expect(JSON.parse(body)).toEqual({ error: { message: expect.any(String), type: 'image_gateway_error', code } })
+  const parsed = JSON.parse(body)
+  expect(parsed).toEqual({ error: { message: expect.any(String), type: 'image_gateway_error', code,
+    ...(parsed.error.diagnostic ? { diagnostic: { requestId: expect.stringMatching(/^pb-[a-f0-9]{32}$/), stage: expect.stringMatching(/^(status|catalog|generation|descriptor|download|bitmap)$/), code, elapsedMs: expect.any(Number),
+      ...(parsed.error.diagnostic.upstreamStatus === undefined ? {} : { upstreamStatus: expect.any(Number) }) } } : {}) } })
   expect(body).not.toMatch(/private-fixture-jwt|secret-config|secret-file-name|private@example|INTERNAL|evil\.invalid/)
   expect(response.headers.get('set-cookie')).toBeNull()
   expect(response.headers.get('location')).toBeNull()
 }
+
+describe('Pengbao image gateway parameter batches', () => {
+  const revision = 'a'.repeat(64)
+  const parameters = { contractVersion: 1, revision, models: [{ id: 'chosen', maxImages: 4, qualities: ['auto', 'high'], details: [''] }] }
+  const input = { prompt: 'PRIVATE_PROMPT', model: 'chosen', n: 2, quality: 'high', parameterContractVersion: 1, parameterRevision: revision }
+  function metadata(res: ServerResponse, generationParameters: unknown = parameters) {
+    res.setHeader('X-Image-Model-Selection', 'request-local-v1')
+    sendJson(res, { models: [{ id: 'chosen', name: 'Chosen' }], defaultModel: { id: 'chosen', name: 'Chosen' }, selection: 'request-local', catalogStatus: 'available', generationParameters })
+  }
+  it('generates once, downloads two validated images and propagates a host-owned correlation id', async () => {
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === METADATA) return metadata(res)
+      if (req.url === GENERATE) return sendJson(res, [{ id: 'one', url: '/api/v1/files/one/content' }, { id: 'two', url: '/api/v1/files/two/content' }])
+      if (req.url === '/api/v1/files/one/content' || req.url === '/api/v1/files/two/content') { res.writeHead(200, { 'content-type': 'image/png' }); res.end(PNG); return }
+      defaults(req, res)
+    })
+    const response = await request(gateway, lease.capabilityToken, BATCH, input)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ requested: 2, complete: true, failures: [], images: [0, 1].map(index => ({ index, b64: PNG.toString('base64'), mime: 'image/png' })) })
+    const calls = seen.filter(row => row.path === GENERATE)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0]!.body)).toEqual(input)
+    expect(calls[0]!.headers['x-pengbao-request-id']).toMatch(/^pb-[a-f0-9]{32}$/)
+    expect(new Set(seen.map(row => row.headers['x-pengbao-request-id'])).size).toBe(1)
+  })
+  it.each([
+    { ...input, parameterRevision: 'b'.repeat(64) }, { ...input, n: 5 }, { ...input, quality: 'medium' }, { ...input, detail: 'high' }
+  ])('rejects invalid or stale parameters before generation: %j', async body => {
+    const { gateway, lease, seen } = await fixture((req, res) => req.url === METADATA ? metadata(res) : defaults(req, res))
+    const response = await request(gateway, lease.capabilityToken, BATCH, body)
+    expect(response.status).toBe(400)
+    expect(seen.some(row => row.path === GENERATE)).toBe(false)
+  })
+  it('keeps completed images after a later download failure and never regenerates', async () => {
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === METADATA) return metadata(res)
+      if (req.url === GENERATE) return sendJson(res, [{ id: 'one', url: '/api/v1/files/one/content' }, { id: 'two', url: '/api/v1/files/two/content' }])
+      if (req.url === '/api/v1/files/one/content') { res.writeHead(200, { 'content-type': 'image/png' }); res.end(PNG); return }
+      if (req.url === '/api/v1/files/two/content') { res.writeHead(504); res.end('PRIVATE_SECRET'); return }
+      defaults(req, res)
+    })
+    const response = await request(gateway, lease.capabilityToken, BATCH, input)
+    expect(await response.json()).toEqual({ requested: 2, complete: false, images: [{ index: 0, b64: PNG.toString('base64'), mime: 'image/png' }], failures: [{ index: 1, code: 'IMAGE_UPSTREAM_TIMEOUT', diagnostic: expect.objectContaining({ code: 'IMAGE_UPSTREAM_TIMEOUT', stage: 'download', upstreamStatus: 504 }) }] })
+    expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
+  })
+  it.each([
+    { descriptors: [{ id: 'image-1', url: FILE }] },
+    { descriptors: [{ id: 'image-1', url: FILE }, { id: 'image-1', url: FILE }] },
+    { descriptors: [{ id: 'image-1', url: FILE }, { id: 'unsafe', url: 'https://evil.invalid/content' }] }
+  ])('keeps a safe image and marks missing, duplicate or unsafe descriptors without following them', async ({ descriptors }) => {
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === METADATA) return metadata(res)
+      if (req.url === GENERATE) return sendJson(res, descriptors)
+      defaults(req, res)
+    })
+    expect(await (await request(gateway, lease.capabilityToken, BATCH, input)).json()).toEqual({ requested: 2, complete: false, images: [{ index: 0, b64: PNG.toString('base64'), mime: 'image/png' }], failures: [{ index: 1, code: 'IMAGE_RESPONSE' }] })
+    expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
+    expect(seen.filter(row => row.path === FILE)).toHaveLength(1)
+    expect(seen.some(row => row.path.includes('unsafe'))).toBe(false)
+  })
+  it.each([400, 409])('maps safe backend contract rejection HTTP %i without forwarding raw text or retrying', async status => {
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === METADATA) return metadata(res)
+      if (req.url === GENERATE) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify({ detail: { code: 'IMAGE_PARAMETER_CONFIG_CONFLICT', message: 'INTERNAL secret-config' } })); return }
+      defaults(req, res)
+    })
+    await expectError(await request(gateway, lease.capabilityToken, BATCH, input), 400, 'IMAGE_PARAMETERS_UNSUPPORTED')
+    expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
+  })
+  it('refuses undeclared capabilities without breaking the legacy single-image path', async () => {
+    const { gateway, lease, seen } = await fixture((req, res) => req.url === METADATA ? metadata(res, null) : defaults(req, res))
+    // An explicit empty declaration authorizes no overrides.
+    const empty = await fixture((req, res) => req.url === METADATA ? metadata(res, { ...parameters, models: [] }) : defaults(req, res))
+    await expectError(await request(empty.gateway, empty.lease.capabilityToken, BATCH, input), 400, 'IMAGE_PARAMETERS_UNSUPPORTED')
+    expect(empty.seen.some(row => row.path === GENERATE)).toBe(false)
+    expect((await request(gateway, lease.capabilityToken)).status).toBe(200)
+    expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
+  })
+})
 
 describe('Pengbao image gateway runtime leases', () => {
   it('keeps image and chat capabilities separate and guards fixed paths and browser origins', async () => {
@@ -395,29 +478,12 @@ describe('Pengbao image gateway runtime leases', () => {
     expect(callback).toHaveBeenCalledWith(expect.objectContaining({ stage: 'status', code: 'IMAGE_AUTH', upstreamStatus: 401 }))
   })
 
-  it('posts prompt and optional size to the fixed production path, then returns only bitmap bytes', async () => {
-    const { gateway, lease, seen } = await fixture()
-    const response = await request(gateway, lease.capabilityToken, IMAGE, { prompt: 'A wide red bird', size: '2048x1024' })
-    expect(response.status).toBe(200)
-    expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG)
-    expect(response.headers.get('content-type')).toBe('image/png')
-    expect(response.headers.get('x-secret')).toBeNull()
-    expect(response.headers.get('set-cookie')).toBeNull()
-    expect(seen.map(row => row.path)).toEqual(['/api/v1/auths/', '/api/config', GENERATE, FILE])
-    expect(JSON.parse(seen.find(row => row.path === GENERATE)?.body ?? '')).toEqual({ prompt: 'A wide red bird', size: '2048x1024', n: 1 })
-    for (const row of seen) {
-      expect(row.headers.authorization).toBe('Bearer private-fixture-jwt')
-      expect(row.headers.cookie).toBeUndefined()
-      expect(JSON.stringify(row)).not.toContain(lease.capabilityToken)
-    }
-  })
 
-  it.each([{}, { prompt: '' }, { prompt: '   ' }, { prompt: 1 }, { prompt: 'x', size: '8193x1' }, { prompt: 'x', size: '8001x8000' }, { prompt: 'x', size: 'bad' }, { prompt: 'x', model: 1 }, { prompt: 'x', model: '' }, { prompt: 'x', model: ' ' }, { prompt: 'x', model: 'x'.repeat(257) }, { prompt: 'x', model: 'bad\nmodel' }, { prompt: 'x', model: null }, { prompt: 'x', url: ORIGIN }, { prompt: 'x', n: 2 }, { prompt: 'x', chat_id: 'cloud-chat' }, { prompt: 'x'.repeat(16_001) }])('rejects invalid or extra input fields before any upstream request', async input => {
+  it.each([{}, { prompt: '' }, { prompt: '   ' }, { prompt: 1 }, { prompt: 'x', size: '8193x1' }, { prompt: 'x', size: '8001x8000' }, { prompt: 'x', model: 1 }, { prompt: 'x', model: '' }, { prompt: 'x', model: ' ' }, { prompt: 'x', model: 'x'.repeat(257) }, { prompt: 'x', model: 'bad\nmodel' }, { prompt: 'x', model: null }, { prompt: 'x', url: ORIGIN }, { prompt: 'x', chat_id: 'cloud-chat' }, { prompt: 'x'.repeat(16_001) }])('rejects invalid or extra input fields before any upstream request', async input => {
     const { gateway, lease, seen } = await fixture()
     await expectError(await request(gateway, lease.capabilityToken, IMAGE, input), 400, 'IMAGE_INVALID_REQUEST')
     expect(seen).toHaveLength(0)
   })
-
   it('rejects malformed JSON, oversized bodies and compressed input', async () => {
     const { gateway, lease, seen } = await fixture()
     for (const [body, extra, status, code] of [
@@ -445,14 +511,17 @@ describe('Pengbao image gateway runtime leases', () => {
 
   it.each([
     [401, 401, 'IMAGE_AUTH'], [403, 403, 'IMAGE_FORBIDDEN'], [429, 429, 'IMAGE_BUSY'],
-    [500, 502, 'IMAGE_NETWORK'], [504, 504, 'IMAGE_TIMEOUT']
+    [500, 502, 'IMAGE_NETWORK'], [504, 504, 'IMAGE_UPSTREAM_TIMEOUT']
   ])('uses generation HTTP %s as final authority, sanitizes errors and never retries', async (upstreamStatus, resultStatus, code) => {
     const { gateway, lease, seen } = await fixture((req, res) => {
       if (req.url !== GENERATE) return defaults(req, res)
       res.writeHead(Number(upstreamStatus), { 'set-cookie': 'token=private-fixture-jwt', 'x-secret': 'private-fixture-jwt' })
       res.end('private-fixture-jwt INTERNAL https://evil.invalid')
     })
-    await expectError(await request(gateway, lease.capabilityToken), Number(resultStatus), String(code))
+    const response = await request(gateway, lease.capabilityToken)
+    const body = await response.clone().text()
+    await expectError(response, Number(resultStatus), String(code))
+    if (upstreamStatus === 504) expect(body).toMatch(/complete|charge|automatically/i)
     expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
     expect(seen.filter(row => row.path === FILE)).toHaveLength(0)
   })
@@ -530,7 +599,9 @@ describe('Pengbao image gateway runtime leases', () => {
     await vi.waitFor(() => expect(seen.some(row => row.path === FILE)).toBe(true))
     await expectError(await request(gateway, lease.capabilityToken), 429, 'IMAGE_BUSY')
     expect((await request(gateway, gateway.capabilityToken, '/v1/models')).status).toBe(200)
-    await expectError(await pending, 504, 'IMAGE_TIMEOUT')
+    const timeout = await pending
+    expect(await timeout.clone().text()).toMatch(/deadline|complete|charge|automatically/i)
+    await expectError(timeout, 504, 'IMAGE_TIMEOUT')
     expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
   })
 

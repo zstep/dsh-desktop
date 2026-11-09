@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { parse as parseYaml } from 'yaml'
 import { readInstallEvidence } from '../packages/dsh-desktop-workbenches/install-evidence.mjs'
 import { apply } from '../packages/dsh-desktop-workbenches/index.js'
 import {
@@ -142,6 +143,40 @@ describe('workbench market install routes', () => {
     }
     return { root, home, call }
   }
+
+  it('loads the original public catalog through the shipped Desktop configuration without installing anything', async () => {
+    const patch = parseYaml(await readFile(new URL('../build/dsh-desktop.patch.yml', import.meta.url), 'utf8'), {
+      customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: value => value }]
+    })
+    const workbenches = patch.flatMap(row => row.insert ?? []).find(row => row.name === 'dsh-desktop-workbenches')
+    expect(workbenches.config.catalogUrl).toBe('https://market.dshdesktop.com/index.json')
+    const root = await tempRoot()
+    const routes = new Map()
+    const fetchCatalog = vi.fn(async () => Response.json(index))
+    vi.stubGlobal('fetch', fetchCatalog)
+    const installBundle = vi.fn()
+    const connection = { fetch: { register(route) { routes.set(route.path, route) } } }
+    apply({ effect: fn => fn(), reflect: { provide() {} }, connection,
+      inject(deps, callback) { if (!deps.includes('tools')) callback({ connection, pluginManager: manager({ installBundle }), effect: fn => fn() }) }
+    }, { ...workbenches.config, root })
+    const readCatalog = query => routes.get('/api/desktop-workbenches/catalog').fetch(new Request(`http://localhost/api/desktop-workbenches/catalog?${query}`))
+    expect(await (await readCatalog('cache=1')).json()).toEqual({ catalog: null, stale: false })
+    expect(fetchCatalog).not.toHaveBeenCalled()
+    const response = await readCatalog('force=1')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ catalog: index, stale: false })
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    expect(fetchCatalog).toHaveBeenCalledWith('https://market.dshdesktop.com/index.json', expect.any(Object))
+    expect(installBundle).not.toHaveBeenCalled()
+  })
+
+  it('uses an explicitly configured catalog instead of the public default', async () => {
+    const fetchCatalog = vi.fn(async () => Response.json(index))
+    const { call } = await host(undefined, index, fetchCatalog)
+    expect((await call('/api/desktop-workbenches/catalog')).body.catalog).toEqual(index)
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    expect(fetchCatalog).toHaveBeenCalledWith('https://market.example.test/index.json', expect.any(Object))
+  })
 
   it('keeps local routes available without a configured market and never fetches the vendor catalog', async () => {
     const root = await tempRoot()

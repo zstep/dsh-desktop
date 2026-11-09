@@ -31,7 +31,7 @@ index a9b4aea6db..d76548a1ca 100644
 +    "dsh-desktop-log-bridge": "0.1.0",
 +    "dsh-desktop-market-installer": "0.1.0",
 +    "dsh-desktop-preset-transfer": "0.1.0",
-+    "dsh-desktop-imagegen": "0.1.0",
++    "dsh-desktop-model-service": "0.1.0",
 +    "dsh-image-generation": "0.1.0",
 +    "react-dom": "18.3.1",
 +    "dsh-desktop-onboarding": "0.1.0",

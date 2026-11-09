@@ -19,15 +19,27 @@ function fixture(listModels) {
 }
 
 describe('Desktop imagegen managed operations', () => {
-  it('uses only the bound server-default image operation and never enhances generation', async () => {
+  it('uses the legacy-compatible single-image request without materializing default contract fields', async () => {
     const { host, bridge, generate, stream } = fixture()
     expect(host.image.channelName).toBe('Pengbao')
-    const result = await host.image.generate({ prompt: 'blue flower', mode: 'text', size: '1024x768', n: 1, quality: 'auto', detail: '' }, new AbortController().signal)
+    const result = await host.image.generate({ prompt: 'blue flower', mode: 'text', size: '2K', n: 1, quality: 'auto', detail: '' }, new AbortController().signal)
 
     expect(result).toEqual({ b64: png.toString('base64'), mime: 'image/png' })
-    expect(generate).toHaveBeenCalledWith('blue flower', expect.objectContaining({ size: '1024x768' }))
+    expect(generate).toHaveBeenCalledWith('blue flower', expect.objectContaining({ size: '2K' }))
+    expect(generate.mock.calls[0][1]).not.toHaveProperty('quality')
+    expect(generate.mock.calls[0][1]).not.toHaveProperty('detail')
     expect(bridge.status).not.toHaveBeenCalled()
     expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('forwards explicitly selected parameters and batch count without injecting defaults', async () => {
+    const { host, bridge } = fixture()
+    const image = { index: 0, data: png, mime: 'image/png' }
+    bridge.generateMany = vi.fn(async (_prompt, options) => ({ requested: options.n, images: [image, { ...image, index: 1 }], failures: [], complete: true }))
+    await host.image.generate({ prompt: 'two flowers', size: '2K', n: 2, quality: 'high', detail: 'sharp' })
+    expect(bridge.generateMany).toHaveBeenCalledWith('two flowers', expect.objectContaining({ size: '2K', n: 2, quality: 'high', detail: 'sharp' }))
+    expect(bridge.generateMany.mock.calls[0][1]).not.toHaveProperty('parameterContractVersion')
+    expect(bridge.generateMany.mock.calls[0][1]).not.toHaveProperty('parameterRevision')
   })
 
   it.each([

@@ -50,22 +50,72 @@ async function receivePrivateModelHandoff() {
     const receive = (message) => {
       if (settled || message?.kind !== 'dsh-desktop:private-model-delivery') return
       settled = true
-      const { gatewayUrl, capabilityToken, image } = message
-      if (typeof gatewayUrl !== 'string' || !/^https?:\/\/127\.0\.0\.1:\d+$/.test(gatewayUrl) ||
-          typeof capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,}$/.test(capabilityToken) ||
-          (image !== undefined && (!image || typeof image !== 'object' ||
-            typeof image.gatewayUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(image.gatewayUrl) ||
-            typeof image.capabilityToken !== 'string' || !/^[A-Za-z0-9_-]{32,}$/.test(image.capabilityToken)))) {
+      const { gatewayUrl, capabilityToken, image, modelService, consumers, pluginConfiguration } = message
+      const validToken = value => typeof value === 'string' && /^[A-Za-z0-9_-]{32,512}$/.test(value)
+      const hasOnlyKeys = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value) &&
+        Object.keys(value).every(key => keys.includes(key))
+      const exactKeys = (value, keys) => hasOnlyKeys(value, keys) && keys.every(key => Object.hasOwn(value, key))
+      const validGateway = value => {
+        if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(value)) return false
+        const port = Number(value.slice(value.lastIndexOf(':') + 1))
+        return Number.isInteger(port) && port > 0 && port <= 65535
+      }
+      const validImage = value => exactKeys(value, ['capabilityToken', 'gatewayUrl']) && validGateway(value.gatewayUrl) && validToken(value.capabilityToken)
+      const validConsumers = value => value === undefined || (Array.isArray(value) && value.length <= 512 && new Set(value.map(item => item?.id)).size === value.length && value.every(item =>
+        item !== null && typeof item === 'object' && !Array.isArray(item) &&
+        Object.keys(item).every(key => ['id', 'version', 'status', 'capabilities', 'adapter'].includes(key)) &&
+        Object.hasOwn(item, 'id') && Object.hasOwn(item, 'status') && Object.hasOwn(item, 'capabilities') &&
+        typeof item.id === 'string' && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(item.id) && item.id.length <= 256 &&
+        (item.version === undefined || typeof item.version === 'string' && item.version.length <= 128 && /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.version)) &&
+        ['declared', 'needs-adapter', 'invalid-declaration'].includes(item.status) && Array.isArray(item.capabilities) &&
+        item.capabilities.length <= 16 && new Set(item.capabilities).size === item.capabilities.length && item.capabilities.every(capability => ['chat.completions', 'image.generate'].includes(capability)) &&
+        (item.adapter === undefined || ['llm-pi-ai', 'desktop-imagegen', 'image-generation'].includes(item.adapter))))
+      const validModelService = value => exactKeys(value, ['contractVersion', 'gatewayUrl', 'capabilityToken', 'capabilities']) &&
+        value.contractVersion === 1 && validGateway(value.gatewayUrl) && validToken(value.capabilityToken) &&
+        Array.isArray(value.capabilities) && value.capabilities.length === 1 && value.capabilities[0] === 'chat.completions'
+      const validPluginConfiguration = value => exactKeys(value, ['contractVersion', 'gatewayUrl', 'capabilityToken']) && value.contractVersion === 1 && validGateway(value.gatewayUrl) && validToken(value.capabilityToken)
+      const hasLegacy = gatewayUrl !== undefined || capabilityToken !== undefined
+      if ((hasLegacy && (!validGateway(gatewayUrl) || !validToken(capabilityToken))) ||
+          (!hasLegacy && !modelService && !image && !consumers && !pluginConfiguration) ||
+          (pluginConfiguration !== undefined && !validPluginConfiguration(pluginConfiguration)) ||
+          (modelService !== undefined && !validModelService(modelService)) || !validConsumers(consumers) ||
+          (image !== undefined && !validImage(image)) ||
+          !hasOnlyKeys(message, ['kind', 'gatewayUrl', 'capabilityToken', 'modelService', 'consumers', 'image', 'pluginConfiguration'])) {
         cleanup()
         send({ kind: 'dsh-desktop:private-model-rejected' })
         reject(new Error('Invalid private model handoff'))
         return
       }
       cleanup()
-      send({ kind: 'dsh-desktop:private-model-received' })
-      resolve(Object.freeze({ gatewayUrl, capabilityToken, ...(image ? {
-        image: Object.freeze({ gatewayUrl: image.gatewayUrl, capabilityToken: image.capabilityToken })
-      } : {}) }))
+      let acknowledged = false
+      const delivery = Object.freeze({
+        ...(hasLegacy ? { gatewayUrl, capabilityToken } : {}),
+        ...(modelService ? { modelService: Object.freeze({
+          contractVersion: modelService.contractVersion,
+          gatewayUrl: modelService.gatewayUrl,
+          capabilityToken: modelService.capabilityToken,
+          capabilities: Object.freeze([...modelService.capabilities])
+        }) } : {}),
+        ...(consumers ? { consumers: Object.freeze(consumers.map(item => Object.freeze({
+          id: item.id, ...(item.version === undefined ? {} : { version: item.version }), status: item.status,
+          capabilities: Object.freeze([...item.capabilities]), ...(item.adapter ? { adapter: item.adapter } : {})
+        }))) } : {}),
+        ...(pluginConfiguration ? { pluginConfiguration: Object.freeze({ contractVersion: 1, gatewayUrl: pluginConfiguration.gatewayUrl, capabilityToken: pluginConfiguration.capabilityToken }) } : {}),
+        ...(image ? { image: Object.freeze({ gatewayUrl: image.gatewayUrl, capabilityToken: image.capabilityToken }) } : {})
+      })
+      resolve(Object.freeze({
+        handoff: delivery,
+        acknowledge() {
+          if (acknowledged) return
+          acknowledged = true
+          send({ kind: 'dsh-desktop:private-model-received' })
+        },
+        reject() {
+          if (acknowledged) return
+          acknowledged = true
+          send({ kind: 'dsh-desktop:private-model-rejected' })
+        }
+      }))
     }
     const onUtilityMessage = (event) => receive(event?.data)
     const onNodeMessage = (message) => receive(message)
@@ -101,6 +151,35 @@ async function registerPrivateModelCredential(dshEntryPathValue, handoff) {
   process.stdout.write('[harness-node] private model credential registered\n')
 }
 
+async function registerPrivateModelService(dshEntryPathValue, handoff) {
+  const requireHost = createRequire(dshEntryPathValue)
+  const serviceEntry = requireHost.resolve('dsh-desktop-model-service/private')
+  const { registerModelService, registerModelServiceConsumers, registerPrivatePluginConfiguration } = await import(pathToFileURL(serviceEntry).href)
+  if (handoff.pluginConfiguration) {
+    registerPrivatePluginConfiguration(handoff.pluginConfiguration)
+    const appBootEntry = requireHost.resolve('@deepseek-ai/dsh-app-boot')
+    const { registerHostPreparation } = await import(pathToFileURL(appBootEntry).href)
+    const runtimeEntry = requireHost.resolve('dsh-desktop-model-service/plugin-configuration-runtime')
+    registerHostPreparation(async ctx => {
+      const { installPluginConfigurationRuntime } = await import(pathToFileURL(runtimeEntry).href)
+      await installPluginConfigurationRuntime(ctx)
+    })
+  }
+  if (handoff.modelService) registerModelService(handoff.modelService)
+  registerModelServiceConsumers(handoff.consumers ?? [])
+  process.stdout.write('[harness-node] private model service registered\n')
+}
+
+async function registerPrivateModelImage(dshEntryPathValue) {
+  const requireHost = createRequire(dshEntryPathValue)
+  const hostEntry = requireHost.resolve('dsh-image-generation')
+  const bridgeEntry = createRequire(hostEntry).resolve('dsh-image-generation/desktop-bridge')
+  const { getDesktopImageBridge } = await import(pathToFileURL(bridgeEntry).href)
+  const serviceEntry = requireHost.resolve('dsh-desktop-model-service/private')
+  const { registerModelServiceImage } = await import(pathToFileURL(serviceEntry).href)
+  const operations = getDesktopImageBridge()
+  if (operations) registerModelServiceImage(operations)
+}
 async function registerPrivateImageCredential(dshEntryPathValue, handoff) {
   // Match the host insertion's installation anchor; never resolve a Profile
   // package with the same name or fall back to an ambient market instance.
@@ -184,8 +263,9 @@ if (!dshEntryPath) {
 } else {
   process.stdout.write(`[harness-node] loading=${dshEntryPath}\n`)
   process.argv = [process.execPath, dshEntryPath, ...dshArguments]
+  let privateDelivery
   try {
-    const privateModelHandoff = await receivePrivateModelHandoff()
+    const privateModelHandoff = (privateDelivery = await receivePrivateModelHandoff())?.handoff
     const archive = packagedArchiveRoot(dshEntryPath)
     const resources = archive ? dirname(archive) : import.meta.dirname
     process.env.DSH_DESKTOP_OFFICE_RESOURCES = archive
@@ -197,9 +277,14 @@ if (!dshEntryPath) {
     // unpacked directory so the OS can spawn it.
     registerOfficeEngineResolution(dshEntryPath)
     if (privateModelHandoff) {
-      await registerPrivateModelCredential(dshEntryPath, privateModelHandoff)
+      if (privateModelHandoff.gatewayUrl && privateModelHandoff.capabilityToken) {
+        await registerPrivateModelCredential(dshEntryPath, privateModelHandoff)
+      }
+      if (privateModelHandoff.modelService || privateModelHandoff.consumers || privateModelHandoff.pluginConfiguration) await registerPrivateModelService(dshEntryPath, privateModelHandoff)
       if (privateModelHandoff.image) await registerPrivateImageCredential(dshEntryPath, privateModelHandoff.image)
+      if (privateModelHandoff.image) await registerPrivateModelImage(dshEntryPath)
     }
+    privateDelivery?.acknowledge()
     // Harness 0.1.5 gates its CLI behind `if (import.meta.main)` and exports
     // `runCli`. This file imports the entry rather than being it, so that guard
     // is false here and a plain import would load the module, run nothing, and
@@ -230,6 +315,7 @@ if (!dshEntryPath) {
       }
     }
   } catch (error) {
+    privateDelivery?.reject()
     reportPluginFailures(error)
     report('DSH entry failed', error?.stack ?? error)
     process.exitCode = 1

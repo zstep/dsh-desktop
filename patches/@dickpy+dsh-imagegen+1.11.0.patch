@@ -1,7 +1,8 @@
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dickpy/dsh-imagegen/lib/client.js
+index 54f01f1..b4d0a90 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/client.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/client.js
-@@ -915,6 +915,17 @@
+@@ -915,6 +915,17 @@ window.__ModuleLoader__.load({
  			"settings.promptApiUrlHint": "OpenAI 兼容基址；留空则复用图像 API 地址。",
  			"settings.promptApiKey": "对话 API 密钥（可选）",
  			"settings.promptApiKeyHint": "留空则复用图像 API 密钥。",
@@ -19,7 +20,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			"settings.promptModel": "对话模型",
  			"settings.promptModelHint": "选择或填写支持 /chat/completions 的模型。",
  			"settings.promptModelDetectionHint": "默认复用生图 API；检测后点选一个模型即可。",
-@@ -1976,6 +1987,17 @@
+@@ -1976,6 +1987,17 @@ window.__ModuleLoader__.load({
  			"settings.promptApiUrlHint": "OpenAI-compatible base URL. Leave blank to reuse the image API URL.",
  			"settings.promptApiKey": "Chat API key (optional)",
  			"settings.promptApiKeyHint": "Leave blank to reuse the image API key.",
@@ -37,7 +38,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			"settings.promptModel": "Chat model",
  			"settings.promptModelHint": "Select or enter a model supporting /chat/completions.",
  			"settings.promptModelDetectionHint": "Uses the image API by default. Detect and select one model.",
-@@ -44695,12 +44717,18 @@
+@@ -44695,13 +44717,19 @@ window.__ModuleLoader__.load({
  		*/
  		/** Resolve a selection against the current groups, keeping the preferred channel when possible. */
  		function resolveModelChoice(groups, value, preferredChannelId) {
@@ -50,14 +51,15 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				channelId: group?.id ?? "",
  				model: group?.models.includes(requestedModel) === true ? requestedModel : group?.models[0] ?? ""
  			};
-+		}
+ 		}
 +		function modelChoiceLabel(group, model) {
 +			const name = group?.modelNames?.[model];
 +			return typeof name === "string" && name.length > 0 && name.length <= 544 && !/[\p{C}\p{Zl}\p{Zp}]/u.test(name) ? name : model;
- 		}
++		}
  		function ModelPicker(props) {
  			const resolved = resolveModelChoice(props.groups, props.value);
-@@ -44828,7 +44856,9 @@
+ 			const [open, setOpen] = (0, react.useState)(false);
+@@ -44828,7 +44856,9 @@ window.__ModuleLoader__.load({
  							});
  							setOpen(false);
  						},
@@ -68,7 +70,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					}, model)),
  					(draftGroup?.models.length ?? 0) === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
  						className: model_picker_module_css_default.empty,
-@@ -44843,10 +44873,10 @@
+@@ -44843,10 +44873,10 @@ window.__ModuleLoader__.load({
  				"data-variant": props.variant ?? "panel",
  				"data-open": open ? "" : void 0,
  				disabled: props.disabled === true || props.groups.length === 0,
@@ -81,7 +83,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				onClick: toggle,
  				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
  					className: model_picker_module_css_default.value,
-@@ -44862,7 +44892,7 @@
+@@ -44862,7 +44892,7 @@ window.__ModuleLoader__.load({
  						}),
  						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
  							className: model_picker_module_css_default.model,
@@ -90,7 +92,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  						})
  					]
  				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-@@ -54247,6 +54277,7 @@
+@@ -54247,6 +54277,7 @@ window.__ModuleLoader__.load({
  					if (writable !== void 0) draft.writable = writable;
  					draft.status = "ready";
  					draft.value = view.value;
@@ -98,7 +100,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				});
  				const secretSets = Object.fromEntries((view.secrets ?? []).map((secret) => [secret.path.join("."), secret.set]));
  				this.keySet.set(Object.values(secretSets).some(Boolean));
-@@ -54293,6 +54324,7 @@
+@@ -54293,6 +54324,7 @@ window.__ModuleLoader__.load({
  				return models.length === 0 ? [] : [{
  					id: channel.id,
  					name: channel.name.trim() || channel.id,
@@ -106,7 +108,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					models
  				}];
  			});
-@@ -55028,11 +55060,36 @@
+@@ -55028,11 +55060,36 @@ window.__ModuleLoader__.load({
  			return CONFIG_WIDTH_DEFAULT;
  		}
  		/** Read the current config from the settings scope snapshot. */
@@ -147,7 +149,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			return value;
  		}
  		/** Track one redacted secret field without exposing its value to the panel. */
-@@ -55378,14 +55435,14 @@
+@@ -55378,14 +55435,14 @@ window.__ModuleLoader__.load({
  					window.clearInterval(timer);
  				};
  			}, [active, subscriptionChannelsKey]);
@@ -164,7 +166,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			const [tab, setTab] = (0, react.useState)("text");
  			const [workspace, setWorkspace] = (0, react.useState)("normal");
  			const [pptImport, setPptImport] = (0, react.useState)();
-@@ -55401,6 +55458,7 @@
+@@ -55401,6 +55458,7 @@ window.__ModuleLoader__.load({
  			const [canvasImportRequest, setCanvasImportRequest] = (0, react.useState)();
  			/** Switch to a normal-generation tab, leaving any task workspace. */
  			const openTab = (next) => {
@@ -172,7 +174,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				setWorkspace("normal");
  				setTab(next);
  			};
-@@ -55417,8 +55475,13 @@
+@@ -55417,8 +55475,13 @@ window.__ModuleLoader__.load({
  			const [quality, setQuality] = (0, react.useState)("auto");
  			const [count, setCount] = (0, react.useState)(1);
  			const [detail, setDetail] = (0, react.useState)("");
@@ -188,7 +190,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			const [compareEnabled, setCompareEnabled] = (0, react.useState)(false);
  			/** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
  			const [compareModels, setCompareModels] = (0, react.useState)([]);
-@@ -55600,7 +55663,7 @@
+@@ -55600,7 +55663,7 @@ window.__ModuleLoader__.load({
  			const sidebarHistoryHost = useSidebarHistoryHost();
  			const modeGroups = tab === "edit" ? modelGroups.map((group) => ({
  				...group,
@@ -197,7 +199,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			})).filter((group) => group.models.length > 0) : modelGroups;
  			const modeModels = [...new Set(modeGroups.flatMap((group) => group.models))];
  			const previewStage = (0, react.useRef)(null);
-@@ -55630,6 +55693,7 @@
+@@ -55630,6 +55693,7 @@ window.__ModuleLoader__.load({
  			}, []);
  			(0, react.useEffect)(() => {
  				if (ecommerceAnchor === null) return;
@@ -205,7 +207,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				const anchor = ecommerceAnchor;
  				const mains = tasks.filter((task) => anchor.mainTaskIds.includes(task.id));
  				if (mains.length === 0) return;
-@@ -55661,9 +55725,10 @@
+@@ -55661,9 +55725,10 @@ window.__ModuleLoader__.load({
  				ecommerceAnchor
  			]);
  			(0, react.useEffect)(() => {
@@ -218,7 +220,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					model: preferred
  				}, defaultChannelId);
  				setModel(selected.model);
-@@ -55677,7 +55742,7 @@
+@@ -55677,7 +55742,7 @@ window.__ModuleLoader__.load({
  					if (retained.length > 0) return retained;
  					return selected.model === "" ? [] : [modelChoiceKey(selected)];
  				});
@@ -227,7 +229,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			const filteredGallery = gallery.filter((entry) => {
  				if (galleryFilter === "all") return true;
  				if (galleryFilter === "text" || galleryFilter === "edit") return entry.mode === galleryFilter;
-@@ -55780,6 +55845,7 @@
+@@ -55780,6 +55845,7 @@ window.__ModuleLoader__.load({
  				};
  			}, [api, comparison]);
  			(0, react.useEffect)(() => {
@@ -235,7 +237,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				let disposed = false;
  				let checking = false;
  				const check = () => {
-@@ -55817,6 +55883,7 @@
+@@ -55817,6 +55883,7 @@ window.__ModuleLoader__.load({
  				return () => window.removeEventListener("pointerdown", close, true);
  			}, [updateOpen]);
  			const applyUpdate = async () => {
@@ -243,7 +245,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				if (update === null || updating) return;
  				setUpdating(true);
  				setUpdateMessage(null);
-@@ -55915,6 +55982,7 @@
+@@ -55915,6 +55982,7 @@ window.__ModuleLoader__.load({
  			*  refs cap at MAX_ECOMMERCE_ASSETS; the style group holds a single image
  			*  that gets replaced on re-upload. */
  			const acceptEcommerceFiles = (files, role = "product") => {
@@ -251,7 +253,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				if (files === void 0) return;
  				const incoming = Array.from(files).filter((file) => file.type.startsWith("image/") && file.size <= REF_IMAGE_MAX_BYTES);
  				if (incoming.length === 0) {
-@@ -55956,6 +56024,7 @@
+@@ -55956,6 +56024,7 @@ window.__ModuleLoader__.load({
  			};
  			/** Run one generation. */
  			const handleGenerate = async () => {
@@ -259,7 +261,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				if (submitting || tab === "edit" && editReferences.reading) return;
  				if (!enabled) {
  					openSettingsGuide("disabled");
-@@ -55965,7 +56034,11 @@
+@@ -55965,7 +56034,11 @@ window.__ModuleLoader__.load({
  					channelId: modelChannelId,
  					model
  				}, defaultChannelId);
@@ -272,7 +274,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					openSettingsGuide("generation");
  					return;
  				}
-@@ -56033,12 +56106,17 @@
+@@ -56033,12 +56106,17 @@ window.__ModuleLoader__.load({
  				}
  			};
  			const handleEcommerceGenerate = async () => {
@@ -291,7 +293,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					openSettingsGuide("generation");
  					return;
  				}
-@@ -56545,10 +56623,16 @@
+@@ -56545,10 +56623,16 @@ window.__ModuleLoader__.load({
  			}, defaultChannelId)]).filter((choice) => modeGroups.some((group) => group.id === choice.channelId && group.models.includes(choice.model)));
  			const editLimit = editTargetChoices.length > 0 ? Math.min(...editTargetChoices.map(referenceLimitForChoice)) : 5;
  			const referencePolicyWarning = tab === "edit" && editReferences.images.length > editLimit ? tt("edit.modelLimit", { count: editLimit }) : null;
@@ -310,7 +312,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  			const ecommerceFileInput = (0, react.useRef)(null);
  			/** Which group (主图/风格) the shared file input uploads into. */
  			const ecommerceUploadRoleRef = (0, react.useRef)("product");
-@@ -56715,6 +56799,7 @@
+@@ -56715,6 +56799,7 @@ window.__ModuleLoader__.load({
  				}
  			};
  			const addPreviewToEdit = () => {
@@ -318,7 +320,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				if (previewImage === null || preview === null) return;
  				openTab("edit");
  				setError(null);
-@@ -57364,9 +57449,9 @@
+@@ -57364,9 +57449,9 @@ window.__ModuleLoader__.load({
  															children: tt("mode.text")
  														}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  															active: tab === "edit",
@@ -331,7 +333,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  															className: panel_module_css_default.modePill,
  															children: tt("mode.edit")
  														})]
-@@ -57427,6 +57512,8 @@
+@@ -57427,6 +57512,8 @@ window.__ModuleLoader__.load({
  																	type: "button",
  																	className: panel_module_css_default.ecommerceAssetAdd,
  																	"data-ecommerce-upload": "",
@@ -340,7 +342,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																	title: tt("ecommerce.uploadRef"),
  																	onClick: () => {
  																		ecommerceUploadRoleRef.current = "product";
-@@ -57448,6 +57535,8 @@
+@@ -57448,6 +57535,8 @@ window.__ModuleLoader__.load({
  																type: "button",
  																className: panel_module_css_default.ecommerceUploadHero,
  																"data-ecommerce-upload": "",
@@ -349,7 +351,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																onClick: () => {
  																	ecommerceUploadRoleRef.current = "product";
  																	ecommerceFileInput.current?.click();
-@@ -57523,6 +57612,8 @@
+@@ -57523,6 +57612,8 @@ window.__ModuleLoader__.load({
  																	type: "button",
  																	className: panel_module_css_default.ecommerceAssetAdd,
  																	"data-ecommerce-upload": "",
@@ -358,7 +360,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																	title: tt("ecommerce.styleRefUpload"),
  																	onClick: () => {
  																		ecommerceUploadRoleRef.current = "style";
-@@ -57748,6 +57839,7 @@
+@@ -57748,6 +57839,7 @@ window.__ModuleLoader__.load({
  																			value: slot.refRole ?? "product",
  																			"data-ecommerce-ref-select": "",
  																			"aria-label": `${tt("ecommerce.refSelect")} · ${slot.label}`,
@@ -366,7 +368,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																			onChange: (value) => setEcommerce((previous) => ({
  																				...previous,
  																				slots: previous.slots.map((item) => item.key === slot.key ? {
-@@ -57771,6 +57863,7 @@
+@@ -57771,6 +57863,7 @@ window.__ModuleLoader__.load({
  															className: panel_module_css_default.ecommerceSection,
  															children: [
  																/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: tt("ecommerce.generation") }),
@@ -374,7 +376,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ModelPicker, {
  																	groups: modeGroups,
  																	value: {
-@@ -57783,17 +57876,16 @@
+@@ -57783,17 +57876,16 @@ window.__ModuleLoader__.load({
  																	emptyLabel: tt("model.noEditModels"),
  																	ariaLabel: tt("model.label"),
  																	disabled: submitting,
@@ -396,7 +398,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																		},
  																		className: panel_module_css_default.optionPill,
  																		children: tt(`quality.${option}`)
-@@ -57884,6 +57976,7 @@
+@@ -57884,6 +57976,7 @@ window.__ModuleLoader__.load({
  																className: panel_module_css_default.optionRow,
  																children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																	active: quality === option,
@@ -404,7 +406,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																	onClick: () => {
  																		setQuality(option);
  																	},
-@@ -57906,6 +57999,7 @@
+@@ -57906,6 +57999,7 @@ window.__ModuleLoader__.load({
  																	4
  																].map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																	active: count === option,
@@ -412,7 +414,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																	onClick: () => {
  																		setCount(option);
  																	},
-@@ -57925,6 +58019,7 @@
+@@ -57925,6 +58019,7 @@ window.__ModuleLoader__.load({
  																	className: panel_module_css_default.optionRow,
  																	children: DETAILS.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																		active: detail === option,
@@ -420,7 +422,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																		onClick: () => {
  																			setDetail(option);
  																		},
-@@ -58017,10 +58112,7 @@
+@@ -58017,10 +58112,7 @@ window.__ModuleLoader__.load({
  														emptyLabel: tt("model.noEditModels"),
  														ariaLabel: tt("model.label"),
  														disabled: submitting,
@@ -432,7 +434,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  													})]
  												}) : null,
  												isGeneration ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-@@ -58049,14 +58141,15 @@
+@@ -58049,14 +58141,15 @@ window.__ModuleLoader__.load({
  																	model: option
  																});
  																return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
@@ -450,7 +452,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  																}, key);
  															})]
  														}, group.id || "__default__"))
-@@ -58092,7 +58185,7 @@
+@@ -58092,7 +58185,7 @@ window.__ModuleLoader__.load({
  									defaultChannelId,
  									connected,
  									connectedChannelIds,
@@ -459,7 +461,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  									history,
  									gallery,
  									tasks,
-@@ -59240,6 +59333,8 @@
+@@ -59240,6 +59333,8 @@ window.__ModuleLoader__.load({
  													type: "button",
  													className: panel_module_css_default.lightboxEdit,
  													onClick: addPreviewToEdit,
@@ -468,7 +470,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  													children: tt("preview.addToEdit")
  												}),
  												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
-@@ -60618,6 +60713,8 @@
+@@ -60618,6 +60713,8 @@ window.__ModuleLoader__.load({
  					booleanField("enabled"),
  					booleanField("announceToAgent"),
  					booleanField("allowAgentImageGeneration"),
@@ -477,7 +479,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					textField("promptApiUrl"),
  					secretField("promptApiKey"),
  					textField("promptModel"),
-@@ -60648,6 +60745,9 @@
+@@ -60648,6 +60745,9 @@ window.__ModuleLoader__.load({
  					enabled: this.form.field("enabled"),
  					announceToAgent: this.form.field("announceToAgent"),
  					allowAgentImageGeneration: this.form.field("allowAgentImageGeneration"),
@@ -487,7 +489,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  					promptApiUrl: this.form.field("promptApiUrl"),
  					promptApiKey: this.form.field("promptApiKey"),
  					promptModel: this.form.field("promptModel"),
-@@ -60750,6 +60850,33 @@
+@@ -60750,6 +60850,33 @@ window.__ModuleLoader__.load({
  		* @param props - locale copy, the card snapshot, and the form actions.
  		* @returns the card, or nothing while the namespace is still loading.
  		*/
@@ -521,7 +523,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  		function ImageGenSettingsSection(props) {
  			const t = tt;
  			useImageGenLanguageTick();
-@@ -61087,16 +61214,16 @@
+@@ -61087,16 +61214,16 @@ window.__ModuleLoader__.load({
  			const editing = editingId === null ? void 0 : channels.find((channel) => channel.id === editingId);
  			const readyChannels = channels.filter((channel) => state.channels.keySet[channel.id] === true && channel.models.length > 0).length;
  			const totalModels = channels.reduce((total, channel) => total + channel.models.length, 0);
@@ -542,7 +544,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				channels: channels.length,
  				models: totalModels
  			});
-@@ -61222,7 +61349,11 @@
+@@ -61222,7 +61349,11 @@ window.__ModuleLoader__.load({
  								onToggle: () => {
  									setActiveSection(activeSection === "channels" ? null : "channels");
  								},
@@ -555,7 +557,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  									className: settings_card_module_css_default.channelEmpty,
  									children: t("channels.empty")
  								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-@@ -61415,6 +61546,11 @@
+@@ -61415,6 +61546,11 @@ window.__ModuleLoader__.load({
  									setActiveSection(activeSection === "prompt" ? null : "prompt");
  								},
  								children: [
@@ -569,9 +571,10 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", {
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js b/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js
 new file mode 100644
+index 0000000..ab2b9bc
 --- /dev/null
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,84 @@
 +/** Optional, instance-owned host services. Published 1.11.0 lib is the patch input. */
 +export const HOST_CHANNEL_ID = 'desktop-managed'
 +
@@ -627,19 +630,24 @@ new file mode 100644
 +  }
 +}
 +export async function generateWithHost(channel, request, signal) {
-+  if (request.mode !== 'text' || request.image || request.images?.length || request.n !== 1 ||
-+      !['', 'auto'].includes(request.quality ?? '') || (request.detail ?? '') !== '') {
-+    throw new Error('Managed image service supports text generation of one image without quality/detail overrides only')
-+  }
++  if (request.mode !== 'text' || request.image || request.images?.length || request.referenceImages?.length ||
++      !Number.isSafeInteger(request.n ?? 1) || (request.n ?? 1) < 1 || (request.n ?? 1) > 4 ||
++      (request.quality !== undefined && typeof request.quality !== 'string') ||
++      (request.detail !== undefined && typeof request.detail !== 'string')) throw new Error('Managed image service received an unsupported request')
 +  signal?.throwIfAborted()
 +  const status = await channel.status()
 +  if (!statusReady(status)) throw new Error(statusReason(status) || 'Managed image service is unavailable')
 +  signal?.throwIfAborted()
 +  const image = await channel.generate(request, signal)
 +  signal?.throwIfAborted()
-+  if (!image || typeof image.b64 !== 'string' || !image.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mime)) {
-+    throw new Error('Managed image service returned an invalid image')
++  if (image && Array.isArray(image.images) && image.images.length === (request.n ?? 1)) {
++    const images = image.images.map(item => {
++      if (!item || typeof item.b64 !== 'string' || !item.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(item.mime)) throw new Error('Managed image service returned an invalid image')
++      return { b64: item.b64, mime: item.mime }
++    })
++    return { images }
 +  }
++  if (!image || typeof image.b64 !== 'string' || !image.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mime)) throw new Error('Managed image service returned an invalid image')
 +  return { images: [{ b64: image.b64, mime: image.mime }] }
 +}
 +export async function enhanceWithHost(host, request, signal) {
@@ -652,9 +660,10 @@ new file mode 100644
 +  return prompt.trim()
 +}
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dickpy/dsh-imagegen/lib/index.js
+index 225cfb4..ee1aec3 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/index.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/index.js
-@@ -4089,6 +4089,7 @@
+@@ -4089,6 +4089,7 @@ var GenerationTaskQueue = class {
  	}
  };
  //#endregion
@@ -662,7 +671,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  //#region src/generation-runtime.ts
  /**
  * Shared host-side generation runtime. Both the browser routes and Agent tools
-@@ -4115,7 +4116,7 @@
+@@ -4115,7 +4116,7 @@ var ImageGenerationRuntime = class {
  		const view = this.resolve();
  		const channel = view.channels.find((candidate) => candidate.id === request.channelId) ?? view.channels.find((candidate) => candidate.id === view.defaultChannelId) ?? view.channels[0];
  		if (channel === void 0) throw new ImageGenError("尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥", "no-channels");
@@ -671,7 +680,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  			apiUrl: channel.apiUrl,
  			apiKey: channel.apiKey,
  			apiUrlFull: channel.apiUrlFull,
-@@ -7437,10 +7438,15 @@
+@@ -7437,10 +7438,15 @@ function makeRoutes(deps) {
  		};
  	};
  	const runtime = deps.runtime ?? new ImageGenerationRuntime(channelViewOf, history);
@@ -688,7 +697,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  		const view = channelViewOf();
  		if (view.channels.length === 0) return {
  			ok: false,
-@@ -7452,13 +7458,14 @@
+@@ -7452,13 +7458,14 @@ function makeRoutes(deps) {
  		const target = explicit ?? defaults;
  		const asked = request.model.trim();
  		if (asked === "") {
@@ -704,7 +713,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  			return {
  				ok: true,
  				request: {
-@@ -7470,6 +7477,11 @@
+@@ -7470,6 +7477,11 @@ function makeRoutes(deps) {
  				}
  			};
  		}
@@ -716,7 +725,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  		const hosting = view.channels.filter((channel) => channel.models.some((model) => model.alias === asked));
  		if (hosting.length === 0) return {
  			ok: false,
-@@ -7570,8 +7582,13 @@
+@@ -7570,8 +7582,13 @@ function makeRoutes(deps) {
  			handler: async (req, res) => {
  				if (!guard(req, res, "POST")) return;
  				const body = await readJsonBody(req);
@@ -730,7 +739,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				const protocol = isChannelProtocolPreference(body?.protocol) ? body.protocol : stored?.protocol;
  				const upstream = {
  					apiUrl: typeof body?.apiUrl === "string" && body.apiUrl.trim() !== "" ? body.apiUrl.trim() : stored?.apiUrl ?? "",
-@@ -7681,7 +7698,7 @@
+@@ -7681,7 +7698,7 @@ function makeRoutes(deps) {
  				try {
  					writeJson(res, 200, {
  						ok: true,
@@ -739,7 +748,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  					});
  				} catch (error) {
  					writeJson(res, 200, {
-@@ -7701,7 +7718,7 @@
+@@ -7701,7 +7718,7 @@ function makeRoutes(deps) {
  				writeJson(res, 200, {
  					ok: true,
  					value: {
@@ -748,7 +757,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  						writable: deps.settings.writable !== false
  					}
  				});
-@@ -7747,7 +7764,7 @@
+@@ -7747,7 +7764,7 @@ function makeRoutes(deps) {
  				}
  				writeJson(res, 200, {
  					ok: true,
@@ -757,7 +766,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				});
  			}
  		},
-@@ -7766,7 +7783,7 @@
+@@ -7766,7 +7783,7 @@ function makeRoutes(deps) {
  					});
  					return;
  				}
@@ -766,7 +775,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				if (!resolved.ok) {
  					writeJson(res, 200, {
  						ok: false,
-@@ -7805,7 +7822,7 @@
+@@ -7805,7 +7822,7 @@ function makeRoutes(deps) {
  					});
  					return;
  				}
@@ -775,7 +784,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				if (!resolved.ok) {
  					writeJson(res, 200, {
  						ok: false,
-@@ -7919,6 +7936,10 @@
+@@ -7919,6 +7936,10 @@ function makeRoutes(deps) {
  			path: UPDATE_API.check,
  			handler: async (req, res) => {
  				if (!guard(req, res, "POST")) return;
@@ -786,7 +795,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				try {
  					writeJson(res, 200, {
  						ok: true,
-@@ -7941,6 +7962,10 @@
+@@ -7941,6 +7962,10 @@ function makeRoutes(deps) {
  			path: UPDATE_API.apply,
  			handler: async (req, res) => {
  				if (!guard(req, res, "POST")) return;
@@ -797,7 +806,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				const body = await readJsonBody(req);
  				const version = body !== void 0 && typeof body.version === "string" ? body.version.trim() : "";
  				if (version === "") {
-@@ -9551,7 +9576,7 @@
+@@ -9551,7 +9576,7 @@ const taskResultSchema = {
  const AGENT_GENERATION_TIMEOUT_MS = 3e5;
  /** Subscription login and token refresh are checked by the runtime when the task runs. */
  function hasChannelAuthentication(channel) {
@@ -806,7 +815,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  }
  function ensureAgentImageConfigured(config, channel) {
  	if (!config.enabled) throw new ImageGenError("AI image generation is disabled. Open Settings → Image settings and enable it.", "plugin-disabled");
-@@ -9749,7 +9774,8 @@
+@@ -9749,7 +9774,8 @@ function registerAgentImageTools(ctx, runtime, resolve) {
  	const ensureConfigured = () => {
  		ensureAgentImageConfigured(resolve());
  	};
@@ -816,7 +825,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  		const config = resolve();
  		ensureAgentImageConfigured(config);
  		const picked = resolveAgentImageModel(config, requested);
-@@ -9821,7 +9847,7 @@
+@@ -9821,7 +9847,7 @@ function registerAgentImageTools(ctx, runtime, resolve) {
  			},
  			presentResult: presentImageResult,
  			async execute(args, exec) {
@@ -825,7 +834,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				const task = runtime.queue.submit({
  					mode: "text",
  					model: picked.alias,
-@@ -9883,7 +9909,7 @@
+@@ -9883,7 +9909,7 @@ function registerAgentImageTools(ctx, runtime, resolve) {
  			},
  			presentResult: presentImageResult,
  			async execute(args, exec) {
@@ -834,7 +843,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				const reference = await ctx.attachments.readImage(restoreRef(args.source_image), exec.signal);
  				const task = runtime.queue.submit({
  					mode: "edit",
-@@ -12955,6 +12981,9 @@
+@@ -12955,6 +12981,9 @@ const inject = [
  /** The branded settings namespace of this plugin (the card edits it). */
  const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTINGS_NAMESPACE);
  const Config = z.object({
@@ -844,7 +853,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  	enabled: z.boolean().default(true).volatile(),
  	announceToAgent: z.boolean().default(true).volatile(),
  	allowAgentImageGeneration: z.boolean().default(true).volatile(),
-@@ -13030,7 +13059,7 @@
+@@ -13030,7 +13059,7 @@ function guidanceFor(channels, defaultChannelId, defaultModel) {
  	const table = channels.map((channel) => {
  		const aliases = channel.models.map((model) => model.alias).join("、");
  		const mark = channel.id === defaultChannelId ? "（默认渠道）" : "";
@@ -853,7 +862,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  		const models = channel.models.length === 0 ? "未配置模型" : `可用模型：${aliases}`;
  		return `渠道「${channel.name}」${mark}[${channel.apiUrl}] ${models}${key}`;
  	}).join("；");
-@@ -13099,7 +13128,11 @@
+@@ -13099,7 +13128,11 @@ function resolvePromptModelConfig(value) {
  * @param ctx - host plugin context carrying webServer/systemPrompt.
  * @param config - resolved plugin config (schema defaults applied by the loader).
  */
@@ -866,7 +875,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  	let current = () => config ?? {};
  	const resolve = () => {
  		const value = unwrapConfig(current());
-@@ -13125,20 +13158,25 @@
+@@ -13125,20 +13158,25 @@ function apply(ctx, config) {
  				if (legacyKey !== "") secrets["default"] = legacyKey;
  			}
  		}
@@ -894,7 +903,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  			})),
  			defaultChannelId,
  			defaultModel,
-@@ -13173,7 +13211,8 @@
+@@ -13173,7 +13211,8 @@ function apply(ctx, config) {
  		const value = resolve();
  		return {
  			channels: value.channels,
@@ -904,7 +913,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  		};
  	};
  	setStorageSyncHandler((kind, filePath) => {
-@@ -13500,6 +13539,13 @@
+@@ -13500,6 +13539,13 @@ function apply(ctx, config) {
  					};
  				},
  				resolveChannels: channelsView,
@@ -918,7 +927,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dick
  				resolvePrompt: () => resolvePromptModelConfig(resolve()),
  				resolveImageModels: () => {
  					const value = resolve();
-@@ -13587,4 +13633,4 @@
+@@ -13587,4 +13633,4 @@ function apply(ctx, config) {
  	};
  }
  //#endregion

@@ -15,7 +15,8 @@ const [client, server] = await Promise.all([
   readFile(join(upstream, 'lib/client.js'), 'utf8'),
   readFile(join(upstream, 'lib/index.js'), 'utf8')
 ])
-if (!server.includes('applyWithHost') || !client.includes('desktopImageMode')) throw new Error('Managed imagegen patch is missing')
+const adapter = await readFile(join(upstream, 'lib/host-adapter.js'), 'utf8')
+if (!server.includes('applyWithHost') || !client.includes('desktopImageMode') || !client.includes('managedParameterInvalid') || !adapter.includes('safeManagedDiagnostic')) throw new Error('Managed imagegen parameter patch is missing; apply the authoritative 1.11.0 patch before prepare')
 const identity = 'id: "@dickpy/dsh-imagegen"'
 if (client.split(identity).length !== 2) throw new Error('Unexpected imagegen client module identity')
 const generated = client.replace(identity, 'id: "dsh-desktop-imagegen"').replace(/\n\/\/# sourceMappingURL=.*(?:\n|$)/g, '\n')

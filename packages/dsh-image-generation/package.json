@@ -52,6 +52,7 @@
     }
   },
   "dependencies": {
+    "dsh-desktop-model-service": "0.1.0",
     "@deepseek-ai/schemastery": "3.18.5",
     "sharp": "^0.35.4"
   },

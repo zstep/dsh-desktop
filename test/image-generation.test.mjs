@@ -29,11 +29,22 @@ async function server() {
   const calls = []
   const png = await sharp({ create: { width: 32, height: 24, channels: 4, background: '#11223380' } }).png().toBuffer()
   let status = 200; let malformed = false; let delay = 0; let redirect
+  let metadataStatus = 200; let modelList
   const http = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk
     calls.push({ url: req.url, method: req.method, auth: req.headers.authorization, body: body && JSON.parse(body) })
     if (redirect) { res.writeHead(307, { Location: redirect }); res.end(); return }
     if (delay) await new Promise(resolve => setTimeout(resolve, delay))
+    if (status === 200 && /\/models\//.test(req.url) && metadataStatus !== 200) {
+      res.writeHead(metadataStatus, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'secret-echo-key' } }))
+      return
+    }
+    if (status === 200 && req.url.endsWith('/models') && modelList !== undefined) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(modelList))
+      return
+    }
     const probe = status === 200 && !malformed && req.url.endsWith('/images/generations') && body && !Object.hasOwn(JSON.parse(body), 'prompt')
     const input = body && JSON.parse(body)
     // Provider-documented canvas ranges, independent of the production catalog.
@@ -64,7 +75,7 @@ async function server() {
   })
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(0, '127.0.0.1', resolve) })
   cleanups.push(() => { http.closeAllConnections(); return new Promise(resolve => http.close(resolve)) })
-  return { calls, png, baseUrl: `http://127.0.0.1:${http.address().port}/v1`, setStatus: value => { status = value }, malformed: () => { malformed = true }, delay: value => { delay = value }, redirect: value => { redirect = value } }
+  return { calls, png, baseUrl: `http://127.0.0.1:${http.address().port}/v1`, setStatus: value => { status = value }, setMetadataStatus: value => { metadataStatus = value }, setModels: value => { modelList = value }, malformed: () => { malformed = true }, delay: value => { delay = value }, redirect: value => { redirect = value } }
 }
 async function fixture() {
   const home = await temp(); const workspace = await temp()
@@ -189,6 +200,68 @@ describe('image settings save and provider requests', () => {
     expect((await f.settings.active()).provider).toBe(provider)
     if (process.platform !== 'win32') expect((await stat(path.join(f.home, '.credentials.yaml'))).mode & 0o777).toBe(0o600)
     expect(await readdir(f.workspace)).toEqual([])
+  })
+  it.each([404, 405])('saves through model-list validation when single-model metadata returns HTTP %s', async status => {
+    const f = await fixture(); const s = await server()
+    s.setMetadataStatus(status)
+    const result = await f.settings.save(saveInput('openai', s.baseUrl))
+    expect(result.profiles.openai).toMatchObject({ configured: true, validation: 'model' })
+    expect((await f.settings.active()).model).toBe(DEFAULTS.openai.model)
+    expect(s.calls.map(({ method, url }) => ({ method, url }))).toEqual([
+      { method: 'GET', url: `/v1/models/${DEFAULTS.openai.model}` },
+      { method: 'GET', url: '/v1/models' },
+    ])
+    expect(s.calls.every(call => call.auth === 'Bearer test-image-key' && !call.body)).toBe(true)
+    expect(JSON.stringify(result)).not.toContain('test-image-key')
+    expect(JSON.stringify(f.log.mock.calls)).not.toContain('secret-echo-key')
+  })
+  it.each([
+    { data: [] },
+    { data: [{ id: DEFAULTS.openai.model, shutdown_date: '2020-01-01' }] },
+    { data: [{ id: `${DEFAULTS.openai.model}-other` }] },
+  ])('does not save a model absent from the fallback visible list (%#)', async models => {
+    const f = await fixture(); const s = await server()
+    await f.settings.save(saveInput('openai', s.baseUrl))
+    s.setMetadataStatus(404); s.setModels(models)
+    await expect(f.settings.save({ ...saveInput('openai', s.baseUrl, 1), apiKey: 'replacement-key' })).rejects.toMatchObject({ code: 'MODEL' })
+    expect((await f.settings.describe()).revision).toBe(1)
+    expect((await f.settings.active()).key).toBe('test-image-key')
+    expect(await readFile(path.join(f.home, '.credentials.yaml'), 'utf8')).not.toContain('replacement-key')
+  })
+  it.each([null, {}, { data: 'not-a-list' }])('rejects malformed fallback model lists (%#)', async models => {
+    const f = await fixture(); const s = await server()
+    s.setMetadataStatus(404); s.setModels(models)
+    await expect(f.settings.save(saveInput('openai', s.baseUrl))).rejects.toMatchObject({ code: 'RESPONSE' })
+    expect((await f.settings.describe()).revision).toBe(0)
+  })
+  it.each([400, 401, 403, 429, 500])('does not fall back or save after metadata HTTP %s', async status => {
+    const f = await fixture(); const s = await server()
+    s.setMetadataStatus(status)
+    await expect(f.settings.save(saveInput('openai', s.baseUrl))).rejects.toMatchObject({ providerStatus: status })
+    expect(s.calls).toHaveLength(1)
+    expect((await f.settings.describe()).revision).toBe(0)
+  })
+  it('preserves authentication failure on the fallback list and does not follow its redirect', async () => {
+    const s = await server(); const target = await server()
+    s.setMetadataStatus(404)
+    const fetchImpl = async (url, options) => {
+      if (String(url).endsWith('/models')) return Response.json({ error: { message: 'secret-echo-key' } }, { status: 401 })
+      return fetch(url, options)
+    }
+    await expect(validateConnection('openai', { ...profile('openai'), baseUrl: s.baseUrl }, 'secret-echo-key', { fetchImpl })).rejects.toMatchObject({ code: 'AUTH', providerStatus: 401 })
+    const redirectFetch = (url, options) => {
+      if (String(url).endsWith('/models')) { s.setMetadataStatus(200); s.redirect(target.baseUrl) }
+      return fetch(url, options)
+    }
+    await expect(validateConnection('openai', { ...profile('openai'), baseUrl: s.baseUrl }, 'key', { fetchImpl: redirectFetch })).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+    expect(target.calls).toHaveLength(0)
+  })
+  it('validates an exact custom model ID in the fallback list without limiting it to the built-in catalog', async () => {
+    const s = await server()
+    s.setMetadataStatus(404); s.setModels({ data: [{ id: 'company/image-model' }] })
+    expect(await validateConnection('openai', { baseUrl: s.baseUrl, model: 'company/image-model' }, 'key')).toBe('model')
+    expect(s.calls[0].url).toBe('/v1/models/company%2Fimage-model')
+    expect(s.calls[1].url).toBe('/v1/models')
   })
   it('preserves the whole saved profile after validation fails and keeps provider credentials separate', async () => {
     const f = await fixture(); const s = await server()
@@ -468,7 +541,7 @@ describe('session-authorized generated image previews', () => {
     const image = { ...asset, asset_id: `sha256:${asset.sha256}`, media_type: 'image/png', width: 16, height: 9, bytes: png.length, provider: 'bytedance', model: DEFAULTS.bytedance.model }
     const content = [{ type: 'text', text: JSON.stringify(image) }]
     const events = [{ type: 'tool/call', data: { callId: 'image-call', name: 'image_generate' } },
-      { type: 'tool/result', surfaceOp: 'append', data: { message: { source: { callId: 'image-call' }, content: [{ type: 'tool-result', content }] } } }]
+      { type: 'tool/result', surfaceOp: 'append', data: { message: { role: 'tool', source: { kind: 'tool', callId: 'image-call' }, content, isError: false } } }]
     const log = vi.fn()
     const ctx = { sessionController: { inspect: vi.fn(async session => ({ meta: { cwd: workspace }, events: session === id ? events : [] })) }, logger: { info: log } }
     const request = (session = id, sha = image.sha256) => new Request(`http://localhost/api/image-generation.preview?${new URLSearchParams({ session, asset: sha })}`)
@@ -498,10 +571,14 @@ describe('session-authorized generated image previews', () => {
     f.events[0].data.name = 'other_tool'
     expect((await previewImage(f.ctx, f.request())).status).toBe(404)
     f.events[0].data.name = 'image_generate'
-    f.events[1].data.message.content[0].isError = true
+    f.events[1].data.message.isError = true
     expect((await previewImage(f.ctx, f.request())).status).toBe(404)
-    f.events.splice(0, 2, { type: 'tool/code-dispatch', data: { name: 'image_generate', subCallId: 'ptc', content: f.content } })
-    expect((await previewImage(f.ctx, f.request())).status).toBe(200)
+    for (const type of ['tool/ptc-dispatch', 'tool/code-dispatch']) {
+      f.events.splice(0, f.events.length, { type, data: { name: 'image_generate', subCallId: 'ptc', content: f.content, isError: false } })
+      expect((await previewImage(f.ctx, f.request())).status).toBe(200)
+      f.events[0].data.isError = true
+      expect((await previewImage(f.ctx, f.request())).status).toBe(404)
+    }
   })
   it('validates query bounds and resolves session identity through the Host', async () => {
     const f = await previewFixture()

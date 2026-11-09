@@ -61,17 +61,19 @@ describe('desktop plugin closure', () => {
     }
   })
 
-  it('declares the patched third-party imagegen as an exact wrapper dependency', async () => {
-    const wrapper = JSON.parse(
-      await readFile(path.join(projectRoot, 'packages/dsh-desktop-imagegen/package.json'), 'utf8')
-    ) as { dependencies: Record<string, string>; exports: Record<string, string> }
-    const manifest = JSON.parse(
-      await readFile(path.join(projectRoot, 'package.json'), 'utf8')
-    ) as { dependencies: Record<string, string> }
-
-    expect(manifest.dependencies['@dickpy/dsh-imagegen']).toBe('1.11.0')
-    expect(wrapper.dependencies['@dickpy/dsh-imagegen']).toBe('1.11.0')
-    expect(wrapper.exports['./client']).toBe('./.generated/client.js')
-    expect(await readFile(path.join(projectRoot, 'scripts/prepare-imagegen.mjs'), 'utf8')).toContain('id: "dsh-desktop-imagegen"')
+  it('keeps the legacy imagegen wrapper available without mounting it by default', async () => {
+    const manifest = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>; scripts: Record<string, string>; build: { files: unknown[] }
+    }
+    expect(manifest.dependencies['@dickpy/dsh-imagegen']).toBeUndefined()
+    expect(manifest.dependencies['dsh-desktop-imagegen']).toMatch(/^file:packages\//u)
+    expect(Object.values(manifest.scripts).join('\n')).not.toContain('imagegen:prepare')
+    expect(manifest.build.files).not.toContain('!node_modules/@dickpy/dsh-imagegen{,/**}')
+    expect(manifest.build.files).not.toContain('!node_modules/dsh-desktop-imagegen{,/**}')
+    const mounted = (await readProfilePatch()).flatMap(row => row.insert ?? []).map(row => row.name)
+    expect(mounted).not.toContain('dsh-desktop-imagegen')
+    expect(mounted).not.toContain('@dickpy/dsh-imagegen')
+    expect(await readFile(patchPath('@deepseek-ai/dsh'), 'utf8')).not.toContain('"dsh-desktop-imagegen"')
+    await expect(readFile(path.join(projectRoot, 'patches/@dickpy+dsh-imagegen+1.11.0.patch'))).resolves.toBeTruthy()
   })
 })

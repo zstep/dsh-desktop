@@ -183,8 +183,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path('.github/scripts').resolve()))
 import signed_test_build as build
 original_directory = Path.cwd()
-# Restore cwd before TemporaryDirectory cleanup: Windows locks the current directory.
-with tempfile.TemporaryDirectory() as work, contextlib.chdir(work):
+@contextlib.contextmanager
+def chdir(path):
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+with tempfile.TemporaryDirectory() as work, chdir(work):
     os.environ.update(GIT_AUTHOR_NAME='Test', GIT_COMMITTER_NAME='Test', GIT_AUTHOR_EMAIL='test@example.com', GIT_COMMITTER_EMAIL='test@example.com')
     def git(*args):
         return subprocess.check_output(['git', *args], text=True).strip()

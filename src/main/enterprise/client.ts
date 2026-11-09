@@ -40,7 +40,9 @@ export interface MfaVerifyInput { challengeToken: string; code: string; recovery
 /** One model route the account may use; permissions stay server-side. */
 export interface PengbaoModel {
   id: string
+  /** Server-configured display alias, when present. */
   name?: string
+  input?: readonly ('text' | 'image')[]
 }
 
 export class PengbaoError extends Error {
@@ -115,6 +117,19 @@ export class PengbaoClient {
   async models(signal?: AbortSignal): Promise<PengbaoModel[]> {
     return parseModels(await this.request('/api/v1/models', 'GET', undefined, signal))
   }
+  /** Authenticated server metadata only; never derive defaults from user settings. */
+  async modelDefaults(signal?: AbortSignal): Promise<{ defaultModels: string[] }> {
+    if (!this.token) throw new PengbaoError('Pengbao authentication required', 401)
+    const value = await this.request('/api/config', 'GET', undefined, signal)
+    if (!isRecord(value) || (value.default_models != null && typeof value.default_models !== 'string')) {
+      throw new PengbaoError('Invalid response from Pengbao')
+    }
+    const ids = typeof value.default_models === 'string' ? value.default_models.split(',').map(id => id.trim()).filter(Boolean) : []
+    if (ids.length > 256 || ids.some(id => id.length > 256 || /[\p{C}\p{Zl}\p{Zp}]/u.test(id) || /https?:\/\//i.test(id)) || new Set(ids).size !== ids.length) {
+      throw new PengbaoError('Invalid response from Pengbao')
+    }
+    return { defaultModels: [...new Set(ids)] }
+  }
 
   private async request(path: string, method: string, body: Record<string, unknown> | undefined, signal?: AbortSignal): Promise<unknown> {
     const headers: Record<string, string> = { Accept: 'application/json' }
@@ -153,7 +168,15 @@ function parseModels(value: unknown): PengbaoModel[] {
     const id = entry.id
     if (typeof id !== 'string' || id.trim().length === 0 || seen.has(id)) continue
     seen.add(id)
-    models.push(typeof entry.name === 'string' && entry.name.length > 0 ? { id, name: entry.name } : { id })
+    const info = isRecord(entry.info) ? entry.info : undefined
+    const meta = isRecord(info?.meta) ? info.meta : undefined
+    const capabilities = isRecord(meta?.capabilities) ? meta.capabilities : undefined
+    const displayName = [entry.alias, entry.name].find(value => typeof value === 'string' && value.length > 0)
+    models.push({
+      id,
+      ...(typeof displayName === 'string' ? { name: displayName } : {}),
+      input: capabilities?.vision === true ? ['text', 'image'] : ['text']
+    })
   }
   return models
 }

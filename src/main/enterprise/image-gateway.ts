@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { PENGBAO_PRODUCT } from './config'
+import { parseImageParameters, validateImageParameters, IMAGE_BATCH_BYTES, type ImageParameterContract } from 'dsh-desktop-model-service/image-contract'
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_JSON_BYTES = 1024 * 1024
@@ -12,9 +13,9 @@ export interface PengbaoImageLease {
 }
 
 type ImageReason = 'available' | 'disabled' | 'forbidden' | 'unauthenticated' | 'unavailable'
-type ImageErrorCode = 'IMAGE_DISABLED' | 'IMAGE_FORBIDDEN' | 'IMAGE_AUTH' | 'IMAGE_NETWORK' | 'IMAGE_TIMEOUT' |
+type ImageErrorCode = 'IMAGE_DISABLED' | 'IMAGE_FORBIDDEN' | 'IMAGE_AUTH' | 'IMAGE_NETWORK' | 'IMAGE_TIMEOUT' | 'IMAGE_UPSTREAM_TIMEOUT' |
   'IMAGE_RESPONSE' | 'IMAGE_TOO_LARGE' | 'IMAGE_INVALID_REQUEST' | 'IMAGE_BUSY' | 'IMAGE_REVOKED' |
-  'IMAGE_MODEL_UNSUPPORTED' | 'IMAGE_MODEL_UNAVAILABLE'
+  'IMAGE_MODEL_UNSUPPORTED' | 'IMAGE_MODEL_UNAVAILABLE' | 'IMAGE_PARAMETERS_UNSUPPORTED'
 
 export interface PengbaoImageFailure {
   requestId: string
@@ -29,7 +30,9 @@ type ImageCatalog = {
   selection: 'request-local' | 'server-only'
   defaultModel?: { id: string; name: string } | null
   catalogStatus?: 'available' | 'default-only'
+  generationParameters?: ImageParameterContract
 }
+type ImageInput = { prompt: string; size?: string; model?: string; n?: number; quality?: string; detail?: string; response_format?: string; parameterContractVersion?: number; parameterRevision?: string }
 
 class ImageFailure extends Error {
   constructor(readonly status: number, readonly code: ImageErrorCode, readonly upstreamStatus?: number) { super(code) }
@@ -40,21 +43,23 @@ const MESSAGES: Record<ImageErrorCode, string> = {
   IMAGE_FORBIDDEN: 'Image generation is not permitted for this account.',
   IMAGE_AUTH: 'Image generation authentication is required.',
   IMAGE_NETWORK: 'Image generation service is unavailable. Try again later.',
-  IMAGE_TIMEOUT: 'Image generation timed out. The server may still complete and charge for the request.',
+  IMAGE_TIMEOUT: 'The local image generation deadline expired. The server may still complete and charge for the request. This request will not be retried automatically.',
+  IMAGE_UPSTREAM_TIMEOUT: 'The image generation service returned HTTP 504 (upstream timeout). The server may still complete and charge for the request. This request will not be retried automatically.',
   IMAGE_RESPONSE: 'Image generation returned an unsupported response.',
   IMAGE_TOO_LARGE: 'The image generation request or response is too large.',
   IMAGE_INVALID_REQUEST: 'Image generation accepts only a non-empty prompt.',
   IMAGE_BUSY: 'Image generation is busy. Try again later.',
   IMAGE_REVOKED: 'Image generation access was revoked. The server may still complete and charge for the request.',
   IMAGE_MODEL_UNSUPPORTED: 'This service does not support choosing an image model per request.',
-  IMAGE_MODEL_UNAVAILABLE: 'The selected image model is no longer available. Refresh the model list and try again.'
+  IMAGE_MODEL_UNAVAILABLE: 'The selected image model is no longer available. Refresh the model list and try again.',
+  IMAGE_PARAMETERS_UNSUPPORTED: 'The selected image parameters are unsupported or have changed. Refresh model capabilities.'
 }
 
-function fail(res: ServerResponse, failure: ImageFailure): void {
+function fail(res: ServerResponse, failure: ImageFailure, diagnostic?: PengbaoImageFailure): void {
   if (res.destroyed) return
   if (res.headersSent) { res.destroy(); return }
   res.writeHead(failure.status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'connection': 'close' })
-  res.end(JSON.stringify({ error: { message: MESSAGES[failure.code], type: 'image_gateway_error', code: failure.code } }))
+  res.end(JSON.stringify({ error: { message: MESSAGES[failure.code], type: 'image_gateway_error', code: failure.code, ...(diagnostic ? { diagnostic } : {}) } }))
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -71,6 +76,16 @@ async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise
       if (signal.aborted) abort()
     })])
   } finally { signal.removeEventListener('abort', abort) }
+}
+
+// `redirect: 'error'` is deliberately used for every upstream request. Node's
+// fetch surfaces a rejected redirect as a generic TypeError, but that is an
+// invalid upstream response rather than a transport outage. Keep this narrow:
+// ordinary DNS/socket failures must still be reported as IMAGE_NETWORK.
+function isRejectedRedirect(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const cause = 'cause' in error ? error.cause : undefined
+  return cause !== null && typeof cause === 'object' && 'message' in cause && cause.message === 'unexpected redirect'
 }
 
 async function bytes(response: Response, limit: number, signal: AbortSignal): Promise<Buffer> {
@@ -99,12 +114,12 @@ async function bytes(response: Response, limit: number, signal: AbortSignal): Pr
   }
 }
 
-async function json(response: Response, signal: AbortSignal): Promise<unknown> {
+async function json(response: Response, signal: AbortSignal, limit = MAX_JSON_BYTES): Promise<unknown> {
   if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
     void response.body?.cancel().catch(() => { /* Rejected responses are never forwarded. */ })
     throw new ImageFailure(502, 'IMAGE_RESPONSE')
   }
-  const body = await bytes(response, MAX_JSON_BYTES, signal)
+  const body = await bytes(response, limit, signal)
   try { return JSON.parse(body.toString('utf8')) as unknown }
   catch { throw new ImageFailure(502, 'IMAGE_RESPONSE') }
 }
@@ -131,7 +146,9 @@ function normalizeModels(value: unknown): { id: string; name: string }[] {
   return models
 }
 
-async function promptBody(req: IncomingMessage, limit: number, signal: AbortSignal): Promise<{ prompt: string; size?: string; model?: string }> {
+interface ImageLeaseScope { capabilityToken: string; models: readonly string[]; capabilities: readonly ('image.generate')[]; compatibilityOnly: true }
+
+async function promptBody(req: IncomingMessage, limit: number, signal: AbortSignal, batch = false, compatibility = false): Promise<ImageInput> {
   if (req.headers['content-encoding']) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
   if (Number(req.headers['content-length'] ?? 0) > limit) throw new ImageFailure(413, 'IMAGE_TOO_LARGE')
   return new Promise((resolve, reject) => {
@@ -154,19 +171,37 @@ async function promptBody(req: IncomingMessage, limit: number, signal: AbortSign
       cleanup()
       try {
         const input = record(JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown)
-        if (!input || Object.keys(input).some(key => !['prompt', 'size', 'model'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 16_000) {
+        const allowed = compatibility ? ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'response_format'] : batch ? ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'parameterContractVersion', 'parameterRevision'] : ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'response_format']
+        if (!input || Object.keys(input).some(key => !allowed.includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 8000) {
           throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
         }
+        // Compatibility requests are proxied to the configured OpenWebUI image
+        // API. Keep routing, credentials and endpoint selection host-owned while
+        // allowing that API to define its current image parameter vocabulary.
+        if (compatibility && input.size === 'auto') delete input.size
+        if (compatibility && ((input.response_format !== undefined && input.response_format !== 'b64_json') ||
+          (input.n !== undefined && (!Number.isSafeInteger(input.n) || (input.n as number) < 1 || (input.n as number) > 4)) ||
+          (input.quality !== undefined && (typeof input.quality !== 'string' || input.quality.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(input.quality))) ||
+          (input.detail !== undefined && (typeof input.detail !== 'string' || input.detail.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(input.detail))))) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
         if (input.size !== undefined) {
-          if (typeof input.size !== 'string' || !/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(input.size)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
-          const dimensions = input.size.split('x').map(Number)
-          const width = dimensions[0] ?? 0
-          const height = dimensions[1] ?? 0
-          if (width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+          if (typeof input.size !== 'string' || input.size.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(input.size)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+          if (!compatibility && !/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(input.size)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+          if (/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(input.size)) {
+            const dimensions = input.size.split('x').map(Number)
+            const width = dimensions[0] ?? 0
+            const height = dimensions[1] ?? 0
+            if (width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+          }
         }
         const model = input.model === undefined ? undefined : modelId(input.model)
         if (input.model !== undefined && !model) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
-        resolve({ prompt: input.prompt, ...(typeof input.size === 'string' ? { size: input.size } : {}), ...(model === undefined ? {} : { model }) })
+        if (batch && (input.parameterContractVersion !== undefined && input.parameterContractVersion !== 1 ||
+          input.parameterRevision !== undefined && (typeof input.parameterRevision !== 'string' || !/^[a-f0-9]{64}$/.test(input.parameterRevision)) ||
+          !Number.isSafeInteger(input.n) || (input.n as number) < 1 || (input.n as number) > 4)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+        resolve({ prompt: input.prompt, ...(typeof input.size === 'string' ? { size: input.size } : {}), ...(model === undefined ? {} : { model }),
+          ...(compatibility ? { n: (input.n as number | undefined) ?? 1, ...(input.quality === undefined ? {} : { quality: input.quality as string }), ...(input.detail === undefined ? {} : { detail: input.detail as string }), ...(input.response_format === undefined ? {} : { response_format: input.response_format as string }) } : {}),
+          ...(batch ? { n: input.n as number, parameterContractVersion: 1, parameterRevision: input.parameterRevision as string,
+            ...(input.quality === undefined ? {} : { quality: input.quality as string }), ...(input.detail === undefined ? {} : { detail: input.detail as string }) } : {}) })
       } catch { reject(new ImageFailure(400, 'IMAGE_INVALID_REQUEST')) }
     }
     req.on('data', data)
@@ -191,6 +226,19 @@ function bitmapMatches(body: Buffer, type: string): boolean {
       type === 'image/webp' && body.length >= 12 && body.toString('ascii', 0, 4) === 'RIFF' && body.toString('ascii', 8, 12) === 'WEBP'
 }
 
+function inlineBitmap(value: unknown): { data: Buffer; type: 'image/png' | 'image/jpeg' | 'image/webp' } | undefined {
+  const row = record(value)
+  const encoded = row?.b64_json
+  if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > Math.ceil(MAX_IMAGE_BYTES * 4 / 3) ||
+    encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return undefined
+  const data = Buffer.from(encoded, 'base64')
+  if (data.toString('base64') !== encoded || data.length === 0 || data.length > MAX_IMAGE_BYTES) return undefined
+  const type = data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? 'image/png' :
+    data.length >= 3 && data[0] === 255 && data[1] === 216 && data[2] === 255 ? 'image/jpeg' :
+      data.length >= 12 && data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp' : undefined
+  return type === undefined ? undefined : { data, type }
+}
+
 /** Image capabilities belong to a runtime lease, not to the account's longer-lived chat capability. */
 export function createImageGateway(options: {
   getJwt: () => string
@@ -199,8 +247,8 @@ export function createImageGateway(options: {
   timeoutMs: number
   maxConcurrent: number
   onFailure?: (failure: PengbaoImageFailure) => void
-}): { createLease: () => PengbaoImageLease; handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>; stop: () => void } {
-  type Lease = { credential: Buffer; active: Set<AbortController>; revoked: boolean }
+}): { createLease: (scope?: ImageLeaseScope) => PengbaoImageLease; handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>; stop: () => void } {
+  type Lease = { credential: Buffer; models?: ReadonlySet<string>; capabilities?: ReadonlySet<'image.generate'>; compatibilityOnly: boolean; active: Set<AbortController>; revoked: boolean }
   const leases = new Set<Lease>()
   let activeCount = 0
   let stopped = false
@@ -212,26 +260,43 @@ export function createImageGateway(options: {
     for (const controller of lease.active) controller.abort(new ImageFailure(401, 'IMAGE_REVOKED'))
   }
 
-  async function upstream(path: string, signal: AbortSignal, body?: { prompt: string; n: 1; size?: string; model?: string }, allowMissing = false): Promise<Response> {
+  const correlation = new WeakMap<AbortSignal, string>()
+  async function upstream(path: string, signal: AbortSignal, body?: ImageInput & { n: number }, allowMissing = false): Promise<Response> {
     signal.throwIfAborted()
     const operation = options.fetch(`${PENGBAO_PRODUCT.serverUrl}${path}`, {
-      method: body ? 'POST' : 'GET', redirect: 'manual', credentials: 'omit', signal,
-      headers: { Authorization: `Bearer ${options.getJwt()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      method: body ? 'POST' : 'GET', redirect: 'error', credentials: 'omit', signal,
+      headers: { Authorization: `Bearer ${options.getJwt()}`, ...(correlation.has(signal) ? { 'X-Pengbao-Request-Id': correlation.get(signal)! } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {})
     })
     // A transport that completes after revocation must not leave its body open.
     void operation.then(response => {
       if (signal.aborted) void response.body?.cancel().catch(() => { /* Already closed. */ })
     }, () => { /* The awaited operation reports transport failures. */ })
-    const response = await abortable(operation, signal)
+    let response: Response
+    try {
+      response = await abortable(operation, signal)
+    } catch (error) {
+      if (isRejectedRedirect(error)) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+      throw error
+    }
     signal.throwIfAborted()
     if (allowMissing && !response.redirected && response.type !== 'opaqueredirect' && [404, 405].includes(response.status)) return response
     if (response.redirected || response.type === 'opaqueredirect' || !response.ok) {
+      if (body?.parameterContractVersion === 1 && !response.redirected && response.type !== 'opaqueredirect' && [400, 409].includes(response.status)) {
+        try {
+          const rejection = record(await json(response, signal))
+          const code = record(rejection?.detail)?.code
+          if (code === 'IMAGE_MODEL_UNAVAILABLE') throw new ImageFailure(400, 'IMAGE_MODEL_UNAVAILABLE', response.status)
+          if (typeof code === 'string' && ['IMAGE_PARAMETER_CONTRACT_UNSUPPORTED', 'IMAGE_PARAMETER_REVISION_STALE', 'IMAGE_PARAMETER_CAPABILITIES_UNAVAILABLE', 'IMAGE_PARAMETERS_INVALID', 'IMAGE_PARAMETER_CONFIG_CONFLICT'].includes(code)) throw new ImageFailure(400, 'IMAGE_PARAMETERS_UNSUPPORTED', response.status)
+        } catch (error) {
+          if (signal.aborted || (error instanceof ImageFailure && ['IMAGE_MODEL_UNAVAILABLE', 'IMAGE_PARAMETERS_UNSUPPORTED'].includes(error.code))) throw error
+        }
+      }
       void response.body?.cancel().catch(() => { /* Never expose upstream errors or redirect bodies. */ })
       if (response.status === 401) throw new ImageFailure(401, 'IMAGE_AUTH', response.status)
       if (response.status === 403) throw new ImageFailure(403, 'IMAGE_FORBIDDEN', response.status)
       if (response.status === 429) throw new ImageFailure(429, 'IMAGE_BUSY', response.status)
-      if (response.status === 504) throw new ImageFailure(504, 'IMAGE_TIMEOUT', response.status)
+      if (response.status === 504) throw new ImageFailure(504, 'IMAGE_UPSTREAM_TIMEOUT', response.status)
       throw new ImageFailure(502, response.status >= 500 ? 'IMAGE_NETWORK' : 'IMAGE_RESPONSE', response.status)
     }
     return response
@@ -256,6 +321,8 @@ export function createImageGateway(options: {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new ImageFailure(504, 'IMAGE_TIMEOUT')), Math.min(options.timeoutMs, 10_000))
     const discoverySignal = AbortSignal.any([signal, controller.signal])
+    const requestId = correlation.get(signal)
+    if (requestId) correlation.set(discoverySignal, requestId)
     try {
       const response = await upstream('/api/v1/images/metadata', discoverySignal, undefined, true)
       if ([404, 405].includes(response.status)) {
@@ -276,15 +343,22 @@ export function createImageGateway(options: {
       }
       // A body alone cannot assert that the worker honors request-local overrides.
       const selection = value.selection === 'request-local' && response.headers.get('x-image-model-selection') === 'request-local-v1' ? 'request-local' : 'server-only'
-      return { models: normalizeModels(value.models), defaultModel, selection, catalogStatus: value.catalogStatus }
+      let generationParameters: ImageParameterContract | undefined
+      try { generationParameters = parseImageParameters(value.generationParameters) }
+      catch { /* Unknown or malformed advanced capabilities cannot authorize overrides. */ }
+      return { models: normalizeModels(value.models), defaultModel, selection, catalogStatus: value.catalogStatus,
+        ...(generationParameters ? { generationParameters } : {}) }
+    } catch (error) {
+      if (isRejectedRedirect(error)) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+      throw error
     } finally { clearTimeout(timer) }
   }
 
   return {
-    createLease: () => {
+    createLease: (scope) => {
       if (stopped) throw new Error('Image gateway is stopped')
-      const capabilityToken = randomBytes(32).toString('base64url')
-      const lease: Lease = { credential: Buffer.from(`Bearer ${capabilityToken}`), active: new Set(), revoked: false }
+      const capabilityToken = scope?.capabilityToken ?? randomBytes(32).toString('base64url')
+      const lease: Lease = { credential: Buffer.from(`Bearer ${capabilityToken}`), ...(scope ? { models: new Set(scope.models), capabilities: new Set(scope.capabilities) } : {}), compatibilityOnly: scope?.compatibilityOnly ?? false, active: new Set(), revoked: false }
       leases.add(lease)
       return { capabilityToken, revoke: () => revoke(lease) }
     },
@@ -294,19 +368,25 @@ export function createImageGateway(options: {
       if (!lease || stopped) return fail(res, new ImageFailure(401, 'IMAGE_AUTH'))
       const isStatus = req.method === 'GET' && req.url === '/v1/image-generation/status'
       const isModels = req.method === 'GET' && req.url === '/v1/image-generation/models'
+      const isBatch = req.method === 'POST' && req.url === '/v1/image-generation/generate-many'
       const isGenerate = req.method === 'POST' && req.url === '/v1/image-generation/generate'
-      if (!isStatus && !isModels && !isGenerate) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
+      const isCompatibility = req.method === 'POST' && req.url === '/v1/images/generations'
+      const imageCapability = lease.capabilities === undefined || lease.capabilities.has('image.generate')
+      if (!imageCapability) return fail(res, new ImageFailure(401, 'IMAGE_AUTH'))
+      if (lease.compatibilityOnly ? !isCompatibility : isCompatibility || (!isStatus && !isModels && !isGenerate && !isBatch)) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
       if (activeCount >= options.maxConcurrent) return fail(res, new ImageFailure(429, 'IMAGE_BUSY'))
       const started = Date.now()
       const requestId = `pb-${randomBytes(16).toString('hex')}`
-      let stage: PengbaoImageFailure['stage'] = isModels ? 'catalog' : isGenerate ? 'generation' : 'status'
+      let stage: PengbaoImageFailure['stage'] = isModels ? 'catalog' : isGenerate || isBatch ? 'generation' : 'status'
+      const diagnostic = (failure: ImageFailure): PengbaoImageFailure => ({ requestId, stage, code: failure.code, elapsedMs: Date.now() - started,
+        ...(failure.upstreamStatus === undefined ? {} : { upstreamStatus: failure.upstreamStatus }) })
       const report = (failure: ImageFailure) => {
         try {
-          options.onFailure?.({ requestId, stage, code: failure.code, elapsedMs: Date.now() - started,
-            ...(failure.upstreamStatus === undefined ? {} : { upstreamStatus: failure.upstreamStatus }) })
+          options.onFailure?.(diagnostic(failure))
         } catch { /* Diagnostics never change request handling. */ }
       }
       const controller = new AbortController()
+      correlation.set(controller.signal, requestId)
       lease.active.add(controller)
       activeCount += 1
       const timer = setTimeout(() => controller.abort(new ImageFailure(504, 'IMAGE_TIMEOUT')), isStatus || isModels ? Math.min(options.timeoutMs, 10_000) : options.timeoutMs)
@@ -329,7 +409,9 @@ export function createImageGateway(options: {
           res.end(JSON.stringify({ available: reason === 'available', reason, serviceUrl: PENGBAO_PRODUCT.serverUrl, modelSelection: 'server-managed' }))
           return
         }
-        const input = isModels ? undefined : await promptBody(req, Math.min(options.maxBodyBytes, 65_536), controller.signal)
+        const input = isModels ? undefined : await promptBody(req, Math.min(options.maxBodyBytes, 65_536), controller.signal, isBatch, isCompatibility)
+        if (isCompatibility && input?.model !== 'pengbao-default-image' && (!input?.model || !lease.models?.has(input.model))) throw new ImageFailure(403, 'IMAGE_MODEL_UNAVAILABLE')
+        if (isCompatibility && input?.model === 'pengbao-default-image' && !lease.models?.has('pengbao-default-image')) throw new ImageFailure(403, 'IMAGE_MODEL_UNAVAILABLE')
         stage = 'status'
         const reason = await status(controller.signal)
         if (reason !== 'available') throw new ImageFailure(reason === 'unauthenticated' ? 401 : reason === 'unavailable' ? 502 : 403,
@@ -343,16 +425,111 @@ export function createImageGateway(options: {
           return
         }
         if (!input) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
-        if (input.model !== undefined) {
+        if (input.model !== undefined || isBatch) {
           // Validate against a fresh catalog so revoked or stale selections never generate.
           stage = 'catalog'
           const catalog = await models(controller.signal)
-          if (catalog.selection !== 'request-local') throw new ImageFailure(400, 'IMAGE_MODEL_UNSUPPORTED')
-          if (!catalog.models.some(model => model.id === input.model)) throw new ImageFailure(400, 'IMAGE_MODEL_UNAVAILABLE')
+          const serverDefault = isCompatibility && input.model === 'pengbao-default-image'
+          const selectedModel = serverDefault ? catalog.defaultModel?.id : input.model
+          if (serverDefault && !selectedModel) throw new ImageFailure(400, 'IMAGE_MODEL_UNAVAILABLE')
+          if (input.model !== undefined && !serverDefault && catalog.selection !== 'request-local') throw new ImageFailure(400, 'IMAGE_MODEL_UNSUPPORTED')
+          if (selectedModel !== undefined && !(serverDefault && catalog.defaultModel?.id === selectedModel) && !catalog.models.some(model => model.id === selectedModel)) throw new ImageFailure(400, 'IMAGE_MODEL_UNAVAILABLE')
+          if (serverDefault) {
+            if (catalog.selection === 'request-local') input.model = selectedModel
+            else delete input.model
+          }
+          // Compatibility parameters are forwarded to the configured image API;
+          // its current implementation is authoritative for supported values.
+          if (isBatch) {
+            if (input.parameterContractVersion !== undefined) {
+              try { validateImageParameters(catalog.generationParameters, input.model ?? catalog.defaultModel?.id, input) }
+              catch { throw new ImageFailure(400, 'IMAGE_PARAMETERS_UNSUPPORTED') }
+            }
+          }
         }
         // Never retry a generation, including after a download failure: it may already have been billed.
         stage = 'generation'
-        const generated = await json(await upstream('/api/v1/images/generations', controller.signal, { ...input, n: 1 }), controller.signal)
+        const generated = await json(await upstream('/api/v1/images/generations', controller.signal, { ...input, n: isCompatibility ? input.n! : isBatch ? input.n! : 1 }), controller.signal,
+          isCompatibility ? Math.ceil(Math.min(IMAGE_BATCH_BYTES, MAX_IMAGE_BYTES * input.n!) * 4 / 3) + 65_536 : MAX_JSON_BYTES)
+        if (isCompatibility) {
+          stage = 'descriptor'
+          const data: { b64_json: string }[] = []
+          const inline = record(generated)?.data
+          if (Array.isArray(inline)) {
+            if (inline.length !== input.n!) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+            for (const item of inline) {
+              const image = inlineBitmap(item)
+              if (!image) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+              data.push({ b64_json: image.data.toString('base64') })
+            }
+          } else if (Array.isArray(generated) && generated.length === input.n!) {
+            for (const item of generated) {
+              const path = downloadPath([item])
+              stage = 'download'
+              const response = await upstream(path, controller.signal)
+              const type = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? ''
+              if (!['image/png', 'image/jpeg', 'image/webp'].includes(type)) {
+                void response.body?.cancel().catch(() => { /* Unsupported bytes never cross the boundary. */ })
+                throw new ImageFailure(502, 'IMAGE_RESPONSE')
+              }
+              const body = await bytes(response, MAX_IMAGE_BYTES, controller.signal)
+              stage = 'bitmap'
+              if (!bitmapMatches(body, type)) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+              data.push({ b64_json: body.toString('base64') })
+            }
+          } else {
+            throw new ImageFailure(502, 'IMAGE_RESPONSE')
+          }
+          controller.signal.throwIfAborted()
+          if (lease.revoked || stopped || res.destroyed) return
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+          res.end(JSON.stringify({ data }))
+          return
+        }
+        if (isBatch) {
+          if (!Array.isArray(generated) || !generated.length || generated.length > input.n!) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+          stage = 'descriptor'
+          const seenPaths = new Set<string>()
+          const paths = generated.map(item => {
+            try {
+              const path = downloadPath([item])
+              if (seenPaths.has(path)) return undefined
+              seenPaths.add(path)
+              return path
+            } catch { return undefined }
+          })
+          const images: { index: number; b64: string; mime: string }[] = []
+          const failures: { index: number; code: ImageErrorCode; diagnostic?: PengbaoImageFailure }[] = []
+          let total = 0
+          // Sequential bounded downloads keep peak memory and provider concurrency predictable.
+          for (let index = 0; index < input.n!; index++) {
+            if (!paths[index]) { failures.push({ index, code: 'IMAGE_RESPONSE' }); continue }
+            try {
+              stage = 'download'
+              const downloaded = await upstream(paths[index]!, controller.signal)
+              const mime = downloaded.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? ''
+              if (!['image/png', 'image/jpeg', 'image/webp'].includes(mime)) { void downloaded.body?.cancel().catch(() => {}); throw new ImageFailure(502, 'IMAGE_RESPONSE') }
+              const image = await bytes(downloaded, Math.min(MAX_IMAGE_BYTES, IMAGE_BATCH_BYTES - total), controller.signal)
+              total += image.length
+              stage = 'bitmap'
+              if (!bitmapMatches(image, mime)) throw new ImageFailure(502, 'IMAGE_RESPONSE')
+              images.push({ index, b64: image.toString('base64'), mime })
+            } catch (error) {
+              const reason: unknown = controller.signal.aborted ? controller.signal.reason : error
+              const failure = reason instanceof ImageFailure ? reason : new ImageFailure(502, 'IMAGE_NETWORK')
+              report(failure)
+              failures.push({ index, code: failure.code, diagnostic: diagnostic(failure) })
+              if (controller.signal.aborted) {
+                for (let rest = index + 1; rest < input.n!; rest++) failures.push({ index: rest, code: failure.code, diagnostic: diagnostic(failure) })
+                break
+              }
+            }
+          }
+          if (lease.revoked || stopped || res.destroyed) return
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+          res.end(JSON.stringify({ requested: input.n, images, failures, complete: failures.length === 0 }))
+          return
+        }
         stage = 'descriptor'
         const path = downloadPath(generated)
         stage = 'download'
@@ -367,13 +544,18 @@ export function createImageGateway(options: {
         if (!bitmapMatches(body, type)) throw new ImageFailure(502, 'IMAGE_RESPONSE')
         controller.signal.throwIfAborted()
         if (lease.revoked || stopped || res.destroyed) return
+        if (isCompatibility) {
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+          res.end(JSON.stringify({ data: [{ b64_json: body.toString('base64') }] }))
+          return
+        }
         res.writeHead(200, { 'content-type': type, 'content-length': body.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
         res.end(body)
       } catch (error) {
         const failure: unknown = controller.signal.aborted ? controller.signal.reason : error
         const safe = failure instanceof ImageFailure ? failure : new ImageFailure(502, 'IMAGE_NETWORK')
         report(safe)
-        fail(res, safe)
+        fail(res, safe, diagnostic(safe))
       } finally {
         clearTimeout(timer)
         req.off('aborted', close)

@@ -25,8 +25,8 @@ function referencedImage(events, sha) {
   for (const event of events) {
     if (event.type === 'tool/call') calls.set(event.data.callId, event.data.name)
     let result
-    if (event.type === 'tool/result' && event.surfaceOp === 'append' && calls.get(event.data.message?.source?.callId) === 'image_generate') result = event.data.message.content[0]
-    if (event.type === 'tool/code-dispatch' && event.data.name === 'image_generate') result = event.data
+    if (event.type === 'tool/result' && event.surfaceOp === 'append' && calls.get(event.data.message?.source?.callId) === 'image_generate') result = event.data.message
+    if ((event.type === 'tool/ptc-dispatch' || event.type === 'tool/code-dispatch') && event.data.name === 'image_generate') result = event.data
     if (result && !result.isError) {
       const image = imageResult(result.content)
       if (image?.sha256 === sha) return image

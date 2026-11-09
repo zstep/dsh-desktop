@@ -18,5 +18,7 @@
 - insert:
     - id: dsh-desktop-client-ui
       name: dsh-desktop-client-ui
+    - id: dsh-desktop-model-service
+      name: dsh-desktop-model-service
     - id: dsh-desktop-hmr-fallback
       name: dsh-desktop-hmr-fallback

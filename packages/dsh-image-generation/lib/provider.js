@@ -125,22 +125,36 @@ async function request(url, key, { signal, body, maxBytes = 2 * 1024 * 1024, fet
   } catch (error) { throw safeError(error) }
 }
 
+async function visibleModelIds(spec, key, options) {
+  const result = await request(`${spec.baseUrl}/models`, key, options)
+  if (!Array.isArray(result?.data)) throw new ImageError('RESPONSE', 'The provider returned an invalid model list.', 502)
+  return new Set(result.data.filter(model => model && typeof model.id === 'string' && (!model.shutdown_date || model.shutdown_date > new Date().toISOString().slice(0, 10))).map(model => model.id))
+}
+
 /** Read the account's visible models without submitting image generation. */
 export async function listModels(provider, spec, key, options = {}) {
   if (provider !== 'openai') throw new ImageError('MODEL_DISCOVERY', 'This provider requires separate management credentials for account model discovery. Choose a built-in model or enter your endpoint ID.')
   const signal = AbortSignal.any([AbortSignal.timeout(15_000), ...(options.signal ? [options.signal] : [])])
-  const result = await request(`${spec.baseUrl}/models`, key, { ...options, signal })
-  if (!Array.isArray(result.data)) throw new ImageError('RESPONSE', 'The provider returned an invalid model list.', 502)
-  const ids = new Set(result.data.filter(model => model && typeof model.id === 'string' && (!model.shutdown_date || model.shutdown_date > new Date().toISOString().slice(0, 10))).map(model => model.id))
+  const ids = await visibleModelIds(spec, key, { ...options, signal })
   return { source: 'provider', canFetch: true, models: [...OPENAI_IMAGES].filter(id => ids.has(id)) }
 }
 
-/** One non-generating request: OpenAI model metadata or Ark required-prompt validation. */
+/** Non-generating validation: OpenAI metadata/list or Ark required-prompt check. */
 export async function validateConnection(provider, spec, key, options = {}) {
   const signal = AbortSignal.any([AbortSignal.timeout(15_000), ...(options.signal ? [options.signal] : [])])
   if (provider === 'openai') {
-    const result = await request(`${spec.baseUrl}/models/${encodeURIComponent(spec.model)}`, key, { ...options, signal })
-    if (result.id !== spec.model) throw new ImageError('MODEL', 'The requested model was not returned by the provider.')
+    let result
+    try {
+      result = await request(`${spec.baseUrl}/models/${encodeURIComponent(spec.model)}`, key, { ...options, signal })
+    } catch (error) {
+      // Some compatible gateways expose only the model list. Do not fall back
+      // on authentication, quota, transport or server errors, or run inference.
+      if (![404, 405].includes(error.providerStatus)) throw error
+      const ids = await visibleModelIds(spec, key, { ...options, signal })
+      if (!ids.has(spec.model)) throw new ImageError('MODEL', 'The requested model was not returned by the provider.')
+      return 'model'
+    }
+    if (result?.id !== spec.model) throw new ImageError('MODEL', 'The requested model was not returned by the provider.')
     return 'model'
   }
   const result = await request(`${spec.baseUrl}/images/generations`, key, { ...options, signal, body: { model: spec.model }, parameterProbe: true })

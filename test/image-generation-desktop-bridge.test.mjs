@@ -15,6 +15,32 @@ async function server(handler) {
 }
 const token = 'a'.repeat(48)
 const available = { available: true, reason: 'available', serviceUrl: 'https://pengbao.ecombus.net', modelSelection: 'server-managed' }
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=', 'base64')
+const batchOptions = { n: 2, quality: 'high', detail: '', parameterContractVersion: 1, parameterRevision: 'a'.repeat(64) }
+
+it('uses one batch route, preserves partial images and copies only safe per-image diagnostics', async () => {
+  const calls = []
+  const diagnostic = { requestId: `pb-${'c'.repeat(32)}`, stage: 'download', code: 'IMAGE_UPSTREAM_TIMEOUT', elapsedMs: 43, upstreamStatus: 504 }
+  const gatewayUrl = await server(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk
+    calls.push({ path: req.url, body: JSON.parse(body) })
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ requested: 2, complete: false, images: [{ index: 0, b64: PNG.toString('base64'), mime: 'image/png' }], failures: [{ index: 1, code: diagnostic.code, diagnostic: { ...diagnostic, jwt: token } }] }))
+  })
+  const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl, capabilityToken: token })
+  expect(await module.getDesktopImageBridge().generateMany('Fixture batch', batchOptions)).toEqual({ requested: 2, complete: false, images: [{ index: 0, data: PNG, mime: 'image/png' }], failures: [{ index: 1, code: diagnostic.code, diagnostic }] })
+  expect(calls).toEqual([{ path: '/v1/image-generation/generate-many', body: { prompt: 'Fixture batch', ...batchOptions } }])
+})
+
+it.each([
+  { requested: 2, complete: true, images: [{ index: 0, b64: PNG.toString('base64'), mime: 'image/png' }, { index: 0, b64: PNG.toString('base64'), mime: 'image/png' }], failures: [] },
+  { requested: 2, complete: false, images: [{ index: 0, b64: Buffer.from('not-png').toString('base64'), mime: 'image/png' }], failures: [{ index: 1, code: 'IMAGE_RESPONSE' }] },
+  { requested: 2, complete: true, images: [], failures: [] },
+])('rejects malformed batch indexes, bitmap signatures and incomplete envelopes', async payload => {
+  const gatewayUrl = await server((_req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(payload)) })
+  const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl, capabilityToken: token })
+  await expect(module.getDesktopImageBridge().generateMany('Fixture', batchOptions)).rejects.toMatchObject({ code: 'IMAGE_RESPONSE' })
+})
 
 it('exports a one-shot registry with bound operations but no capability getter or reset', async () => {
   const module = await registry()
@@ -24,7 +50,7 @@ it('exports a one-shot registry with bound operations but no capability getter o
   }
   expect(() => module.registerDesktopImageBridge({ gatewayUrl: 'http://127.0.0.1:1234', capabilityToken: 'bad\nheader' })).toThrow()
   module.registerDesktopImageBridge({ gatewayUrl: 'http://127.0.0.1:1234', capabilityToken: token })
-  expect(Object.keys(module.getDesktopImageBridge())).toEqual(['status', 'models', 'generate'])
+  expect(Object.keys(module.getDesktopImageBridge())).toEqual(['status', 'models', 'generate', 'generateMany'])
   expect(Object.isFrozen(module.getDesktopImageBridge())).toBe(true)
   expect(JSON.stringify(module.getDesktopImageBridge())).not.toContain(token)
   expect(Object.keys(module)).not.toContain('reset')
@@ -153,6 +179,38 @@ it.each(['IMAGE_MODEL_UNSUPPORTED', 'IMAGE_MODEL_UNAVAILABLE'])('returns a safe 
   await expect(module.getDesktopImageBridge().generate('PRIVATE_PROMPT', { model: 'chosen' })).rejects.toMatchObject({ code, status: 400, message: expect.not.stringMatching(/PRIVATE_PROMPT|aaaa/) })
 })
 
+it('distinguishes an upstream HTTP 504 from the local deadline without retrying', async () => {
+  let calls = 0
+  const gatewayUrl = await server((_req, res) => {
+    calls += 1
+    res.writeHead(504, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: { code: 'unsafe-upstream-code', message: `${token} PRIVATE_PROMPT` } }))
+  })
+  const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl, capabilityToken: token })
+  await expect(module.getDesktopImageBridge().generate('PRIVATE_PROMPT')).rejects.toMatchObject({
+    code: 'IMAGE_TIMEOUT_UNKNOWN', status: 504, message: expect.stringMatching(/unknown|complete|charged|automatically/i),
+  })
+  expect(calls).toBe(1)
+})
+
+it.each(['IMAGE_TIMEOUT', 'IMAGE_UPSTREAM_TIMEOUT'])('preserves trusted gateway %s over HTTP 504 and copies only safe diagnostic fields', async code => {
+  let calls = 0
+  const diagnostic = { requestId: `pb-${'a'.repeat(32)}`, stage: 'generation', code, elapsedMs: 100,
+    ...(code === 'IMAGE_UPSTREAM_TIMEOUT' ? { upstreamStatus: 504 } : {}) }
+  const gatewayUrl = await server((_req, res) => { calls++; res.writeHead(504, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { code, message: `${token} PRIVATE_PROMPT`, diagnostic: { ...diagnostic, secret: token } } })) })
+  const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl, capabilityToken: token })
+  await expect(module.getDesktopImageBridge().generate('PRIVATE_PROMPT')).rejects.toMatchObject({ code, diagnostic, message: expect.not.stringContaining('PRIVATE_PROMPT') })
+  expect(calls).toBe(1)
+})
+
+it('classifies a malformed HTTP 504 body as unknown rather than asserting an upstream source', async () => {
+  let calls = 0
+  const gatewayUrl = await server((_req, res) => { calls++; res.writeHead(504, { 'content-type': 'text/html' }); res.end('<html>private prompt and key</html>') })
+  const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl, capabilityToken: token })
+  await expect(module.getDesktopImageBridge().generate('fixture')).rejects.toMatchObject({ code: 'IMAGE_TIMEOUT_UNKNOWN', message: expect.stringMatching(/source is unknown/) })
+  expect(calls).toBe(1)
+})
+
 it('rejects invalid sizes before network access', async () => {
   const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl: 'http://127.0.0.1:1234', capabilityToken: token })
   const bridge = module.getDesktopImageBridge()
@@ -208,5 +266,5 @@ it('propagates cancellation and bounds the whole operation with a timeout', asyn
   const timeout = new AbortController()
   vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal)
   const timed = bridge.generate('Flower'); timeout.abort(new DOMException('timeout', 'TimeoutError'))
-  await expect(timed).rejects.toMatchObject({ code: 'IMAGE_TIMEOUT', message: expect.stringContaining('charged') })
+  await expect(timed).rejects.toMatchObject({ code: 'IMAGE_TIMEOUT', message: expect.stringMatching(/local|complete|charged|automatically/i) })
 })

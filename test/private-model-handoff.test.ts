@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build } from 'esbuild'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deliverPrivateHandoff, type HarnessChildProcess } from '../src/main/runtime/harness-runtime'
 import { launchDisclaimedUtilityProcess } from '../src/main/runtime/disclaimed-utility-process'
 import { PiAiAdapter, type PiAiAdapterOptions, type ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -19,6 +19,8 @@ import { patchPath, projectRoot } from './patch-path'
 const entry = join(projectRoot, 'build', 'harness-node-entry.mjs')
 const capability = 'Private_Capability_0123456789abcdefghijklmnop'
 const handoff = { gatewayUrl: 'http://127.0.0.1:43129', capabilityToken: capability }
+const modelService = { ...handoff, contractVersion: 1 as const, capabilities: ['chat.completions'] as const }
+const modelServiceConsumers = [{ id: '@fixture/model-consumer', version: '1.0.0', status: 'declared' as const, capabilities: ['chat.completions'] as const }]
 const launched: ChildProcess[] = []
 const directories: string[] = []
 const gateways: PengbaoGateway[] = []
@@ -32,15 +34,10 @@ afterEach(async () => {
 async function fixture(): Promise<{ root: string; cli: string; output: string }> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-private-message-'))
   directories.push(root)
-  // Anchor the llm plugin beside the fake entry exactly as the real DSH
-  // installation does, so the entry's anchored resolution and this fixture's
-  // observation land on one module instance (both go through the symlink to
-  // one realpath). The registry's one-shot rule is what the entry's own
-  // registration is observed through: the value itself is deliberately
-  // unreadable from outside the module.
   const scopedModules = join(root, 'node_modules', '@deepseek-ai')
   await mkdir(scopedModules, { recursive: true })
   await symlink(join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh-llm-pi-ai'), join(scopedModules, 'dsh-llm-pi-ai'), process.platform === 'win32' ? 'junction' : 'dir')
+  await symlink(join(projectRoot, 'packages', 'dsh-desktop-model-service'), join(root, 'node_modules', 'dsh-desktop-model-service'), process.platform === 'win32' ? 'junction' : 'dir')
   await symlink(join(projectRoot, 'packages', 'dsh-image-generation'), join(root, 'node_modules', 'dsh-image-generation'), process.platform === 'win32' ? 'junction' : 'dir')
   const cli = join(root, 'cli.mjs')
   const output = join(root, 'child-report.json')
@@ -50,9 +47,15 @@ async function fixture(): Promise<{ root: string; cli: string; output: string }>
     export async function runCli() {
       const tool = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { encoding: 'utf8' })
       const piAi = await import('@deepseek-ai/dsh-llm-pi-ai')
+      const serviceModule = await import('dsh-desktop-model-service/private')
       const imageBridge = await import('dsh-image-generation/desktop-bridge')
       const imageRegistered = !!imageBridge.getDesktopImageBridge()
+      const serviceImageRegistered = !!serviceModule.getModelServiceImage()
+      const modelServiceRegistered = serviceModule.hasChatRegistration()
+      let pluginBrokerRegistered = false
+      try { const broker = serviceModule.createPluginConfigurationBroker(); pluginBrokerRegistered = true; await broker.dispose() } catch { /* No broker packet was supplied. */ }
       let entryRegistrationHeld = false
+
       try {
         piAi.registerPrivateModelCredential({ provider: 'other', baseURL: 'http://127.0.0.1:1', apiKey: 'probe'.repeat(8) })
       } catch (error) {
@@ -60,9 +63,7 @@ async function fixture(): Promise<{ root: string; cli: string; output: string }>
       }
       writeFileSync(${JSON.stringify(output)}, JSON.stringify({ argv: process.argv, env: process.env,
         toolEnv: tool.stdout, ipc: typeof process.send === 'function' || !!process.parentPort,
-        exportNames: Object.keys(piAi).sort(),
-        imageRegistered,
-        entryRegistrationHeld }))
+        exportNames: Object.keys(piAi).sort(), imageRegistered, serviceImageRegistered, modelServiceRegistered, pluginBrokerRegistered, entryRegistrationHeld }))
     }
   `)
   return { root, cli, output }
@@ -77,19 +78,20 @@ describe('private Harness child message handoff', () => {
   it('registers the capability into the llm plugin module, not argv/env/log/tool children', async () => {
     const { root, cli, output } = await fixture()
     const child = spawn(process.execPath, [entry, cli], {
-      cwd: root,
-      env: { ...process.env, DSH_DESKTOP_PRIVATE_MODEL_HANDOFF: '1' },
+      cwd: root, env: { ...process.env, DSH_DESKTOP_PRIVATE_MODEL_HANDOFF: '1' },
       stdio: ['pipe', 'pipe', 'pipe', 'ipc']
     })
     launched.push(child)
     const logs: string[] = []
     child.stdout!.on('data', chunk => logs.push(String(chunk)))
     child.stderr!.on('data', chunk => logs.push(String(chunk)))
-    await deliverPrivateHandoff(child as HarnessChildProcess, handoff, () => true, new AbortController().signal)
+    await deliverPrivateHandoff(child as HarnessChildProcess, handoff, () => true, new AbortController().signal, modelService, modelServiceConsumers)
     await waitForExit(child as HarnessChildProcess)
     expect(child.exitCode).toBe(0)
     const report = JSON.parse(await readFile(output, 'utf8'))
     expect(report.ipc).toBe(true)
+    expect(report.modelServiceRegistered).toBe(true)
+    expect(report.pluginBrokerRegistered).toBe(false)
     expect(report.entryRegistrationHeld).toBe(true)
     expect(report.exportNames).toContain('registerPrivateModelCredential')
     expect(logs.join('')).toContain('private model credential registered')
@@ -114,11 +116,14 @@ describe('private Harness child message handoff', () => {
     child.stderr!.on('data', chunk => { logs += String(chunk) })
     await deliverPrivateHandoff(child as HarnessChildProcess, {
       ...handoff, image: { gatewayUrl: handoff.gatewayUrl, capabilityToken: imageCapability }
-    }, () => true, new AbortController().signal)
+    }, () => true, new AbortController().signal, modelService, modelServiceConsumers)
     await waitForExit(child as HarnessChildProcess)
     expect(child.exitCode, logs).toBe(0)
     const report = JSON.parse(await readFile(output, 'utf8'))
     expect(report.imageRegistered).toBe(true)
+    expect(report.serviceImageRegistered).toBe(true)
+    expect(report.modelServiceRegistered).toBe(true)
+    expect(report.pluginBrokerRegistered).toBe(false)
     expect(report.entryRegistrationHeld).toBe(true)
     expect(logs).toContain('private image credential registered')
     for (const secret of [capability, imageCapability]) {
@@ -128,11 +133,38 @@ describe('private Harness child message handoff', () => {
     }
   })
 
+  it('rejects invalid consumers before sending any capability', async () => {
+    const child = new EventEmitter() as HarnessChildProcess
+    const send = vi.fn(() => true)
+    Object.assign(child, { exitCode: null, send })
+    const invalid = [...modelServiceConsumers, ...modelServiceConsumers]
+    await expect(deliverPrivateHandoff(child, handoff, () => true, new AbortController().signal,
+      modelService, invalid)).rejects.toThrow('Invalid private model consumers')
+    expect(send).not.toHaveBeenCalled()
+    expect(child.listenerCount('message')).toBe(0)
+  })
+
+  it('waits for acknowledgement when send reports backpressure', async () => {
+    const child = new EventEmitter() as HarnessChildProcess
+    Object.assign(child, { exitCode: null, send: (_packet: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return false
+    } })
+    let completed = false
+    const delivery = deliverPrivateHandoff(child, handoff, () => true, new AbortController().signal).then(() => { completed = true })
+    child.emit('message', { kind: 'dsh-desktop:private-model-ready' })
+    await Promise.resolve()
+    expect(completed).toBe(false)
+    child.emit('message', { kind: 'dsh-desktop:private-model-received' })
+    await delivery
+    expect(completed).toBe(true)
+    expect(child.listenerCount('message')).toBe(0)
+  })
+
   it('cancels a real spawn before the child can receive the capability', async () => {
     const { root, cli, output } = await fixture()
     const child = spawn(process.execPath, [entry, cli], {
-      cwd: root,
-      env: { ...process.env, DSH_DESKTOP_PRIVATE_MODEL_HANDOFF: '1' },
+      cwd: root, env: { ...process.env, DSH_DESKTOP_PRIVATE_MODEL_HANDOFF: '1' },
       stdio: ['pipe', 'pipe', 'pipe', 'ipc']
     })
     launched.push(child)
@@ -158,10 +190,12 @@ describe('private Harness child message handoff', () => {
 
   it('fails closed when the child cannot acknowledge delivery', async () => {
     const child = new EventEmitter() as HarnessChildProcess
-    Object.assign(child, { exitCode: null, send: () => false })
+    Object.assign(child, { exitCode: null, send: (_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(new Error('channel unavailable'))
+    } })
     const delivery = deliverPrivateHandoff(child, handoff, () => true, new AbortController().signal)
     child.emit('message', { kind: 'dsh-desktop:private-model-ready' })
-    await expect(delivery).rejects.toThrow('unavailable')
+    await expect(delivery).rejects.toThrow('Could not send private model handoff')
   })
 
   it.skipIf(process.env.DSH_TEST_PRIVATE_UTILITY_ELECTRON !== '1')(
@@ -221,22 +255,13 @@ describe('private Harness child message handoff', () => {
   )
 
   it('answers the memory-only credential only for the gateway route itself', async () => {
-    // The seam policy lives in the pi-ai patch; read it from the patch the way
-    // the other patch-contract tests do, then exercise the real functions.
     const patch = await readFile(patchPath('@deepseek-ai/dsh-llm-pi-ai'), 'utf8')
-    const additions = patch
-      .split('\n')
-      .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
-      .map((line) => line.slice(1))
-      .join('\n')
+    const additions = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n')
     const register = additions.match(/function registerPrivateModelCredential\(entry\) \{[\s\S]*?^\}/m)?.[0]
     const match = additions.match(/function matchPrivateModelCredential\(provider, baseURL\) \{[\s\S]*?^\}/m)?.[0]
     expect(register).toBeDefined()
     expect(match).toBeDefined()
-    const seam = new Function(`let privateModelCredential;
-      ${register}
-      ${match}
-      return { registerPrivateModelCredential, matchPrivateModelCredential }`)() as {
+    const seam = new Function(`let privateModelCredential; ${register} ${match} return { registerPrivateModelCredential, matchPrivateModelCredential }`)() as {
       registerPrivateModelCredential: (entry: unknown) => void
       matchPrivateModelCredential: (provider: string, baseURL: string | undefined) => string | undefined
     }
@@ -245,19 +270,14 @@ describe('private Harness child message handoff', () => {
     seam.registerPrivateModelCredential({ provider: 'pengbao', baseURL: gateway, apiKey: key })
     expect(seam.matchPrivateModelCredential('pengbao', gateway)).toBe(key)
     expect(seam.matchPrivateModelCredential('pengbao', `${gateway}/v1`)).toBe(key)
-    // Another provider, another port, or a look-alike host borrows nothing.
     expect(seam.matchPrivateModelCredential('other', gateway)).toBeUndefined()
     expect(seam.matchPrivateModelCredential('pengbao', 'http://127.0.0.1:43130')).toBeUndefined()
     expect(seam.matchPrivateModelCredential('pengbao', `${gateway}.evil.example`)).toBeUndefined()
     expect(seam.matchPrivateModelCredential('pengbao', 'https://api.example.com')).toBeUndefined()
     expect(seam.matchPrivateModelCredential('pengbao', undefined)).toBeUndefined()
-    // Registration refuses non-loopback or malformed entries, and is one-shot.
     expect(() => seam.registerPrivateModelCredential({ provider: 'x', baseURL: gateway, apiKey: key })).toThrow('already registered')
-    // The wired resolution path consults the registry before any other source.
     expect(patch).toContain('const privateKey = matchPrivateModelCredential(provider, profile.baseURL)')
-    expect(patch.indexOf('const privateKey = matchPrivateModelCredential')).toBeLessThan(
-      patch.indexOf('const credentials = ctx.get("credentials")')
-    )
+    expect(patch.indexOf('const privateKey = matchPrivateModelCredential')).toBeLessThan(patch.indexOf('const credentials = ctx.get("credentials")'))
     expect(patch).toContain('registerPrivateModelCredential, supportedProtocols };')
   })
 
@@ -272,13 +292,9 @@ describe('private Harness child message handoff', () => {
         if (url.pathname.endsWith('/models')) return Response.json({ data: [{ id: 'known-tools-model' }] })
         const messages = body?.messages as Array<Record<string, unknown>> | undefined
         if (messages?.some(message => message.role === 'tool')) {
-          return new Response('data: {"choices":[{"delta":{"content":"tool result received"}}]}\n\ndata: [DONE]\n\n', {
-            headers: { 'content-type': 'text/event-stream' }
-          })
+          return new Response('data: {"choices":[{"delta":{"content":"tool result received"}}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
         }
-        return new Response('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_local_file","arguments":"{\\"path\\":\\"notes.txt\\"}"}}]}}]}\n\ndata: [DONE]\n\n', {
-          headers: { 'content-type': 'text/event-stream' }
-        })
+        return new Response('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_local_file","arguments":"{\\"path\\":\\"notes.txt\\"}"}}]}}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
       }
     })
     gateways.push(gateway)
@@ -294,8 +310,7 @@ describe('private Harness child message handoff', () => {
     })
     const profile: ResolvedPiAiProviderProfile = {
       provider: 'pengbao', displayName: 'Pengbao', api: 'openai-completions',
-      baseURL,
-      defaultInput: ['text'], streamIdleTimeoutMs: 5000, maxRequestImageBytes: 1024,
+      baseURL, defaultInput: ['text'], streamIdleTimeoutMs: 5000, maxRequestImageBytes: 1024,
       requestImagePixelBudget: 1024, requestImageMaxBytes: 1024,
       configuredMaxTokens: new Map(), retryPolicy: resolveRetryPolicy({ mode: 'normal', maxRetries: 0 }, 'test'),
       modelErrors: new Map(), piProvider
@@ -313,8 +328,7 @@ describe('private Harness child message handoff', () => {
     const first = []
     for await (const chunk of adapter.stream({
       provider: 'pengbao', model: 'known-tools-model',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'Read notes.txt' }] }],
-      tools: [tool]
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Read notes.txt' }] }], tools: [tool]
     } as Parameters<PiAiAdapter['stream']>[0])) first.push(chunk)
     const call = first.find(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')
     expect(call).toMatchObject({ type: 'block-end', block: { id: 'call_1', name: 'read_local_file', arguments: '{"path":"notes.txt"}' } })
