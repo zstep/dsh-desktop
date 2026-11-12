@@ -30,6 +30,8 @@ import hashlib
 import json
 import os
 import sys
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import boto3
@@ -77,7 +79,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, help="release-assets directory")
     parser.add_argument("--version", required=True, help="release version without the v prefix")
+    parser.add_argument("--build-id", default="", help="immutable build/run identifier in artifact filenames")
+    parser.add_argument("--source-sha", default="", help="source revision recorded in the catalog")
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", args.version):
+        parser.error("version must be a safe non-v semver")
+    if args.build_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", args.build_id):
+        parser.error("build-id must contain only letters, digits, dots and hyphens")
+
+    directory = Path(args.directory)
+    missing_installers = [filename for filename in INSTALLERS.values() if not (directory / filename).is_file()]
+    if missing_installers:
+        print(f"::error::all three installers are required; missing: {', '.join(missing_installers)}")
+        return 1
 
     required = ["S3_ENDPOINT_URL", "S3_REGION_NAME", "S3_BUCKET_NAME", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]
     missing = [name for name in required if not os.environ.get(name)]
@@ -97,37 +111,54 @@ def main() -> int:
         config=Config(s3={"addressing_style": os.environ.get("S3_ADDRESSING_STYLE", "virtual")}),
     )
 
-    directory = Path(args.directory)
     platforms = []
+    object_version = f"{args.version}-{args.build_id}" if args.build_id else args.version
     for pid, filename in INSTALLERS.items():
         source = directory / filename
-        if not source.is_file():
-            print(f"::warning::skipping {pid}: {filename} not found in {directory}")
-            continue
-        key_name = versioned_name(args.version, filename)
+        digest = sha256(source)
+        size = source.stat().st_size
+        key_name = versioned_name(object_version, filename)
         key = f"{desktop_prefix}/{key_name}"
-        client.upload_file(str(source), bucket, key, ExtraArgs={"ContentType": content_type(key_name)})
+        client.upload_file(str(source), bucket, key, ExtraArgs={
+            "ContentType": content_type(key_name),
+            "Metadata": {"sha256": digest},
+            "CacheControl": "public, max-age=31536000, immutable" if args.build_id else "no-cache",
+        })
+        # Read every uploaded byte back before publishing its URL. This catches
+        # partial/corrupt uploads instead of trusting multipart ETags.
+        obj = client.get_object(Bucket=bucket, Key=key)
+        uploaded_digest = hashlib.sha256()
+        uploaded_size = 0
+        with obj["Body"] as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                uploaded_digest.update(chunk)
+                uploaded_size += len(chunk)
+        if uploaded_size != size or uploaded_digest.hexdigest() != digest:
+            raise RuntimeError(f"OSS verification failed for {key}; catalog unchanged")
         platforms.append({
             "id": pid,
             "filename": key_name,
-            "size": source.stat().st_size,
-            "sha256": sha256(source),
+            "size": size,
+            "sha256": digest,
         })
-        print(f"uploaded {key} ({source.stat().st_size} bytes)")
+        print(f"uploaded and SHA-256 verified {key} ({size} bytes)", flush=True)
 
-    if not platforms:
-        print("::error::no desktop installers found; nothing mirrored to OSS")
-        return 1
-
-    catalog = {"version": args.version, "platforms": platforms}
+    catalog = {
+        "version": args.version,
+        "releasedAt": datetime.now(timezone.utc).isoformat(),
+        "sourceSha": args.source_sha,
+        "buildId": args.build_id,
+        "platforms": platforms,
+    }
     catalog_key = f"{desktop_prefix}/catalog.json"
     client.put_object(
         Bucket=bucket,
         Key=catalog_key,
         Body=json.dumps(catalog, indent=2, ensure_ascii=False).encode("utf-8"),
         ContentType="application/json",
+        CacheControl="no-store",
     )
-    print(f"uploaded {catalog_key}")
+    print(f"uploaded {catalog_key}", flush=True)
     return 0
 
 

@@ -443,7 +443,8 @@ describe('GitHub release contract', () => {
     expect(workflow.match(/Prepare macOS signing keychain/g)).toHaveLength(1)
     expect(workflow.match(/xcrun stapler validate/g)).toHaveLength(2)
     expect(workflow.match(/xcrun notarytool submit/g)).toHaveLength(1)
-    expect(workflow.match(/CSC_IDENTITY_AUTO_DISCOVERY: 'false'/g)).toHaveLength(1)
+    // Isolated Dev packaging plus the two unsigned production download builds.
+    expect(workflow.match(/CSC_IDENTITY_AUTO_DISCOVERY: 'false'/g)).toHaveLength(3)
     expect(workflow).not.toContain("CSC_LINK: ''")
     const config = parse(workflow)
     expect(config.jobs.macos.strategy['fail-fast']).toBe(false)
@@ -473,7 +474,7 @@ describe('GitHub release contract', () => {
       expect(testIndex).toBeGreaterThan(buildIndex)
       expect(steps.filter(step => step.run === 'npm run build')).toHaveLength(1)
       const packages = steps.filter(step => step.run?.includes('--publish never'))
-      expect(packages).toHaveLength(2)
+      expect(packages).toHaveLength(3)
       for (const step of packages) {
         expect(step.run).toContain('verify-target.mjs')
         expect(step.run).not.toContain('npm run build')
