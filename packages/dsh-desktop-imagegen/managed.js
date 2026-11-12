@@ -165,6 +165,20 @@ export function createManagedOperations({ getBridge, getSelection, stream, listM
     }),
     prompt: Object.freeze({
       get label() { return selection()?.model ?? '—' },
+      async models() {
+        const selected = selection()
+        if (!selected || !listModels) throw new Error('IMAGE_PROMPT_MODEL_UNAVAILABLE')
+        let timer
+        try {
+          const models = await Promise.race([
+            Promise.resolve().then(() => listModels(selected.provider)),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('IMAGE_PROMPT_MODELS_UNAVAILABLE')), 10_000) })
+          ])
+          if (!Array.isArray(models)) throw new Error('IMAGE_PROMPT_MODELS_UNAVAILABLE')
+          return [...new Set(models.filter(model => model?.provider === selected.provider && identifier(model.id)).map(model => model.id))]
+        } catch { throw new Error('IMAGE_PROMPT_MODELS_UNAVAILABLE') }
+        finally { clearTimeout(timer) }
+      },
       async status() {
         const selected = selection()
         let label = selected?.model ?? '—'

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createManagedOperations } from '../packages/dsh-desktop-imagegen/managed.js'
+import { generateWithHost, hostChannel, hostDescriptor } from '../node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js'
 
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 
@@ -32,6 +33,36 @@ describe('Desktop imagegen managed operations', () => {
     expect(stream).not.toHaveBeenCalled()
   })
 
+  it('keeps declared image parameters in the client descriptor without exposing unrelated host data', async () => {
+    const { host, bridge } = fixture()
+    bridge.generateMany = async () => { throw new Error('generation must not run during discovery') }
+    bridge.models = async () => ({ selection: 'request-local', models: [{ id: 'image-b', name: 'Image B' }],
+      generationParameters: { contractVersion: 1, revision: 'a'.repeat(64), models: [
+        { id: 'image-b', maxImages: 4, qualities: ['auto', 'high'], details: ['', 'standard'] }
+      ] }, privateEndpoint: 'never expose' })
+    const descriptor = await hostDescriptor({}, host)
+    expect(descriptor.image.generationParameters).toEqual({ contractVersion: 1, revision: 'a'.repeat(64), models: [
+      { id: 'image-b', maxImages: 4, qualities: ['auto', 'high'], details: ['', 'standard'] }
+    ] })
+    expect(JSON.stringify(descriptor)).not.toContain('never expose')
+    bridge.models = async () => ({ selection: 'request-local', models: [], generationParameters: { contractVersion: 99 } })
+    expect((await hostDescriptor({}, host)).image).not.toHaveProperty('generationParameters')
+  })
+
+  it('preserves successful indexed images and failures from a partial managed batch', async () => {
+    const { host, bridge } = fixture()
+    bridge.generateMany = async () => ({ requested: 2, images: [{ index: 1, data: png, mime: 'image/png' }], failures: [{ index: 0, code: 'IMAGE_NETWORK' }], complete: false })
+    const result = await generateWithHost(hostChannel(host), { mode: 'text', prompt: 'partial flower', n: 2 })
+    expect(result).toMatchObject({ requested: 2, images: [{ index: 1, b64: png.toString('base64'), mime: 'image/png' }], failures: [{ index: 0, code: 'IMAGE_NETWORK' }], complete: false })
+    expect(result.partialMessage).toMatch(/1\/2/)
+  })
+
+  it('retains an explicit all-failed batch without inventing an image or retrying', async () => {
+    const { host, bridge } = fixture()
+    bridge.generateMany = async () => ({ requested: 2, images: [], failures: [{ index: 0, code: 'IMAGE_NETWORK' }, { index: 1, code: 'IMAGE_NETWORK' }], complete: false })
+    expect(await generateWithHost(hostChannel(host), { mode: 'text', prompt: 'failed flowers', n: 2 })).toMatchObject({ requested: 2, images: [], failures: [{ index: 0, code: 'IMAGE_NETWORK' }, { index: 1, code: 'IMAGE_NETWORK' }], complete: false })
+  })
+
   it('forwards explicitly selected parameters and batch count without injecting defaults', async () => {
     const { host, bridge } = fixture()
     const image = { index: 0, data: png, mime: 'image/png' }
@@ -62,6 +93,29 @@ describe('Desktop imagegen managed operations', () => {
     expect(host.prompt.label).toBe('chat-b')
     await host.prompt.enhance({ prompt: 'prompt', mode: 'polish' })
     expect(stream.mock.calls[1]?.[0]).toMatchObject({ provider: 'pengbao', model: 'chat-b', temperature: 0.35 })
+  })
+
+  it('discovers only detached safe IDs from the selected provider without dispatching enhancement', async () => {
+    const { host, stream } = fixture(async () => [
+      { provider: 'pengbao', id: 'chat-a' }, { provider: 'pengbao', id: 'chat-b' },
+      { provider: 'other', id: 'other-chat' }, { provider: 'pengbao', id: 'chat-a' },
+      { provider: 'pengbao', id: 'bad\nmodel' }, { id: 'missing-provider' }
+    ])
+    expect(await host.prompt.models()).toEqual(['chat-a', 'chat-b'])
+    expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('bounds model discovery and sanitizes catalog errors', async () => {
+    vi.useFakeTimers()
+    try {
+      const { host } = fixture(() => new Promise(() => {}))
+      const discovery = expect(host.prompt.models()).rejects.toThrow('IMAGE_PROMPT_MODELS_UNAVAILABLE')
+      await vi.advanceTimersByTimeAsync(10_000)
+      await discovery
+      expect(vi.getTimerCount()).toBe(0)
+      const failing = fixture(async () => { throw new Error('private catalog credentials') })
+      await expect(failing.host.prompt.models()).rejects.toThrow(/^IMAGE_PROMPT_MODELS_UNAVAILABLE$/)
+    } finally { vi.useRealTimers() }
   })
 
   it('uses only an exact provider/model catalog name while keeping the label getter raw', async () => {

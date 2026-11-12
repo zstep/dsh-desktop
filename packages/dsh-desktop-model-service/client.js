@@ -254,6 +254,7 @@ window.__ModuleLoader__.load({
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'model service locale')
         ctx.effect(() => { if (document.querySelector('style[data-plugin-css="dsh-desktop-model-service"]')) return; const style = document.createElement('style'); style.dataset.pluginCss = 'dsh-desktop-model-service'; style.textContent = css; document.head.appendChild(style); return () => style.remove() }, 'model service styles')
         const t = ctx.locale.bind(NS)
+        ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'desktop-model-service', order: -90, locale: NS, label: () => t('title'), inject: () => ({ t, callApi }) }, ModelServiceSettings))
         ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({ name: 'settings.plugins.tab', id: 'desktop-model-service', order: -90, locale: NS, label: () => t('legacyTitle'), inject: () => ({ t, callApi }) }, ModelServiceSettings))
       }
     }

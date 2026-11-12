@@ -120,7 +120,7 @@ function mount({ language = 'en', initial = overview(), plugins = [], request } 
     effect(callback) { const cleanup = callback(); if (typeof cleanup === 'function') callbacks.push(cleanup) },
     locale: { register(ns, values) { assert.equal(ns, 'settings.desktopModelService'); dictionaries = values }, bind: () => t },
     slots: {
-      inject(name, callback) { assert.equal(name, 'settings.plugins.tab'); callback() },
+      inject(name, callback) { assert.ok(['settings.section', 'settings.plugins.tab'].includes(name)); callback() },
       register(config, value) { component = value; props = config.inject(); return config }
     }
   })

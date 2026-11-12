@@ -17,7 +17,8 @@ const IMAGE_FAMILY = /^(?:gpt-image(?:-|$)|dall-e(?:-|$)|imagen(?:-|$)|flux(?:[.
 
 export interface PengbaoGatewayFailure {
   requestId: string
-  kind: 'upstream-http' | 'transport' | 'timeout' | 'cancelled'
+  kind: 'upstream-http' | 'upstream-response' | 'transport' | 'timeout' | 'cancelled'
+  upstreamRoute?: 'config' | 'models' | 'image-metadata'
   upstreamStatus?: number
   elapsedMs: number
   phase: 'request' | 'headers' | 'body'
@@ -295,26 +296,51 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     controller.signal.addEventListener('abort', cancel, { once: true })
     try {
       const metadata = async (path: '/api/config' | '/api/v1/models' | '/api/v1/images/metadata'): Promise<Record<string, unknown>> => {
-        const response = await abortable(upstreamFetch(`${PENGBAO_PRODUCT.serverUrl}${path}`, { method: 'GET', redirect: 'error', credentials: 'omit', signal: controller.signal,
-          headers: { Authorization: `Bearer ${jwt}`, 'X-Pengbao-Request-Id': requestId } }), controller.signal)
-        const reader = response.body?.getReader()
-        const cancel = () => { void reader?.cancel().catch(() => { /* Metadata body may already be closed. */ }) }
-        controller.signal.addEventListener('abort', cancel, { once: true })
+        const metadataStarted = Date.now()
+        let response: Response | undefined
+        let metadataReader: ReadableStreamDefaultReader<Uint8Array> | undefined
+        let phase: PengbaoGatewayFailure['phase'] = 'request'
+        let size = 0
+        let invalidResponse = false
+        const cancelMetadata = () => { void metadataReader?.cancel().catch(() => { /* Metadata body may already be closed. */ }) }
+        controller.signal.addEventListener('abort', cancelMetadata, { once: true })
         try {
-          if (!response.ok || response.redirected || response.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json' || !reader) throw new RequestFailure(502)
+          const operation = upstreamFetch(`${PENGBAO_PRODUCT.serverUrl}${path}`, { method: 'GET', redirect: 'error', credentials: 'omit', signal: controller.signal,
+            headers: { Authorization: `Bearer ${jwt}`, 'X-Pengbao-Request-Id': requestId } })
+          void operation.then(late => {
+            if (controller.signal.aborted) void late.body?.cancel().catch(() => { /* Late metadata must not keep its socket open. */ })
+          }, () => { /* The awaited operation reports failures. */ })
+          response = await abortable(operation, controller.signal)
+          phase = 'headers'
+          metadataReader = response.body?.getReader()
+          if (!response.ok) throw new RequestFailure(502)
+          invalidResponse = response.redirected || response.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json' || !metadataReader
+          if (invalidResponse || !metadataReader) throw new RequestFailure(502)
           const chunks: Buffer[] = []
-          let size = 0
           while (true) {
-            const part = await abortable(reader.read(), controller.signal)
+            const part = await abortable(metadataReader.read(), controller.signal)
             if (part.done) break
+            phase = 'body'
             size += part.value.byteLength
-            if (size > maxBody) throw new RequestFailure(502)
+            if (size > maxBody) { invalidResponse = true; throw new RequestFailure(502) }
             chunks.push(Buffer.from(part.value))
           }
+          invalidResponse = true
           const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
           if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestFailure(502)
           return value as Record<string, unknown>
-        } finally { controller.signal.removeEventListener('abort', cancel); cancel() }
+        } catch (error) {
+          if (!stopping) {
+            try {
+              const code = transportCode(error)
+              options.onFailure?.({ requestId, upstreamRoute: path === '/api/config' ? 'config' : path === '/api/v1/models' ? 'models' : 'image-metadata',
+                kind: abortReason === 'deadline' ? 'timeout' : abortReason ? 'cancelled' : response && !response.ok ? 'upstream-http' : invalidResponse ? 'upstream-response' : 'transport',
+                ...(response ? { upstreamStatus: response.status } : {}), elapsedMs: Date.now() - metadataStarted, phase, bytesReceived: size,
+                ...(abortReason ? { abortReason } : {}), ...(code && !abortReason ? { transportCode: code } : {}) })
+            } catch { /* Diagnostics must not change request handling. */ }
+          }
+          throw error
+        } finally { controller.signal.removeEventListener('abort', cancelMetadata); cancelMetadata() }
       }
       const defaults = async (): Promise<string[]> => {
         const value = await metadata('/api/config')
@@ -355,7 +381,10 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
         return ids
       }
       const diagnose = (reason: PengbaoModelDenial['reason'], route: PengbaoModelDenial['route'], model: string): void => {
-        try { options.onModelDenial?.({ kind: 'model-denial', requestId, route, model, reason }) } catch { /* Diagnostics must not change request handling. */ }
+        // Rejected request values are untrusted, not catalog metadata. Never persist URLs,
+        // control characters, or unbounded payloads in diagnostic logs.
+        const safeModel = model.length <= 256 && /^[\p{L}\p{N}_.:/-]+$/u.test(model) && !model.includes('://') ? model : '[invalid-model]'
+        try { options.onModelDenial?.({ kind: 'model-denial', requestId, route, model: safeModel, reason }) } catch { /* Diagnostics must not change request handling. */ }
       }
       const denyLocal = (reason: PengbaoModelDenial['reason'], route: PengbaoModelDenial['route'], model: string): never => {
         diagnose(reason, route, model)
@@ -371,7 +400,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
       if (Number(req.headers['content-length'] ?? 0) > maxBody) throw new RequestFailure(413)
       const body = isChat || isPluginChat ? chatBody(await readBody(req, maxBody, controller.signal)) : undefined
       if (body && grant.models !== undefined) {
-        if (grant.models !== undefined && !grant.models.has(body.model as string) && !(body.model === 'pengbao-default-chat' && grant.models.has('pengbao-default-chat'))) throw new RequestFailure(403)
+        if (!grant.models.has(body.model as string)) denyLocal('not-granted', 'chat', body.model as string)
         // Compatibility chat currently supports text/tool inference only, never arbitrary media URLs.
         if ((body.messages as Record<string, unknown>[]).some(message => {
           const content = message.content

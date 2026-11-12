@@ -187,6 +187,24 @@ describe('private per-plugin configuration gateway', () => {
     ] })
   })
 
+  it('reports an ungranted chat model before making an upstream request', async () => {
+    const denials: PengbaoModelDenial[] = []
+    const { gateway, fetcher } = await fixture({ onModelDenial: denial => denials.push(denial) })
+    const { child } = await issue(gateway, { ...policy, capabilities: ['chat.completions'], models: ['chat-one'] })
+    expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'chat-two', messages: [] })).status).toBe(403)
+    expect(denials).toEqual([{ kind: 'model-denial', requestId: expect.any(String), route: 'chat', model: 'chat-two', reason: 'not-granted' }])
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it.each(['https://user:private-secret@provider.invalid/v1', 'secret\nmodel', 'x'.repeat(256 * 1024)])('redacts unsafe rejected model identifiers in diagnostics', async model => {
+    const denials: PengbaoModelDenial[] = []
+    const { gateway, fetcher } = await fixture({ onModelDenial: denial => denials.push(denial) })
+    const { child } = await issue(gateway, { ...policy, capabilities: ['chat.completions'], models: ['chat-one'] })
+    expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model, messages: [] })).status).toBe(403)
+    expect(denials).toEqual([{ kind: 'model-denial', requestId: expect.any(String), route: 'chat', model: '[invalid-model]', reason: 'not-granted' }])
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('reports the precise reason a plugin chat model is denied', async () => {
     const denials: PengbaoModelDenial[] = []
     const { gateway } = await fixture({ onModelDenial: denial => denials.push(denial) })

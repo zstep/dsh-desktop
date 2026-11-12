@@ -28,6 +28,7 @@ it('loads the image studio in a temporary Harness and follows server image / cur
   const generationParameters = { contractVersion: 1, revision: parameterRevision, models: [{ id: 'dall-e-3', maxImages: 4, qualities: ['auto', 'low', 'medium', 'high'], details: ['', 'standard', 'high'] }] }
   const chats: unknown[] = []
   let selectedModelAvailable = true
+  let partialBatch = false
   const imageModels = () => [{ id: 'gpt-image-1', name: 'GPT Image 1' }, ...(selectedModelAvailable ? [{ id: 'dall-e-3', name: 'DALL·E 3' }] : []), ...selectableImageModelIds.map(id => ({ id, name: id }))]
   const gateway = await startPengbaoGateway({ jwt, fetch: async (input, init) => {
     const url = new URL(String(input))
@@ -46,7 +47,10 @@ it('loads the image studio in a temporary Harness and follows server image / cur
       images.push(input)
       return Response.json(Array.from({ length: input.n ?? 1 }, (_, index) => ({ id: `fixture-${index}`, url: `/api/v1/files/fixture-${index}/content` })))
     }
-    if (/^\/api\/v1\/files\/fixture-[0-3]\/content$/.test(url.pathname)) return new Response(png, { headers: { 'content-type': 'image/png' } })
+    if (/^\/api\/v1\/files\/fixture-[0-3]\/content$/.test(url.pathname)) {
+      if (partialBatch && url.pathname.endsWith('fixture-1/content')) return new Response('unavailable', { status: 502 })
+      return new Response(png, { headers: { 'content-type': 'image/png' } })
+    }
     if (url.pathname === '/api/v1/chat/completions') {
       chats.push(JSON.parse(String(init?.body)))
       return new Response('data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n\ndata: {"choices":[{"delta":{"content":"A blue flower in soft light"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -186,6 +190,7 @@ export function apply(ctx){
     expect(images[1]).toEqual({ prompt: 'A selected flower', model: 'gpt-image-1', n: 1 })
     expect(await post('/api/dsh-imagegen/generate', { prompt: 'unknown', model: 'missing-model', channelId: 'desktop-managed', n: 1 })).toMatchObject({ ok: false })
     expect(images).toHaveLength(2)
+    expect(await post('/api/dsh-imagegen/prompt-enhance/models')).toEqual({ ok: true, models: ['chat-a', 'chat-b'] })
     const enhanced = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'blue flower' })
     expect(enhanced).toMatchObject({ ok: true, prompt: 'A blue flower in soft light' })
     expect(chats).toEqual([expect.objectContaining({ model: 'chat-a' })])
@@ -228,6 +233,15 @@ export function apply(ctx){
     expect(images.at(-1)).toMatchObject({ n: 2, quality: 'high', detail: 'standard', parameterContractVersion: 1, parameterRevision })
     const batchHistory = await post('/api/dsh-imagegen/history/list')
     expect(JSON.stringify(batchHistory)).toContain('Two declared images')
+    partialBatch = true
+    const partial = await post('/api/dsh-imagegen/generate', { prompt: 'One surviving batch image', model: 'dall-e-3', channelId: 'desktop-managed', n: 2, parameterContractVersion: 1, parameterRevision })
+    expect(partial).toMatchObject({ ok: true, requested: 2, complete: false, images: [{ index: 0, mime: 'image/png' }], failures: [{ index: 1 }] })
+    expect(partial.images[0].b64).toBe(png.toString('base64'))
+    expect(partial.partialMessage).toMatch(/1\/2/)
+    const partialHistory = await post('/api/dsh-imagegen/history/list')
+    expect(JSON.stringify(partialHistory)).toContain('One surviving batch image')
+    expect(images).toHaveLength(beforeBatch + 2)
+    partialBatch = false
     const generatedCount = images.length
     selectedModelAvailable = false
     for (const path of ['/api/dsh-imagegen/generate', '/api/dsh-imagegen/tasks/submit']) {
@@ -468,6 +482,22 @@ app.whenReady().then(async()=>{
   await wait(()=>click('Settings').then(async ok=>ok||await click('设置')),'Open settings');
   await wait(()=>click('Image settings').then(async ok=>ok||await click('生图配置')),'Open image settings');
   await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("[data-dsh-imagegen-settings-panel]")].some(e=>e.getClientRects().length>0&&e.innerText.includes("Fixture Chat Beta"))'),'Friendly prompt model display');
+  await wait(()=>window.webContents.executeJavaScript('(()=>{const root=document.querySelector("[data-dsh-imagegen-settings-panel]");const e=[...(root||document).querySelectorAll("button[aria-expanded]")].find(e=>e.getClientRects().length>0&&/^(Prompt enhancement model|提示词增强模型)/.test(e.innerText.trim()));if(!e)return false;if(e.getAttribute("aria-expanded")!=="true")e.click();return true})()'),'Expand prompt enhancement settings');
+  await wait(()=>click('Fetch available models').then(async ok=>ok||await click('获取可用模型')),'Fetch managed prompt models');
+  await wait(()=>window.webContents.executeJavaScript('(()=>{const root=[...document.querySelectorAll("[role=radiogroup]")].find(e=>e.getClientRects().length>0&&["Detected chat model candidates","检测到的候选对话模型"].includes(e.getAttribute("aria-label")));if(!root)return false;const candidates=[...root.querySelectorAll("button[role=radio]")];return candidates.length===2&&candidates.some(e=>e.innerText==="chat-a")&&candidates.some(e=>e.innerText==="chat-b")})()'),'Managed prompt model candidates');
+  assert.equal(await window.webContents.executeJavaScript('[...document.querySelectorAll("button[role=radio]")].filter(e=>e.getClientRects().length>0&&["chat-a","chat-b"].includes(e.innerText)).every(e=>e.disabled)'),true,'Managed prompt candidates must not write a standalone model without endpoint credentials');
+  assert.equal(await window.webContents.executeJavaScript('(()=>{const e=[...document.querySelectorAll("button[role=radio]")].find(e=>e.innerText==="chat-a");e.click();return [...document.querySelectorAll("button")].filter(e=>["Save","保存"].includes(e.innerText.trim())).every(e=>e.disabled)})()'),true,'Clicking a managed candidate must not create unsaved standalone configuration');
+  await window.webContents.executeJavaScript('(()=>{const e=document.querySelector("[data-dsh-imagegen-host-service=prompt] select");e.value="custom";e.dispatchEvent(new Event("change",{bubbles:true}))})()');
+  await wait(()=>window.webContents.executeJavaScript('[...document.querySelectorAll("button[role=radio]")].filter(e=>["chat-a","chat-b"].includes(e.innerText)).length===0'),'Staged custom mode clears managed candidates');
+  assert.equal(await window.webContents.executeJavaScript('(()=>{const buttons=[...document.querySelectorAll("button")].filter(e=>["+ Add manually","+ 手动添加"].includes(e.innerText.trim()));return buttons.length===1&&!buttons[0].disabled})()'),true,'Explicit custom draft permits manual model configuration');
+  assert.equal(await window.webContents.executeJavaScript('[...document.querySelectorAll("button")].find(e=>["Fetch available models","获取可用模型"].includes(e.innerText.trim())).disabled'),true,'Unsaved provider changes must not fetch candidates from the saved provider');
+  await window.webContents.executeJavaScript('(()=>{const e=document.querySelector("[data-dsh-imagegen-host-service=prompt] select");e.value="inherit";e.dispatchEvent(new Event("change",{bubbles:true}))})()');
+  await wait(()=>click('Fetch available models').then(async ok=>ok||await click('获取可用模型')),'Refresh restored managed candidates');
+  await window.webContents.executeJavaScript('document.querySelector("[role=radiogroup]")?.scrollIntoView({block:"center"})');
+  console.log('GUI-PROMPT-MODELS chat-a,chat-b; managed selection remains read-only');
+  const modelScreenshot=${JSON.stringify(screenshot.replace('.png', '-models.png'))};
+  require('fs').writeFileSync(modelScreenshot,(await window.webContents.capturePage()).toPNG());
+  console.log('GUI-MODELS-SCREENSHOT '+modelScreenshot);
   await wait(()=>click('Manage model foundation').then(async ok=>ok||await click('管理模型底座')),'Open image settings foundation shortcut');
   await wait(()=>window.webContents.executeJavaScript('!!document.querySelector("[data-testid=desktop-model-service-settings]")'),'Foundation shortcut navigates to the same settings component');
   console.log('GUI-FOUNDATION-SHORTCUT primary settings component opened');

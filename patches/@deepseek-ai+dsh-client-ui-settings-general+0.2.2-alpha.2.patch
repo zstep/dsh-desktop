@@ -58,3 +58,13 @@ index fe7f3d6..a48a370 100644
  						"settings.action": {
  							kind: "list",
  							scope: "root"
+@@ -1566,6 +1570,9 @@ window.__ModuleLoader__.load({
+ 				}, SettingsRoot);
++				const openModelService = () => shellInstance.actions.openSection("desktop-model-service");
++				window.addEventListener("dsh-desktop-model-service:open", openModelService);
+ 				return () => {
++					window.removeEventListener("dsh-desktop-model-service:open", openModelService);
+ 					disposeCommand();
+ 					disposeSlot();
+ 				};
+ 			}));

@@ -51,6 +51,33 @@ function request(gateway: PengbaoGateway, options: { method?: string; path?: str
 const chat = (body: unknown) => ({ method: 'POST', path: '/v1/chat/completions', body: JSON.stringify(body) })
 
 describe('Pengbao gateway', () => {
+  it.each(['http', 'transport', 'invalid-json'] as const)('reports safe defaults metadata %s failures without exposing upstream bodies', async mode => {
+    const failures: unknown[] = []
+    const gateway = await gatewayFor((req, res) => {
+      expect(req.url).toBe('/api/config')
+      if (mode === 'transport') { req.socket.destroy(); return }
+      res.writeHead(mode === 'http' ? 503 : 200, { 'content-type': 'application/json' })
+      res.end('private-jwt INTERNAL invalid-json')
+    }, { onFailure: failure => failures.push(failure) })
+    const response = await request(gateway, { path: '/v1/model-service/defaults' })
+    expect(response.status).toBe(502)
+    expect(response.body).not.toMatch(/private-jwt|INTERNAL/)
+    expect(failures).toEqual([expect.objectContaining({
+      requestId: expect.stringMatching(/^pb-[a-f0-9]{32}$/),
+      kind: mode === 'http' ? 'upstream-http' : mode === 'transport' ? 'transport' : 'upstream-response',
+      upstreamRoute: 'config', phase: mode === 'transport' ? 'request' : mode === 'http' ? 'headers' : 'body',
+      ...(mode === 'transport' ? {} : { upstreamStatus: mode === 'http' ? 503 : 200 })
+    })])
+    expect(JSON.stringify(failures)).not.toMatch(/private-jwt|INTERNAL|invalid-json/)
+  })
+
+  it('reports metadata timeout even when transport ignores cancellation', async () => {
+    const failures: unknown[] = []
+    const gateway = await gatewayFor(() => {}, { timeoutMs: 80, fetch: async () => new Promise<Response>(() => {}), onFailure: failure => failures.push(failure) })
+    expect((await request(gateway, { path: '/v1/model-service/defaults' })).status).toBe(504)
+    expect(failures).toEqual([expect.objectContaining({ kind: 'timeout', upstreamRoute: 'config', phase: 'request', abortReason: 'deadline' })])
+  })
+
   it('requires exact Host including port, capability auth, exact paths, and no browser headers', async () => {
     const upstream = vi.fn((_req: IncomingMessage, res: ServerResponse) => { res.end('{}') })
     const gateway = await gatewayFor(upstream)

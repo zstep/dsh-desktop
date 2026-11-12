@@ -1,4 +1,5 @@
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dickpy/dsh-imagegen/lib/client.js
+index 54f01f1..960c051 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/client.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/client.js
 @@ -915,6 +915,17 @@ window.__ModuleLoader__.load({
@@ -640,7 +641,19 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  		function ImageGenSettingsSection(props) {
  			const t = tt;
  			useImageGenLanguageTick();
-@@ -61087,16 +61259,16 @@ window.__ModuleLoader__.load({
+@@ -60770,6 +60942,11 @@ window.__ModuleLoader__.load({
+ 			const [manualPromptModelOpen, setManualPromptModelOpen] = (0, react.useState)(false);
+ 			const [manualPromptModel, setManualPromptModel] = (0, react.useState)("");
+ 			const [promptApiOpen, setPromptApiOpen] = (0, react.useState)(false);
++			const promptModelReadOnly = !!state.host?.prompt && (state.desktopPromptMode.text || "inherit") !== "custom";
++			const promptCatalogKey = JSON.stringify([state.desktopPromptMode.text, state.promptApiUrl.text, state.promptApiKey.text]);
++			const promptCatalogCurrent = (0, react.useRef)(promptCatalogKey);
++			promptCatalogCurrent.current = promptCatalogKey;
++			(0, react.useEffect)(() => { setPromptModels([]); setPromptModelsError(null); setLoadingPromptModels(false); }, [promptCatalogKey]);
+ 			const [storageTesting, setStorageTesting] = (0, react.useState)(false);
+ 			const [storageTestResult, setStorageTestResult] = (0, react.useState)(null);
+ 			const [skillProbing, setSkillProbing] = (0, react.useState)(false);
+@@ -61087,16 +61264,16 @@ window.__ModuleLoader__.load({
  			const editing = editingId === null ? void 0 : channels.find((channel) => channel.id === editingId);
  			const readyChannels = channels.filter((channel) => state.channels.keySet[channel.id] === true && channel.models.length > 0).length;
  			const totalModels = channels.reduce((total, channel) => total + channel.models.length, 0);
@@ -661,7 +674,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  				channels: channels.length,
  				models: totalModels
  			});
-@@ -61222,7 +61394,11 @@ window.__ModuleLoader__.load({
+@@ -61222,7 +61399,11 @@ window.__ModuleLoader__.load({
  								onToggle: () => {
  									setActiveSection(activeSection === "channels" ? null : "channels");
  								},
@@ -674,7 +687,7 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  									className: settings_card_module_css_default.channelEmpty,
  									children: t("channels.empty")
  								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-@@ -61415,6 +61591,11 @@ window.__ModuleLoader__.load({
+@@ -61415,6 +61596,11 @@ window.__ModuleLoader__.load({
  									setActiveSection(activeSection === "prompt" ? null : "prompt");
  								},
  								children: [
@@ -686,12 +699,56 @@ diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dic
  									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
  										className: settings_card_module_css_default.sectionHeader,
  										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", {
+@@ -61426,14 +61612,14 @@ window.__ModuleLoader__.load({
+ 										})] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+ 											type: "button",
+ 											className: settings_card_module_css_default.modelFetch,
+-											disabled: disabled || loadingPromptModels,
++											disabled: disabled || state.dirty || loadingPromptModels,
+ 											onClick: () => {
+ 												setLoadingPromptModels(true);
+ 												setPromptModelsError(null);
+ 												fetch(PROMPT_ENHANCE_API.models, { method: "POST" }).then(async (response) => {
+ 													const body = await response.json();
+ 													if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`);
+-													setPromptModels(body.models ?? []);
++													setPromptModels(promptCatalogCurrent.current === promptCatalogKey ? body.models ?? [] : []);
+ 												}).catch((error) => {
+ 													setPromptModelsError(error instanceof Error ? error.message : String(error));
+ 												}).finally(() => {
+@@ -61459,7 +61645,7 @@ window.__ModuleLoader__.load({
+ 										}) : null, /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+ 											type: "button",
+ 											className: settings_card_module_css_default.addModel,
+-											disabled,
++											disabled: disabled || promptModelReadOnly,
+ 											onClick: () => {
+ 												setManualPromptModelOpen((open) => !open);
+ 												setActiveSection("prompt");
+@@ -61480,7 +61666,7 @@ window.__ModuleLoader__.load({
+ 										}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+ 											type: "button",
+ 											className: settings_card_module_css_default.addModel,
+-											disabled: disabled || manualPromptModel.trim() === "",
++											disabled: disabled || promptModelReadOnly || manualPromptModel.trim() === "",
+ 											onClick: () => {
+ 												props.edit("promptModel", manualPromptModel);
+ 												setManualPromptModel("");
+@@ -61501,7 +61687,7 @@ window.__ModuleLoader__.load({
+ 											className: settings_card_module_css_default.modelCandidate,
+ 											"aria-checked": state.promptModel.text === candidate,
+ 											"data-selected": state.promptModel.text === candidate ? "" : void 0,
+-											disabled,
++											disabled: disabled || promptModelReadOnly,
+ 											onClick: () => {
+ 												props.edit("promptModel", candidate);
+ 											},
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js b/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js
 new file mode 100644
-index 0000000..ab2b9bc
+index 0000000..ebf6907
 --- /dev/null
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/host-adapter.js
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,97 @@
 +/** Optional, instance-owned host services. Published 1.11.0 lib is the patch input. */
 +export const HOST_CHANNEL_ID = 'desktop-managed'
 +
@@ -733,6 +790,7 @@ index 0000000..ab2b9bc
 +        ? { selection: status.selection, availableModels: status.models.map(model => ({ id: model.id, name: model.name })) } : {}),
 +      ...(safeName(status?.defaultModel?.id) ? { defaultModel: { id: status.defaultModel.id, name: safeName(status.defaultModel.name) ? status.defaultModel.name : status.defaultModel.id } } : {}),
 +      ...(['available', 'default-only'].includes(status?.catalogStatus) ? { catalogStatus: status.catalogStatus } : {}),
++      ...(status?.generationParameters ? { generationParameters: status.generationParameters } : {}),
 +      ...(statusReason(status) !== undefined ? { reason: statusReason(status) } : {}) }
 +  } catch {
 +    return { label: service.label, active, ready: false, reason: 'host-unavailable' }
@@ -757,12 +815,24 @@ index 0000000..ab2b9bc
 +  signal?.throwIfAborted()
 +  const image = await channel.generate(request, signal)
 +  signal?.throwIfAborted()
-+  if (image && Array.isArray(image.images) && image.images.length === (request.n ?? 1)) {
++  if (image && Array.isArray(image.images)) {
++    const n = request.n ?? 1
++    const indexed = image.requested !== undefined
++    if (indexed && (image.requested !== n || !Array.isArray(image.failures) || image.images.length + image.failures.length !== n || image.complete !== (image.images.length === n && image.failures.length === 0))) throw new Error('Managed image service returned an invalid batch')
++    if (!indexed && image.images.length !== n) throw new Error('Managed image service returned an invalid batch')
++    const indexes = new Set()
++    const validIndex = index => Number.isInteger(index) && index >= 0 && index < n && !indexes.has(index) && indexes.add(index)
 +    const images = image.images.map(item => {
-+      if (!item || typeof item.b64 !== 'string' || !item.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(item.mime)) throw new Error('Managed image service returned an invalid image')
-+      return { b64: item.b64, mime: item.mime }
++      if (!item || typeof item.b64 !== 'string' || !item.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(item.mime) || (indexed && !validIndex(item.index))) throw new Error('Managed image service returned an invalid image')
++      return { ...(indexed ? { index: item.index } : {}), b64: item.b64, mime: item.mime }
 +    })
-+    return { images }
++    if (!indexed) return { images }
++    const failures = image.failures.map(failure => {
++      if (!failure || !validIndex(failure.index) || typeof failure.code !== 'string' || !/^IMAGE_[A-Z0-9_]{1,64}$/.test(failure.code)) throw new Error('Managed image service returned an invalid batch')
++      return { index: failure.index, code: failure.code }
++    })
++    return { images, requested: n, failures, complete: image.complete,
++      ...(image.complete ? {} : { partialMessage: `已保留 ${images.length}/${n} 张图片；未自动重试失败项。 / Saved ${images.length}/${n} images; failed items were not retried.` }) }
 +  }
 +  if (!image || typeof image.b64 !== 'string' || !image.b64 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mime)) throw new Error('Managed image service returned an invalid image')
 +  return { images: [{ b64: image.b64, mime: image.mime }] }
@@ -777,7 +847,7 @@ index 0000000..ab2b9bc
 +  return prompt.trim()
 +}
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dickpy/dsh-imagegen/lib/index.js
-index 225cfb4..ee1aec3 100644
+index 225cfb4..04e6602 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/index.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/index.js
 @@ -4089,6 +4089,7 @@ var GenerationTaskQueue = class {
@@ -856,6 +926,15 @@ index 225cfb4..ee1aec3 100644
  				const protocol = isChannelProtocolPreference(body?.protocol) ? body.protocol : stored?.protocol;
  				const upstream = {
  					apiUrl: typeof body?.apiUrl === "string" && body.apiUrl.trim() !== "" ? body.apiUrl.trim() : stored?.apiUrl ?? "",
+@@ -7652,7 +7669,7 @@ function makeRoutes(deps) {
+ 				try {
+ 					writeJson(res, 200, {
+ 						ok: true,
+-						models: await listPromptModels(resolvePrompt())
++						models: deps.listPromptModels === void 0 ? await listPromptModels(resolvePrompt()) : await deps.listPromptModels()
+ 					});
+ 				} catch (error) {
+ 					writeJson(res, 200, {
 @@ -7681,7 +7698,7 @@ function makeRoutes(deps) {
  				try {
  					writeJson(res, 200, {
@@ -1030,7 +1109,7 @@ index 225cfb4..ee1aec3 100644
  		};
  	};
  	setStorageSyncHandler((kind, filePath) => {
-@@ -13500,6 +13539,13 @@ function apply(ctx, config) {
+@@ -13500,6 +13539,21 @@ function apply(ctx, config) {
  					};
  				},
  				resolveChannels: channelsView,
@@ -1041,10 +1120,18 @@ index 225cfb4..ee1aec3 100644
 +					if (hostPromptActive(value, host)) return enhanceWithHost(host, request, signal);
 +					return request.mode === "polish" ? polishPrompt(resolvePromptModelConfig(resolve()), request.prompt) : enhancePrompt(resolvePromptModelConfig(resolve()), request.prompt);
 +				},
++				listPromptModels: host === void 0 ? void 0 : async () => {
++					const value = unwrapConfig(current());
++					if (hostPromptActive(value, host)) {
++						if (typeof host.prompt.models !== "function") throw new Error("Managed prompt model discovery is unavailable");
++						return host.prompt.models();
++					}
++					return listPromptModels(resolvePromptModelConfig(resolve()));
++				},
  				resolvePrompt: () => resolvePromptModelConfig(resolve()),
  				resolveImageModels: () => {
  					const value = resolve();
-@@ -13587,4 +13633,4 @@ function apply(ctx, config) {
+@@ -13587,4 +13641,4 @@ function apply(ctx, config) {
  	};
  }
  //#endregion
