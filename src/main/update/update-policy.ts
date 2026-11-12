@@ -3,9 +3,11 @@ export const UPDATE_STARTUP_DELAY_MS = 15_000
 export const UPDATE_STARTUP_JITTER_MS = 15_000
 export const AUTO_INSTALL_ON_APP_QUIT = false
 
-// No Pengbao update service has been provisioned. Never fall back to the vendor feed.
-export function supportsAutoUpdates(_isPackaged: boolean, _platform: NodeJS.Platform): boolean {
-  return false
+// Auto-updates are backed by the Pengbao update service (dshdesktop.com) and are
+// active only in packaged builds. Development and diagnostics builds never reach
+// the update feed or policy service.
+export function supportsAutoUpdates(isPackaged: boolean, _platform: NodeJS.Platform): boolean {
+  return isPackaged
 }
 
 export function shouldCheckAfterResume(lastCheckedAt: number, now = Date.now()): boolean {

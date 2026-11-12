@@ -25,11 +25,12 @@ describe('desktop update policy', () => {
     expect(AUTO_INSTALL_ON_APP_QUIT).toBe(false)
   })
 
-  it('disables remote updates even in installed macOS and Windows builds without a Pengbao update service', () => {
-    expect(supportsAutoUpdates(true, 'darwin')).toBe(false)
-    expect(supportsAutoUpdates(true, 'win32')).toBe(false)
-    expect(supportsAutoUpdates(true, 'linux')).toBe(false)
+  it('enables remote updates only in packaged builds', () => {
+    expect(supportsAutoUpdates(true, 'darwin')).toBe(true)
+    expect(supportsAutoUpdates(true, 'win32')).toBe(true)
+    expect(supportsAutoUpdates(true, 'linux')).toBe(true)
     expect(supportsAutoUpdates(false, 'darwin')).toBe(false)
+    expect(supportsAutoUpdates(false, 'win32')).toBe(false)
   })
 
   it('checks after resume only when the interval has elapsed', () => {

@@ -18,7 +18,7 @@ export function initializeDesktopService(options: { getExitContext?: () => GpuEx
       stateDir: join(app.getPath('userData'), 'desktop-service'),
       logPath: join(app.getPath('userData'), 'desktop-service', 'diagnostics.log'),
       version: app.getVersion(), platform: process.platform, arch: process.arch,
-      remoteEnabled: false,
+      remoteEnabled: true,
       // Chromium networking uses the same proxy configuration as the desktop app.
       request: (url, init) => net.fetch(url, init),
       confirmUpload: async () => false

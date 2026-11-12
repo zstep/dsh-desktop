@@ -19,6 +19,11 @@ vi.mock('electron', () => ({
 }))
 vi.mock('electron-updater', () => ({ default: { autoUpdater: mocks.updater } }))
 vi.mock('../src/main/desktop-service', () => ({ checkDesktopUpdate: mocks.policy }))
+// This suite pins the update service to the disabled path (unpackaged/dev builds).
+vi.mock('../src/main/update/update-policy', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  supportsAutoUpdates: () => false
+}))
 vi.mock('../src/main/update/version-catalog', async original => ({ ...await original<object>(), fetchAvailableReleases: mocks.catalog }))
 let manager: typeof import('../src/main/update/update-manager')
 let journalPath: string
