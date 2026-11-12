@@ -747,7 +747,8 @@ async function activateAccount(session: PengbaoSession): Promise<void> {
   accountGateway = await startPengbaoGateway({
     jwt: session.token,
     onFailure: failure => runtime?.note(`[pengbao-gateway] ${JSON.stringify(failure)}`),
-    onImageFailure: failure => runtime?.note(`[pengbao-image-gateway] ${JSON.stringify(failure)}`)
+    onImageFailure: failure => runtime?.note(`[pengbao-image-gateway] ${JSON.stringify(failure)}`),
+    onModelDenial: denial => runtime?.note(`[pengbao-gateway] ${JSON.stringify(denial)}`)
   })
   accountModels = await accountClient!.models()
   assertServableModels(accountModels)

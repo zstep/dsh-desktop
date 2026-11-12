@@ -1,6 +1,6 @@
 import { request as httpRequest } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { startPengbaoGateway, type PengbaoGateway, type PluginConfigurationPolicy } from '../src/main/enterprise/gateway'
+import { startPengbaoGateway, type PengbaoGateway, type PengbaoModelDenial, type PluginConfigurationPolicy } from '../src/main/enterprise/gateway'
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=', 'base64')
 const revision = 'a'.repeat(64)
@@ -9,7 +9,7 @@ const gateways: PengbaoGateway[] = []
 afterEach(async () => { await Promise.all(gateways.splice(0).map(gateway => gateway.stop())) })
 
 function json(body: unknown, headers?: HeadersInit) { return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json', ...headers } }) }
-async function fixture(options: { generation?: () => Response | Promise<Response>; bitmap?: () => Response; timeout?: number; declared?: boolean; serverOnly?: boolean } = {}) {
+async function fixture(options: { generation?: () => Response | Promise<Response>; bitmap?: () => Response; timeout?: number; declared?: boolean; serverOnly?: boolean; overIncluded?: string[]; onModelDenial?: (denial: PengbaoModelDenial) => void } = {}) {
   let defaultChat = 'chat-one'
   let defaultImage = 'chosen'
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -27,13 +27,13 @@ async function fixture(options: { generation?: () => Response | Promise<Response
       { id: 'chosen', alias: 'Image Alias', name: 'Image Name' }
     ] })
     if (url.pathname === '/api/v1/chat/completions') return json({ model: JSON.parse(String(init?.body)).model, choices: [] })
-    if (url.pathname === '/api/v1/images/metadata') return json({ models: [{ id: 'chosen', name: 'Chosen' }, { id: 'second', name: 'Second' }], defaultModel: { id: defaultImage, name: 'Default' }, selection: options.serverOnly ? 'server-only' : 'request-local', catalogStatus: 'available',
+    if (url.pathname === '/api/v1/images/metadata') return json({ models: [{ id: 'chosen', name: 'Chosen' }, { id: 'second', name: 'Second' }, ...(options.overIncluded ?? []).map(id => ({ id, name: id }))], defaultModel: { id: defaultImage, name: 'Default' }, selection: options.serverOnly ? 'server-only' : 'request-local', catalogStatus: 'available',
       ...(options.declared === false ? {} : { generationParameters: { contractVersion: 1, revision, models: ['chosen', 'second'].map(id => ({ id, maxImages: 4, qualities: ['auto', 'high'], details: ['', 'high'] })) } }) }, { 'x-image-model-selection': 'request-local-v1' })
     if (url.pathname === '/api/v1/images/generations') return options.generation?.() ?? json([{ id: 'one', url: '/api/v1/files/one/content' }])
     if (url.pathname === '/api/v1/files/one/content' || url.pathname === '/api/v1/files/two/content') return options.bitmap?.() ?? new Response(PNG, { headers: { 'content-type': 'image/png' } })
     throw new Error('Unexpected upstream path')
   })
-  const gateway = await startPengbaoGateway({ jwt: 'fixture-main-jwt', fetch: fetcher, imageTimeoutMs: options.timeout ?? 1000 })
+  const gateway = await startPengbaoGateway({ jwt: 'fixture-main-jwt', fetch: fetcher, imageTimeoutMs: options.timeout ?? 1000, onModelDenial: options.onModelDenial })
   gateways.push(gateway)
   return { gateway, fetcher, changeDefaults: (chat: string, image: string) => { defaultChat = chat; defaultImage = image } }
 }
@@ -185,6 +185,69 @@ describe('private per-plugin configuration gateway', () => {
       { id: 'chat-two', object: 'model', name: 'Chat Two Name' },
       { id: 'chat-three', object: 'model', name: 'chat-three' }
     ] })
+  })
+
+  it('reports the precise reason a plugin chat model is denied', async () => {
+    const denials: PengbaoModelDenial[] = []
+    const { gateway } = await fixture({ onModelDenial: denial => denials.push(denial) })
+    const chatPolicy: PluginConfigurationPolicy = { ...policy, capabilities: ['chat.completions'], models: ['chat-one', 'chosen', 'unavailable'] }
+    const { child } = await issue(gateway, chatPolicy)
+    expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'chosen', messages: [{ role: 'user', content: 'hello' }] })).status).toBe(403)
+    expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'unavailable', messages: [{ role: 'user', content: 'hello' }] })).status).toBe(403)
+    expect(denials).toEqual([
+      { kind: 'model-denial', requestId: expect.any(String), route: 'chat', model: 'chosen', reason: 'image-classified' },
+      { kind: 'model-denial', requestId: expect.any(String), route: 'chat', model: 'unavailable', reason: 'not-in-catalog' }
+    ])
+  })
+
+  it('reports each model excluded from the chat listing', async () => {
+    const denials: PengbaoModelDenial[] = []
+    const { gateway } = await fixture({ onModelDenial: denial => denials.push(denial) })
+    const chatPolicy: PluginConfigurationPolicy = { ...policy, capabilities: ['chat.completions'], models: ['chat-one', 'chosen', 'unavailable'] }
+    const { child } = await issue(gateway, chatPolicy)
+    const response = await fetch(`${gateway.url}/v1/models`, { headers: { authorization: `Bearer ${child.capabilityToken}` } })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ object: 'list', data: [{ id: 'chat-one', object: 'model', name: 'Chat One Alias' }] })
+    expect(denials).toEqual([
+      { kind: 'model-denial', requestId: expect.any(String), route: 'models', model: 'chosen', reason: 'image-classified' },
+      { kind: 'model-denial', requestId: expect.any(String), route: 'models', model: 'unavailable', reason: 'not-in-catalog' }
+    ])
+  })
+
+  it('does not classify a text model over-included in the image catalog as image-only', async () => {
+    const { gateway } = await fixture({ overIncluded: ['chat-one'] })
+    const chatPolicy: PluginConfigurationPolicy = { ...policy, capabilities: ['chat.completions'], models: ['chat-one'] }
+    const { child } = await issue(gateway, chatPolicy)
+    expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'chat-one', messages: [{ role: 'user', content: 'hello' }] })).status).toBe(200)
+    const listing = await fetch(`${gateway.url}/v1/models`, { headers: { authorization: `Bearer ${child.capabilityToken}` } })
+    expect(await listing.json()).toEqual({ object: 'list', data: [{ id: 'chat-one', object: 'model', name: 'Chat One Alias' }] })
+  })
+
+  it('pins the shared-user memory feature on for every plugin chat', async () => {
+    const { gateway, fetcher } = await fixture()
+    const chatPolicy: PluginConfigurationPolicy = { ...policy, capabilities: ['chat.completions'], models: ['chat-one'] }
+    const { child } = await issue(gateway, chatPolicy)
+    const response = await post(gateway, child.capabilityToken, '/v1/chat/completions', {
+      model: 'chat-one', messages: [{ role: 'user', content: 'hi' }]
+    })
+    expect(response.status).toBe(200)
+    const call = fetcher.mock.calls.find(([input]) => String(input).endsWith('/api/v1/chat/completions'))!
+    expect(JSON.parse(String(call[1]?.body)).features).toEqual({ memory: true })
+  })
+
+  it('drops non-memory feature flags and rejects a malformed features payload', async () => {
+    const { gateway, fetcher } = await fixture()
+    const chatPolicy: PluginConfigurationPolicy = { ...policy, capabilities: ['chat.completions'], models: ['chat-one'] }
+    const { child } = await issue(gateway, chatPolicy)
+    const ok = await post(gateway, child.capabilityToken, '/v1/chat/completions', {
+      model: 'chat-one', messages: [{ role: 'user', content: 'hi' }], features: { web_search: true, image_generation: true, code_interpreter: true, voice: true }
+    })
+    expect(ok.status).toBe(200)
+    const call = fetcher.mock.calls.find(([input]) => String(input).endsWith('/api/v1/chat/completions'))!
+    expect(JSON.parse(String(call[1]?.body)).features).toEqual({ memory: true })
+    expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', {
+      model: 'chat-one', messages: [{ role: 'user', content: 'hi' }], features: 'memory'
+    })).status).toBe(400)
   })
 
   it('serves authenticated server defaults without internal config, and resolves aliases afresh without pin fallback', async () => {

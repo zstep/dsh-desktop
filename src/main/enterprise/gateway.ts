@@ -8,7 +8,12 @@ import { createPluginConfigurationGateway, type PluginConfigurationLease } from 
 export type { PluginConfigurationLease, PluginConfigurationPolicy } from './plugin-configuration-gateway'
 
 const TOP_LEVEL = ['model', 'messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'stream_options', 'temperature', 'max_tokens', 'max_completion_tokens', 'top_p', 'stop', 'frequency_penalty', 'presence_penalty', 'seed', 'response_format', 'reasoning_effort'] as const
-const FORBIDDEN = new Set(['chat_id', 'id', 'session_id', 'parent_id', 'tool_ids', 'metadata', 'features', 'files', 'filter_ids', 'function_call', 'functions'])
+const FORBIDDEN = new Set(['chat_id', 'id', 'session_id', 'parent_id', 'tool_ids', 'metadata', 'files', 'filter_ids', 'function_call', 'functions'])
+// Conservative image-model name families, mirrored from open-webui's own
+// image_models._image_id. Used only as a name fallback when OpenWebUI declares
+// no generation capabilities, so a text model an aggregator merely lists under
+// /api/v1/images/metadata is never mistaken for an image-only model.
+const IMAGE_FAMILY = /^(?:gpt-image(?:-|$)|dall-e(?:-|$)|imagen(?:-|$)|flux(?:[.\-/]|$)|stable-diffusion(?:-|$)|gemini-[\w.-]*image(?:-|$))/i
 
 export interface PengbaoGatewayFailure {
   requestId: string
@@ -22,6 +27,15 @@ export interface PengbaoGatewayFailure {
   lastByteMs?: number
   abortReason?: 'deadline' | 'downstream' | 'revoked'
   transportCode?: 'UND_ERR_SOCKET' | 'UND_ERR_CONNECT_TIMEOUT' | 'UND_ERR_HEADERS_TIMEOUT' | 'UND_ERR_BODY_TIMEOUT' | 'ECONNRESET' | 'ECONNREFUSED' | 'EPIPE' | 'ENOTFOUND' | 'EAI_AGAIN'
+}
+
+/** A locally denied plugin model, reported with a fixed vocabulary and model IDs only. */
+export interface PengbaoModelDenial {
+  kind: 'model-denial'
+  requestId: string
+  route: 'chat' | 'models'
+  model: string
+  reason: 'not-granted' | 'not-in-catalog' | 'image-classified'
 }
 
 function transportCode(error: unknown): PengbaoGatewayFailure['transportCode'] {
@@ -45,6 +59,7 @@ export interface PengbaoGatewayOptions {
   imageMaxConcurrent?: number
   onFailure?: (failure: PengbaoGatewayFailure) => void
   onImageFailure?: (failure: PengbaoImageFailure) => void
+  onModelDenial?: (denial: PengbaoModelDenial) => void
 }
 
 export interface PengbaoGateway {
@@ -156,6 +171,19 @@ function chatBody(value: unknown): Record<string, unknown> {
   const output: Record<string, unknown> = { tools: [] }
   // Only inference fields cross the boundary. Message-level tool IDs stay intact.
   for (const key of TOP_LEVEL) if (Object.hasOwn(input, key)) output[key] = input[key]
+  // `features` is otherwise an open-webui control plane the gateway strips. The one
+  // exception is memory: plugin chat always shares the user's Mem0 (injection + background
+  // review), so the flag is pinned on and every other feature stays at its default off.
+  // A malformed client-supplied `features` is still rejected for a loud, early failure.
+  if (Object.hasOwn(input, 'features')) {
+    const features = input.features
+    if (features !== undefined && features !== null) {
+      if (typeof features !== 'object' || Array.isArray(features)) throw new RequestFailure(400)
+      const memory = (features as Record<string, unknown>).memory
+      if (memory !== undefined && typeof memory !== 'boolean') throw new RequestFailure(400)
+    }
+  }
+  output.features = { memory: true }
   return output
 }
 
@@ -297,11 +325,41 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
       }
       const imageModelIds = async (): Promise<Set<string>> => {
         const value = await metadata('/api/v1/images/metadata')
-        if (!Array.isArray(value.models)) throw new RequestFailure(502)
-        const ids = new Set(value.models.flatMap((item: unknown) => item && typeof item === 'object' && 'id' in item && typeof item.id === 'string' ? [item.id] : []))
-        const defaultModel = value.defaultModel
-        if (defaultModel && typeof defaultModel === 'object' && 'id' in defaultModel && typeof defaultModel.id === 'string') ids.add(defaultModel.id)
+        const record = value as Record<string, unknown>
+        // OpenWebUI's `.models` list is the authoritative image set only for
+        // non-openai engines. For the openai engine it over-includes every
+        // upstream model — text models included (open_webui.utils.image_models
+        // `_provider_entry` returns each row unless it explicitly denies image
+        // output) — so treating it as "image-only" misclassifies chat models.
+        // The reliable image-only signals are the operator-declared
+        // generation-parameter capabilities and the configured image default.
+        const ids = new Set<string>()
+        const generation = record.generationParameters
+        if (generation && typeof generation === 'object') {
+          const declared = (generation as Record<string, unknown>).models
+          if (Array.isArray(declared)) {
+            for (const item of declared) {
+              if (item && typeof item === 'object' && 'id' in item && typeof (item as Record<string, unknown>).id === 'string') ids.add((item as Record<string, unknown>).id as string)
+            }
+          }
+        }
+        const defaultModel = record.defaultModel
+        if (defaultModel && typeof defaultModel === 'object' && 'id' in defaultModel && typeof (defaultModel as Record<string, unknown>).id === 'string') ids.add((defaultModel as Record<string, unknown>).id as string)
+        if (ids.size === 0 && Array.isArray(record.models)) {
+          for (const item of record.models) {
+            if (item && typeof item === 'object' && 'id' in item && typeof (item as Record<string, unknown>).id === 'string' && IMAGE_FAMILY.test((item as Record<string, unknown>).id as string)) {
+              ids.add((item as Record<string, unknown>).id as string)
+            }
+          }
+        }
         return ids
+      }
+      const diagnose = (reason: PengbaoModelDenial['reason'], route: PengbaoModelDenial['route'], model: string): void => {
+        try { options.onModelDenial?.({ kind: 'model-denial', requestId, route, model, reason }) } catch { /* Diagnostics must not change request handling. */ }
+      }
+      const denyLocal = (reason: PengbaoModelDenial['reason'], route: PengbaoModelDenial['route'], model: string): never => {
+        diagnose(reason, route, model)
+        throw new RequestFailure(403)
       }
       if (isDefaults) {
         const defaultModels = await defaults()
@@ -327,9 +385,13 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
         const isDefaultAlias = body.model === 'pengbao-default-chat' && grant.models?.has('pengbao-default-chat')
         if (isDefaultAlias) {
           const current = (await defaults()).find(id => catalogIds.has(id))
-          if (!current) throw new RequestFailure(403)
+          if (!current) denyLocal('not-in-catalog', 'chat', body.model as string)
           body.model = current
-        } else if (!explicitAllowed || !catalogIds.has(body.model as string) || grant.models !== undefined && (await imageModelIds()).has(body.model as string)) throw new RequestFailure(403)
+        } else {
+          if (!explicitAllowed) denyLocal('not-granted', 'chat', body.model as string)
+          if (!catalogIds.has(body.model as string)) denyLocal('not-in-catalog', 'chat', body.model as string)
+          if (grant.models !== undefined && (await imageModelIds()).has(body.model as string)) denyLocal('image-classified', 'chat', body.model as string)
+        }
       }
       if (isPluginModels) {
         const allowed = [...(grant.models ?? [])]
@@ -338,8 +400,17 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
         const imageIds = await imageModelIds()
         const defaultsForChat = allowed.includes('pengbao-default-chat') ? await defaults() : []
         const resolved = [...new Set([
-          ...allowed.filter(model => model !== 'pengbao-default-chat' && model !== 'pengbao-default-image' && catalog.has(model) && !imageIds.has(model)),
-          ...defaultsForChat.filter(model => catalog.has(model) && !imageIds.has(model))
+          ...allowed.filter(model => {
+            if (model === 'pengbao-default-chat' || model === 'pengbao-default-image') return false
+            if (!catalog.has(model)) { diagnose('not-in-catalog', 'models', model); return false }
+            if (imageIds.has(model)) { diagnose('image-classified', 'models', model); return false }
+            return true
+          }),
+          ...defaultsForChat.filter(model => {
+            if (!catalog.has(model)) { diagnose('not-in-catalog', 'models', model); return false }
+            if (imageIds.has(model)) { diagnose('image-classified', 'models', model); return false }
+            return true
+          })
         ])]
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
         res.end(JSON.stringify({ object: 'list', data: resolved.map(id => ({ id, object: 'model', name: modelDisplayName(id, catalog.get(id)) })) }))
