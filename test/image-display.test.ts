@@ -42,8 +42,9 @@ describe('desktop image transport', () => {
 
   it('restricts rewritten desktop sources to the authenticated file endpoint', async () => {
     const source = await bundle('dsh-client-ui-primitives', 'index.js')
+    const routes = source.match(/const DESKTOP_MEDIA_ROUTES = \[[^]*?\n\]/)?.[0]
     const helper = source.match(/function vocabularyImageUrl\([^]*?\n\}/)?.[0]
-    const allow = new Function(`${helper}; return vocabularyImageUrl`)()
+    const allow = new Function(`${routes}; ${helper}; return vocabularyImageUrl`)()
     expect(allow('dsh-desktop://harness/api/file?path=%2Fworkspace%2Fa.png')).toBe('dsh-desktop://harness/api/file?path=%2Fworkspace%2Fa.png')
     for (const url of ['dsh-desktop://harness.evil/api/file?path=x', 'dsh-desktop://user@harness/api/file?path=x', 'dsh-desktop://harness/api/other?path=x', 'file:///tmp/a.png']) expect(allow(url)).toBeUndefined()
     expect(await readFile(patchPath('@deepseek-ai/dsh-client-ui-chat'), 'utf8')).toContain('dsh-desktop://harness/')

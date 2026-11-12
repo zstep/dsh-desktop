@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 
 const requireHost = createRequire(import.meta.url)
-const patchPath = new URL('../patches/@deepseek-ai+dsh-app-boot+0.2.1-rc.3.patch', import.meta.url)
+const patchPath = new URL('../patches/@deepseek-ai+dsh-app-boot+0.2.2-alpha.2.patch', import.meta.url)
 const entryPath = new URL('../build/harness-node-entry.mjs', import.meta.url)
 const runtimePackagePath = new URL('../packages/dsh-desktop-model-service/package.json', import.meta.url)
 

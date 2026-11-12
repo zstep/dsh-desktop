@@ -61,7 +61,7 @@ test('connect-all previews only declared facade consumers, skips conflicts and p
     connected: { enabled: true, chatModel: 'chat-model' }
   }, consumers: [consumer('first'), consumer('second', { capabilities: [IMAGE] }), consumer('disabled'), consumer('custom'),
     consumer('connected'), consumer('undeclared', { status: 'needs-adapter' }),
-    consumer('llm', { adapter: 'llm-pi-ai', version: '0.2.1-rc.3' }),
+    consumer('llm', { adapter: 'llm-pi-ai', version: '0.2.2-alpha.2' }),
     consumer('imagegen', { adapter: 'desktop-imagegen' }), consumer('video', { capabilities: ['video.generate'] })] })
   const plan = await f.controller.plan({ action: 'connect-all' })
   assert.equal(plan.namespace, NS)

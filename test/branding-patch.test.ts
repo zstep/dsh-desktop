@@ -78,7 +78,7 @@ describe('DSH Desktop sidebar branding', () => {
     expect(dark.height).toBe(192)
     expect(dark.hasAlpha).toBe(true)
     expect(manifestInstaller).toContain("path.join(projectRoot, 'build', 'app-icon.png')")
-    expect(manifestInstaller).toContain("target.sizes = '1024x1024'")
+    expect(manifestInstaller).toContain("src: '/dsh-desktop-logo.png', sizes: '1024x1024'")
     expect(splash).toContain('src="pengbao-b2-mark.png"')
   })
 })

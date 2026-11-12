@@ -67,7 +67,8 @@ describe('desktop plugin closure', () => {
     }
     expect(manifest.dependencies['@dickpy/dsh-imagegen']).toBeUndefined()
     expect(manifest.dependencies['dsh-desktop-imagegen']).toMatch(/^file:packages\//u)
-    expect(Object.values(manifest.scripts).join('\n')).not.toContain('imagegen:prepare')
+    // Pengbao keeps the managed image studio build step, but never mounts it by default.
+    expect(manifest.scripts['imagegen:prepare']).toContain('scripts/prepare-imagegen.mjs')
     expect(manifest.build.files).not.toContain('!node_modules/@dickpy/dsh-imagegen{,/**}')
     expect(manifest.build.files).not.toContain('!node_modules/dsh-desktop-imagegen{,/**}')
     const mounted = (await readProfilePatch()).flatMap(row => row.insert ?? []).map(row => row.name)

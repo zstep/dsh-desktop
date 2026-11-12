@@ -13,7 +13,7 @@ const releaseAssets = [
 ]
 
 /** The exact Harness build every `@deepseek-ai/dsh-*` production dep is pinned to. */
-const HARNESS_VERSION = '0.2.1-rc.3'
+const HARNESS_VERSION = '0.2.2-alpha.2'
 
 describe('GitHub release contract', () => {
   it('keeps the package and lockfile versions aligned', async () => {
@@ -151,13 +151,13 @@ describe('GitHub release contract', () => {
       expect(packageJson.dependencies[packageName]).toBeUndefined()
       expect(packageLock.packages[`node_modules/${packageName}`]).toBeUndefined()
     }
-    // Official bundles own these, including retrieval, model badges and entry customization.
+    // Official bundles own these, including retrieval and entry customization.
+    // 0.2.2 no longer ships the dated deepseek-model-label-1017 web plugin.
     for (const packageName of [
       '@deepseek-ai/dsh-tool-terminal',
       '@deepseek-ai/dsh-tool-session-query',
       '@deepseek-ai/dsh-session-title-all-prompts-llm',
       '@deepseek-ai/dsh-web-deepseek-api',
-      '@deepseek-ai/dsh-client-ui-deepseek-model-label-1017',
       '@deepseek-ai/dsh-client-ui-entry-customization'
     ]) {
       expect(packageJson.dependencies[packageName]).toBeUndefined()
@@ -394,7 +394,7 @@ describe('GitHub release contract', () => {
     expect(workflow).toContain('$executable = Join-Path $isolatedApp $sourceExecutable.Name')
     expect(workflow).toContain('-WorkingDirectory $isolatedApp')
     expect(workflow).toContain('Packaged koffi native binding failed (exit code $koffiExitCode).')
-    expect(workflow).toContain("'dist-dev\\win-unpacked\\DSH Desktop Dev.exe'")
+    expect(workflow).toContain("'dist-dev\\win-unpacked\\Pengbao AI Dev.exe'")
     expect(workflow).toContain('if (-not [string]::IsNullOrEmpty($log))')
     expect(workflow).toContain("dsh web: (http://127\\.0\\.0\\.1:\\d+/\\?token=[^\\s]+)")
     expect(workflow).toContain('-SessionVariable harnessSession')
@@ -409,12 +409,12 @@ describe('GitHub release contract', () => {
     expect(workflow).toContain("Invoke-HarnessRpc 'workspace/create'")
     expect(workflow).toContain("Invoke-HarnessRpc 'session/create'")
     expect(workflow).toContain('Harness process exited after workspace and session creation.')
-    expect(workflow).toContain('prerelease_tag:')
-    expect(workflow).toContain('signed_version:')
+    expect(workflow).toContain('version:')
+    expect(workflow).not.toContain('signed_version:')
     expect(workflow).toContain('mode:')
     expect(workflow).toContain('--prerelease')
     expect(workflow).toContain('name: windows-x64-dev')
-    expect(workflow).toContain('dist-dev/dsh-desktop-dev-windows-x64-setup.exe')
+    expect(workflow).toContain('dist-dev/pengbao-ai-dev-windows-x64-setup.exe')
     expect(workflow).toContain('dsh-desktop-mac-${{ matrix.arch }}.dmg')
     expect(workflow).toContain('dsh-desktop-windows-x64-setup.exe')
     expect(
@@ -569,6 +569,7 @@ describe('GitHub release contract', () => {
   it('does not change Windows security settings during installation', async () => {
     const installer = await readFile(path.join(projectRoot, 'build', 'installer.nsh'), 'utf8')
     expect(installer).not.toMatch(/Add-MpPreference|HKLM|ExecShell\s+"runas"/)
+    expect(installer).not.toMatch(/RequestExecutionLevel\s+highest/)
   })
 
   it('routes stable downloads through the website and previews through GitHub', async () => {
@@ -579,7 +580,8 @@ describe('GitHub release contract', () => {
     )
 
     for (const readme of readmes) {
-      expect(readme).toMatch(/https:\/\/(?:www\.)?dshdesktop\.com\/(?:#download|zh\/)/)
+      // 0.2.2 READMEs link their localized download page (`/zh/`, `/ja/`, …).
+      expect(readme).toMatch(/https:\/\/(?:www\.)?dshdesktop\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/|#download)/)
       expect(readme).not.toContain('| Platform | Package | Download |')
       expect(readme).not.toContain('| 平台 | 安装包 | 下载 |')
       expect(readme).not.toContain('Coming soon')
@@ -597,9 +599,10 @@ describe('prerelease parity workflow', () => {
   const load = () =>
     readFile(path.join(projectRoot, '.github/workflows/release.yml'), 'utf8')
 
-  it('replaces the windows-only prerelease input with a general one', async () => {
+  it('uses a single version input for all dispatch modes', async () => {
     const yml = await load()
-    expect(yml).toContain('prerelease_tag:')
+    expect(yml).toContain('version:')
+    expect(yml).not.toContain('prerelease_tag:')
     expect(yml).not.toContain('windows_prerelease_tag')
     expect(yml).not.toContain('Publish validated Windows development pre-release')
   })
@@ -625,21 +628,21 @@ describe('prerelease parity workflow', () => {
     expect(yml).toContain('  - signed')
     expect(yml).toContain('  - prerelease')
     expect(yml).toContain('validate-dispatch:')
-    expect(yml).toContain('signed mode requires signed_version')
+    expect(yml).toContain('requires a non-v semver version')
     expect(windowsIf).toContain("inputs.target == 'all' || inputs.target == 'windows'")
     expect(windowsIf).not.toContain('prerelease_tag')
     expect(signWindows).toContain("inputs.mode == 'signed'")
     expect(signWindows).toContain("inputs.mode == 'prerelease'")
     expect(publishJob).toContain("startsWith(github.ref, 'refs/tags/v')")
-    expect(publishJob).toContain("inputs.prerelease_tag == ''")
+    expect(publishJob).toContain("inputs.version == ''")
     expect(publishPrerelease).toContain("inputs.mode == 'prerelease'")
     expect(publishPrerelease).toContain("inputs.target == 'all'")
-    expect(publishPrerelease).toContain("inputs.prerelease_tag != ''")
+    expect(publishPrerelease).toContain("inputs.version != ''")
     expect(
       yml.match(
-        /npm version --no-git-tag-version --allow-same-version "\$\{\{ inputs\.signed_version \}\}"/g
+        /npm version --no-git-tag-version --allow-same-version "\$\{\{ inputs\.version \}\}"/g
       )
-    ).toHaveLength(3)
+    ).toHaveLength(6)
   })
 
   it('mirrors a prerelease to an isolated ModelScope directory', async () => {

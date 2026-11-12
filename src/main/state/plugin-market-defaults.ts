@@ -1,7 +1,8 @@
 import { mkdir, readFile, readdir } from 'node:fs/promises'
 import { prepareDefaultPluginIntent, retireLegacyImagePlugin } from 'dsh-desktop-market-installer/default-plugins'
 import { dirname, join } from 'node:path'
-import { loadOverlayPatches, PROFILE_TEMPLATES, resolveBundleDir } from '@deepseek-ai/dsh-app-boot'
+import { loadOverlayPatches, resolveBundleDir } from '@deepseek-ai/dsh-app-boot'
+import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
 import { isMap, isSeq, parseDocument } from 'yaml'
 import { writeTextAtomically } from './persona-prefix-migration'
 

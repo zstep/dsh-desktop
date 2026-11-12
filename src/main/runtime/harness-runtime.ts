@@ -844,7 +844,7 @@ export class HarnessRuntime {
         ? [...await this.options.privateModelServiceConsumers(profile, sourcePatchPath, patchPaths.slice(1))]
         : []
       if (launchGeneration !== this.launchGeneration) return
-      const builtInChat = { id: '@deepseek-ai/dsh-llm-pi-ai', version: '0.2.1-rc.3', status: 'declared' as const, capabilities: ['chat.completions' as const], adapter: 'llm-pi-ai' as const }
+      const builtInChat = { id: '@deepseek-ai/dsh-llm-pi-ai', version: '0.2.2-alpha.2', status: 'declared' as const, capabilities: ['chat.completions' as const], adapter: 'llm-pi-ai' as const }
       if (!this.options.privateModelServiceConsumers && this.options.privateModelServiceGrant) consumers.push(builtInChat)
       discoveredConsumers = consumers
       if (launchGeneration !== this.launchGeneration) return
@@ -1400,6 +1400,17 @@ export function extractPluginFailureReferences(logLines: readonly string[]): str
 
 export function extractOffendingPlugins(logLines: readonly string[]): string[] {
   return extractPluginReferences(logLines, isActionablePluginReference)
+}
+
+export function extractDuplicateAgentPresetId(
+  logLines: readonly string[]
+): string | undefined {
+  for (const line of latestHarnessAttemptLogs(logLines)) {
+    if (!line.startsWith('[stderr] ')) continue
+    const match = line.slice(8).match(/Duplicate agent preset:\s*([^\s"']+)/i)
+    if (match?.[1]) return match[1].trim()
+  }
+  return undefined
 }
 
 export function extractDuplicateLoaderEntryId(

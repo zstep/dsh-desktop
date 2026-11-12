@@ -10,6 +10,81 @@ let gpuInfo = 'not-yet-available'
 let service: DesktopService | undefined
 export let desktopDiagnostics: ReturnType<typeof attachDiagnostics> | undefined
 
+export function createAggregatedUploadConfirmation(options: {
+  showMessageBox: (options: Electron.MessageBoxOptions) => Promise<{ response: number }>
+  getPendingCount?: () => number
+  maxReportsPerLaunch?: number
+}) {
+  let status: 'unprompted' | 'approved' | 'rejected' = 'unprompted'
+  let promptPromise: Promise<boolean> | undefined
+  let uploadedCount = 0
+  const maxReports = options.maxReportsPerLaunch ?? 5
+
+  return {
+    async confirmUpload(body: string): Promise<boolean> {
+      if (status === 'rejected') {
+        return false
+      }
+      if (status === 'approved') {
+        if (uploadedCount < maxReports) {
+          uploadedCount++
+          return true
+        }
+        return false
+      }
+
+      if (!promptPromise) {
+        promptPromise = (async () => {
+          try {
+            const report = JSON.parse(body) as { version: string; kind: string; lines: string[] }
+            const pendingTotal = (options.getPendingCount?.() ?? 0) + 1
+            const countDetail = pendingTotal > 1 ? `（本次聚合 ${pendingTotal} 项故障报告）` : ''
+            const { response } = await options.showMessageBox({
+              type: 'question',
+              title: '发送故障报告',
+              message: '是否发送本次故障报告，帮助排查问题？',
+              detail: `版本：${report.version}\n故障类型：${report.kind}${countDetail}\n\n报告将发送到 https://dshdesktop.com/crash，包含安装 ID、版本、平台、故障时间、错误信息、故障时的系统内存/进程资源和显卡信息，以及 harness.log 最后最多 100 行（本次 ${report.lines.length} 行）。\n\n点击“发送一次”仅同意发送本次报告；选择“不发送”将丢弃本次待传报告，不影响继续使用。`,
+              buttons: ['不发送', '发送一次'],
+              defaultId: 0,
+              cancelId: 0,
+              noLink: true
+            })
+            const approved = response === 1
+            status = approved ? 'approved' : 'rejected'
+            return approved
+          } catch {
+            status = 'rejected'
+            return false
+          } finally {
+            promptPromise = undefined
+          }
+        })()
+      }
+
+      const approved = await promptPromise
+      if (approved) {
+        if (uploadedCount < maxReports) {
+          uploadedCount++
+          return true
+        }
+        return false
+      }
+      return false
+    },
+    getStatus() {
+      return status
+    },
+    getUploadedCount() {
+      return uploadedCount
+    },
+    resetForTesting() {
+      status = 'unprompted'
+      promptPromise = undefined
+      uploadedCount = 0
+    }
+  }
+}
+
 /** Call only after the single-instance lock, before bootstrap writes this session's log. */
 export function initializeDesktopService(options: { getExitContext?: () => GpuExitContext } = {}): void {
   if (!app.isPackaged || service) return
@@ -21,6 +96,7 @@ export function initializeDesktopService(options: { getExitContext?: () => GpuEx
       remoteEnabled: true,
       // Chromium networking uses the same proxy configuration as the desktop app.
       request: (url, init) => net.fetch(url, init),
+      // Crash reports stay local: this build never uploads them.
       confirmUpload: async () => false
     })
     void app.whenReady().then(async () => {

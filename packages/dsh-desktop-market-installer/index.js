@@ -959,8 +959,8 @@ export async function apply(ctx) {
   ctx.inject(['pluginMarket', 'pluginManager'], (marketCtx) => marketCtx.effect(() => {
     const lifetime = new AbortController()
     const manager = marketCtx.pluginManager
-    const profileDir = manager.profile?.dir
-    if (typeof profileDir !== 'string' || resolve(profileDir) !== resolve(directory)) return
+    const profileDir = manager?.profile?.dir
+    if (typeof profileDir !== 'string' || resolve(profileDir) !== resolve(directory)) return () => {}
     const report = error => process.stderr.write(`dsh-desktop: default plugin provisioning: ${error instanceof Error ? error.message : String(error)}\n`)
     void provisionDefaultPlugins({ home, pluginMarket: marketCtx.pluginMarket, pluginManager: manager, signal: lifetime.signal, report }).catch(report)
     return () => lifetime.abort()

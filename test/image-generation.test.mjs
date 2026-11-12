@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
@@ -21,6 +22,14 @@ import { materialize } from '../packages/dsh-image-generation/lib/storage.js'
 import { previewImage, imageResult } from '../packages/dsh-image-generation/lib/preview.js'
 import { managedPrompt } from '../packages/dsh-image-generation/lib/managed-provider.js'
 import { writerEnvironment } from '../packages/dsh-image-generation/lib/commit.js'
+
+async function executeTool(ctx, input) {
+  const { callId, name, arguments: args, ...context } = input
+  const batch = await ctx.tools.execute({
+    ...context, calls: [{ type: 'tool-call', id: callId, name, arguments: JSON.stringify(args) }]
+  })
+  return batch.results[0].result
+}
 
 const cleanups = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks() })
@@ -80,7 +89,7 @@ async function server() {
 async function fixture() {
   const home = await temp(); const workspace = await temp()
   const ctx = new Context()
-  for (const [plugin, config] of [[SystemPrompt, {}], [ToolRuntime, {}], [SkillRegistry, {}], [LocalSandboxProvider, {}], [LocalSubprocessRuntime, {}], [LocalCredentialProvider, { dshHome: home, watch: false }]]) {
+  for (const [plugin, config] of [[SystemPrompt, {}], [ToolRuntime, {}], [nativeExecutor, {}], [SkillRegistry, {}], [LocalSandboxProvider, {}], [LocalSubprocessRuntime, {}], [LocalCredentialProvider, { dshHome: home, watch: false }]]) {
     const fork = ctx.plugin(plugin, config); await fork; cleanups.push(() => fork.dispose())
   }
   const log = vi.fn(); let mode = 'workspace-write'
@@ -162,7 +171,7 @@ describe('Pengbao managed image settings and tool', () => {
     const bridge = { status: async () => status('available'), generate: vi.fn(async () => s.png) }
     const settings = createSettings(f.services, vi.fn(), bridge)
     f.ctx.tools.register(imageTool(f.services, settings))
-    const result = await f.ctx.tools.execute({ callId: 'managed', name: 'image_generate', arguments: { prompt: 'A flower', style_context: 'Blue', purpose: 'presentation', aspect_ratio: '16:9' }, agent: f.agent, signal: new AbortController().signal })
+    const result = await executeTool(f.ctx, { callId: 'managed', name: 'image_generate', arguments: { prompt: 'A flower', style_context: 'Blue', purpose: 'presentation', aspect_ratio: '16:9' }, agent: f.agent, signal: new AbortController().signal })
     expect(result.isError, JSON.stringify(result)).toBeFalsy()
     const value = JSON.parse(result.content[0].text)
     expect(value).toMatchObject({ provider: 'pengbao', model_selection: 'server-managed', media_type: 'image/png', width: 32, height: 24 })
@@ -399,7 +408,7 @@ describe('image settings save and provider requests', () => {
       ? Promise.resolve(Response.json({ error: { code: 'InvalidParameter', message: 'The parameter `sequential_image_generation` is not supported. Bearer test-image-key. PRIVATE-PROMPT' } }, { status: 400, headers: { 'x-request-id': 'req-123' } }))
       : original(url, options))
     f.ctx.tools.register(imageTool(f.services, f.settings))
-    const result = await f.ctx.tools.execute({ callId: 'provider-error', name: 'image_generate', arguments: { prompt: 'PRIVATE-PROMPT' }, agent: f.agent, signal: new AbortController().signal })
+    const result = await executeTool(f.ctx, { callId: 'provider-error', name: 'image_generate', arguments: { prompt: 'PRIVATE-PROMPT' }, agent: f.agent, signal: new AbortController().signal })
     const text = JSON.stringify(result)
     expect(result.isError).toBe(true)
     for (const value of ['sequential_image_generation', 'unsupported', 'InvalidParameter', 'req-123', 'HTTP 400']) expect(text).toContain(value)
@@ -440,7 +449,7 @@ describe('image tool and durable Office assets', () => {
     const f = await fixture(); const s = await server()
     await f.settings.save(saveInput(provider, s.baseUrl))
     f.ctx.tools.register(imageTool(f.services, f.settings))
-    const result = await f.ctx.tools.execute({ callId: 'test-call', name: 'image_generate', arguments: { prompt: 'A calm forest', purpose: 'presentation', aspect_ratio: '16:9' }, agent: f.agent, signal: new AbortController().signal })
+    const result = await executeTool(f.ctx, { callId: 'test-call', name: 'image_generate', arguments: { prompt: 'A calm forest', purpose: 'presentation', aspect_ratio: '16:9' }, agent: f.agent, signal: new AbortController().signal })
     expect(result.isError, JSON.stringify(result)).toBeFalsy()
     const value = JSON.parse(result.content[0].text)
     const data = await readFile(path.join(f.workspace, value.workspace_path))
@@ -494,11 +503,11 @@ describe('image tool and durable Office assets', () => {
     expect((await response.json()).profiles.openai.configured).toBe(false)
     const provider = await server()
     await f.settings.save(saveInput('bytedance', provider.baseUrl))
-    const result = await f.ctx.tools.execute({ callId: 'direct', name: 'image_generate', arguments: { prompt: 'Forest' }, agent: f.agent, signal: new AbortController().signal })
+    const result = await executeTool(f.ctx, { callId: 'direct', name: 'image_generate', arguments: { prompt: 'Forest' }, agent: f.agent, signal: new AbortController().signal })
     expect(result.isError, JSON.stringify(result)).toBeFalsy()
     expect(provider.calls).toHaveLength(2)
     const dispose = f.ctx.tools.guard(exec => exec.name === 'image_generate' ? 'Deployment blocks image generation' : undefined)
-    const denied = await f.ctx.tools.execute({ callId: 'denied', name: 'image_generate', arguments: { prompt: 'Forest' }, agent: f.agent, signal: new AbortController().signal })
+    const denied = await executeTool(f.ctx, { callId: 'denied', name: 'image_generate', arguments: { prompt: 'Forest' }, agent: f.agent, signal: new AbortController().signal })
     dispose()
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied)).toContain('Deployment blocks image generation')

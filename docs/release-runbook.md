@@ -2,18 +2,34 @@
 
 ## Manual workflow dispatch
 
-The `Release desktop installers` workflow accepts a `mode` on `workflow_dispatch`. `target` is always honored: `macos` does not start Windows jobs, and `windows` does not start macOS jobs.
+The `Release desktop installers` Run workflow form has five inputs:
 
-- `development` (default): unsigned Dev packages, no signing, no publish.
-- `signed`: production-identity signed packages only. Fill `signed_version` with a non-`v` semver such as `0.9.2-test.1`. Artifacts stay on the workflow run. After the selected platforms pass signing/notarization, CI uploads DMG/EXE installers and `test-changes.md` to ModelScope `test/<signed_version>/<run_id>/` and sends a Feishu test-build notification with public download links. The card groups features, fixes, improvements and other changes from commit subjects and descriptions since the nearest reachable version tag, with the baseline tag, build SHA and a code comparison link. Both `v` and `V` version tags are recognized; a build exactly on a tag compares against the preceding tag, and a first build without tags lists its full history. Long lists are abbreviated in the card with a link to the complete Markdown file. `MODELSCOPE_TOKEN` and `FEISHU_RELEASE_WEBHOOK` are required; history generation, upload, public-download verification, or notification failure fails the job. GitHub Release and rollout do not run. These builds use the production app id and update feed, so an installed copy may later see the live `latest` channel.
-- `resign`: sign an existing `windows-x64-unsigned` artifact without rerunning the Windows build. Set `target=windows`, `unsigned_run_id` to its source release run, and `signed_version` to the exact version used for that artifact. The self-hosted signer downloads it directly and packages the signed installer.
-- `prerelease`: production-identity signed packages. Fill `prerelease_tag` with a non-`v` semver such as `2.1.0-rc.1`. Publish to GitHub `--prerelease` and ModelScope `releases/prerelease/` only when `target` is `all`. A single-platform prerelease signs that platform and skips publish.
+| Input | Use |
+| --- | --- |
+| `mode` | `development` (default), `signed`, `prerelease`, `publish`, or `resign` |
+| `target` | `all` (default), `macos`, or `windows`; recovery publication requires `all`, resign requires `windows` |
+| `version` | Leave empty for development. Use non-`v` semver for signed/prerelease/resign; use the existing `vX.Y.Z` tag for publish |
+| `source_run_id` | Original workflow run ID, required only for publish/resign |
+| `checks` | `standard` (default) or `extended` (adds Windows full tests, three-scale recovery UI, packaged desktop smoke and development archive verification) |
 
-Official releases are created by pushing a `v*` tag. Do not put `v0.9.1` in `prerelease_tag` or `signed_version`.
+- `development`: unsigned Dev packages, no signing or publication; uses the checked-out package version. Leave version and source empty.
+- `signed`: production-identity signed test packages, e.g. `version=0.13.0-test.4`. After the selected platforms pass signing/notarization, CI uploads installers and `test-changes.md` to ModelScope `test/<version>/<run_id>/` and sends a Feishu test-build notification. The note groups changes since the nearest reachable version tag, with baseline, build SHA and a comparison link; long lists link to the complete Markdown file. Both `v` and `V` tags are recognized, and a build exactly on a tag compares against the preceding tag. `MODELSCOPE_TOKEN` and `FEISHU_RELEASE_WEBHOOK` are required; generation, upload, verification or notification failure fails the job. GitHub Release and rollout do not run. These builds use the production app id/update feed, so installed copies may later see the live `latest` channel.
+- `prerelease`: production-identity signed packages, e.g. `version=2.1.0-rc.1`. Publish to GitHub `--prerelease` and ModelScope `releases/prerelease/` only with `target=all`. Single-platform runs sign that platform without publication.
+- `resign`: reuse an existing `windows-x64-unsigned` artifact. Set `target=windows`, `source_run_id` to its original run and `version` to its exact version. Only signing/repackaging runs.
+- `publish`: recover official publication after all native builds and signing succeed. For example, from reviewed tooling on `main`:
 
-If publication fails after all native builds and signing succeed, dispatch `mode=publish`, `target=all`, `release_tag=vX.Y.Z` and `source_run_id=<original tag run>` from the reviewed recovery tooling on `main`. This reuses the three signed artifacts without rebuilding, moving the tag or changing installers. The workflow validates the original repository, tag SHA, release workflow, successful native/signing jobs and unexpired artifacts, then repeats asset checks and the Feishu human confirmation. Approval records retain the original release SHA and the new run/attempt. Source identity is rechecked before publication; a mismatch fails closed. Do not use `publish` to bypass failed packaging/signing or recover expired artifacts.
+  ```bash
+  gh workflow run release.yml --ref main -f mode=publish -f target=all \
+    -f version=v0.13.0 -f source_run_id=40618960397
+  ```
 
-Popup generation and Chinese-to-English translation use Copilot `--available-tools=` (an empty tool list). `--deny-tool '*'` is rejected by Copilot CLI 1.0.105 before model execution.
+  The workflow validates repository, unchanged tag SHA, original workflow, successful native/signing jobs and unexpired artifacts; reuses the three signed artifacts; repeats asset checks and Feishu human confirmation. Approval binds the original release SHA to the new run/attempt, and source identity is rechecked before publication. It never moves tags or changes installers. Do not use it to bypass failed packaging/signing or recover expired artifacts.
+
+Official releases still start by pushing a `v*` tag. The form is not an alternative to creating the official tag. `target` is honored: macOS-only runs do not build Windows and Windows-only runs do not build macOS.
+
+The former `signed_version`, `prerelease_tag` and `release_tag` fields are now `version`; `unsigned_run_id` is now `source_run_id`. Update saved CLI/API dispatch commands accordingly. The four `windows_*` diagnostic booleans are replaced by `checks=extended`; individual diagnostic toggles are no longer exposed.
+
+Popup generation and Chinese-to-English translation use Copilot `--available-tools=` (empty tool list) and `--disable-builtin-mcps`. A bare `--deny-tool '*'` is rejected by Copilot CLI 1.0.105 before model execution.
 
 ## Release history
 
@@ -25,11 +41,11 @@ An unavailable or malformed existing index, including a 404, fails the publicati
 
 Windows signing depends only on dispatch validation and the Windows build, not on macOS packaging or notarization. Once the unsigned Windows artifact is ready, the UKey signer can run while macOS jobs continue. Native builds start after dispatch validation; there is no separate preparation or validation job. The existing `npm run build` prepares Office/PPT assets and compiles the application. Cache-backed generation avoids paying another runner's checkout/install/transfer overhead for a PPT build measured at about eleven seconds.
 
-Common tests and typecheck run once on a platform already being built: Apple Silicon for `target=all`, release tags and macOS-only dispatch; Windows for Windows-only dispatch and PRs. Intel does not repeat common tests. When macOS owns the common suite, Windows uses `vitest.windows.config.ts` for platform regressions. `windows_full_tests=true` explicitly permits a second full suite on Windows during all-platform diagnosis. The existing full-suite exclusions for expensive document/PPT fidelity tests and the separate PPT font workflow are unchanged.
+Common tests and typecheck run once on a platform already being built: Apple Silicon for `target=all`, release tags and macOS-only dispatch; Windows for Windows-only dispatch and PRs. Intel does not repeat common tests. When macOS owns the common suite, Windows uses `vitest.windows.config.ts` for platform regressions. `checks=extended` explicitly permits a second full suite on Windows during all-platform diagnosis. The existing full-suite exclusions for expensive document/PPT fidelity tests and the separate PPT font workflow are unchanged.
 
 Both macOS architectures and Windows retain native packaging, `verify-target` and afterPack gates. Generated Office templates/PPT assets use a cross-OS cache keyed by source/lockfile inputs; only generated portable assets are shared, never node_modules or a target Python/Office runtime. A cold or stale generated cache is rebuilt by the native build; the existing fingerprints remain authoritative. Parallel cold jobs may each generate assets before the first cache is saved. This is preferable to a permanently serialized extra preparation stage for every build.
 
-The redundant source Harness startup probe is removed. Each package still runs the mandatory afterPack gates for Harness/bootstrap, dependency closure, terminal/speech natives, PPT and Office. The additional Windows desktop launch/workspace/session smoke is distinct from those gates and remains available with `windows_smoke=true`; three-scale recovery UI checks use `windows_recovery_ui=true`. Both switches default to false and apply only to manual dispatch. These extra checks are not scheduled for PRs or release tags; enable them when qualifying startup/recovery/runtime changes. These gates do not establish model-request or real user UI acceptance.
+The redundant source Harness startup probe is removed. Each package still runs the mandatory afterPack gates for Harness/bootstrap, dependency closure, terminal/speech natives, PPT and Office. The additional Windows desktop launch/workspace/session smoke and three-scale recovery UI checks are distinct from those gates; both are enabled by `checks=extended`. Standard validation is the default; extended checks apply only to manual dispatch. These extra checks are not scheduled for PRs or release tags; choose extended validation when qualifying startup/recovery/runtime changes. These gates do not establish model-request or real user UI acceptance.
 
 Office runtime downloads remain cached per native target, separately from generated template/PPT content. Windows checkout disables automatic CRLF conversion before checkout: the Office/PPT fingerprint hashes input bytes, so line-ending conversion would otherwise invalidate shared assets and regenerate previews. Native build jobs restore Electron downloads before `npm ci`; Electron 43's `electron_config_cache` and the builder's `ELECTRON_CACHE` point to the same restored directory. Windows additionally caches electron-builder downloads. Dependency installs keep postinstall enabled, use `--prefer-offline --no-audit --no-fund --timing`, and upload only structured npm timing JSON. The install-time advisory report was informational, not a failing security gate; audit findings should be handled separately from repeated build installs. npm's download cache avoids refetching packages but does not preserve `node_modules` or skip extraction, integrity verification or patch replay. Cache visibility remains scoped by GitHub to the current/default/base branch and platform; an identically named cache on an unrelated feature branch is not reusable. Local `npm test` and `package:*` commands still prepare their own inputs. Already compressed installer artifacts use `compression-level: 0` during upload.
 
@@ -49,6 +65,19 @@ Signed, prerelease and tag builds always archive and validate the unpacked Windo
 
 The packaged smoke runs a separate temporary copy and waits for its process tree to exit. This cleanup is independent of archive input and does not prove the original failure was a file lock. Inspect the reported packing/validation stage and original cause on failure. A successful archive does not establish signing or installer verification success.
 
+## Microphone permissions and voice-input qualification
+
+The permission baseline follows the official Desktop at [f3803c9](https://github.com/deepseek-ai/deepseek-harness/tree/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/apps/desktop): its [microphone handlers](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/apps/desktop/src/microphone-permissions.ts), [entitlements](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/apps/desktop/scripts/macos-entitlements.plist), and [builder configuration](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/apps/desktop/scripts/electron-builder-config.mjs). Desktop grants only audio-only media requests from the secured window's trusted main frame. The legacy loopback renderer must match that window's current origin, including its runtime port. macOS permission checks also require system authorization; requests call `systemPreferences.askForMediaAccess('microphone')` and return false on denial or failure. Other permissions retain our explicit clipboard-write/notifications whitelist rather than upstream's permissive non-media fallback. Camera, screen capture, external pages, subframes, and other session contents are not authorized. The custom shell protocol already has secure-context support and needs no extra privileges.
+
+macOS requires all three layers: Electron permission handlers, a nonempty `NSMicrophoneUsageDescription`, and `com.apple.security.device.audio-input` in the Hardened Runtime signature. Both main-app and helper signing use `build/entitlements.mac.plist`, preserving the pre-existing JIT/native-module flags without adding other device entitlements. The signed notarization path checks the final main and Electron helper signatures plus the generated usage description before submission; missing permissions fail the build. This check does not record audio or prove speech recognition works.
+
+Qualify a newly signed build using an isolated development profile or test machine, without resetting the production profile or system privacy database:
+
+1. On macOS, start with microphone permission not yet decided, click voice input and confirm the OS prompt appears. Allow access, speak, stop, and verify text appears in the draft. Separately deny access and verify the UI reports permission failure; re-enable access in System Settings and retry after restarting if required by macOS.
+2. On Windows, verify audio capture with the OS microphone privacy setting allowed and denied. No macOS authorization API is called there. Native Windows validation cannot be replaced by the policy unit tests.
+3. Confirm camera/mixed requests, external origins, subframes and another window sharing the session remain denied. Changing the loopback port must not grant the previous origin access.
+4. If recording works but no text appears, check input-device selection and speech-provider/model preparation separately. A native permission grant, a successful recording, and a successful transcript are distinct acceptance stages.
+
 ## macOS app notarization retries
 
 App notarization runs in `scripts/notarize-macos.mjs`, an `afterSign` hook that finishes before DMG/ZIP creation. The built-in electron-builder notarization is disabled to avoid duplicate submissions. The hook uses the existing `@electron/notarize` API for submission and acceptance, then recovers stapling failures and validation failures 65/68/69 with up to 6 fresh calls, waiting 10/20/30/40/50/60 seconds and limiting each call to 60 seconds. Retry subprocess timeouts are also retried. Rejected notarization and permanent errors fail immediately; successful stapling must pass `stapler validate`. The later DMG stapling and validation in the release workflow use progressive backoff (up to 6 attempts with 15s/10s increments) across both Apple Silicon and Intel to accommodate Apple CloudKit global replication delays. A network error talking to Apple CloudKit during stapling therefore no longer fails the release job prematurely.
@@ -59,7 +88,7 @@ Windows packaging and signing run as separate jobs. The GitHub-hosted Windows ru
 
 The pinned Windows NSIS template stages the application in a sibling directory before closing the old app, then renames the old directory to a backup and promotes the staged directory. A failed extraction or rename restores the previous installation. The signed installer smoke also locks the old executable to verify that a failed upgrade leaves it runnable. A user-selected different directory is an independent installation: the installer does not automatically uninstall the previous directory, which remains available until the user removes it. Keep the user-selected installation directory when changing this template; the build adapter rejects unexpected upstream template changes.
 
-JavaScript dependencies load from `app.asar`: Harness, pnpm and package commands all run on the Electron runtime, which reads the archive. `asarUnpack` keeps only what the OS loads or executes beside it (native addons and libraries, node-pty's `spawn-helper`, ripgrep, the LibreOffice engine and sherpa-onnx platform packages, and the PPT runtime). node-pty and ripgrep map their binaries to `app.asar.unpacked` themselves; `build/office-engine-resolution.mjs` resolves the LibreOffice engine package there. The macOS ARM64 test package unpacks about 1.6k files (235 MB) instead of about 21k (549 MB). Neither platform ships an independent Node: Windows uses the packaged Electron executable in Node mode, and macOS runs package commands through the app's Helper in Node mode. The locked Electron 43.0.0 is a native-loader supported fingerprint; an earlier Electron 43.4.0 attempt failed during Harness boot even though the Koffi probe passed ([Windows CI evidence](https://github.com/dataelement/dsh-desktop/actions/runs/35972303467)). Qualify any Electron or native-loader change with packaged Windows Harness and final signed-installer gates.
+JavaScript dependencies load from `app.asar`: Harness, pnpm and package commands all run on the Electron runtime, which reads the archive. `asarUnpack` keeps only what the OS loads or executes beside it (native addons and libraries, node-pty's `spawn-helper`, ripgrep, the LibreOffice engine and sherpa-onnx platform packages, and the PPT runtime). node-pty and ripgrep map their binaries to `app.asar.unpacked` themselves; `build/office-engine-resolution.mjs` resolves the LibreOffice engine package there. The macOS ARM64 test package unpacks about 1.6k files (235 MB) instead of about 21k (549 MB). Neither platform ships an independent Node: Windows uses the packaged Electron executable in Node mode, and macOS runs package commands through the app's Helper in Node mode. Electron is now pinned to 44.7.0 and must pass the native-loader and real Harness boot probes on each target platform. An earlier Electron 43.4.0 attempt failed during Harness boot even though the Koffi probe passed ([Windows CI evidence](https://github.com/dataelement/dsh-desktop/actions/runs/35972303467)). Qualify any Electron or native-loader change with packaged Windows Harness and final signed-installer gates.
 
 Prepare the local runner once:
 
@@ -111,7 +140,7 @@ Do not share this application connection with another consumer: Feishu may distr
 callbacks across connections. Formal publishes remain serialized by the existing workflow
 concurrency group. Missing credentials, a failed connection, or a 60-minute approval timeout
 blocks publication. A successful WebSocket connection does not prove the callback subscription
-is enabled; verify that setting in the console before production use.
+is enabled; verify that setting in the console before production use. If card buttons report that callbacks are not configured, open **Callback Configuration** (not Event Configuration), save persistent-connection mode, add **Card callback communication (`card.action.trigger`)**, and publish a new bot app version so the setting takes effect. A local SDK test or a ready WebSocket alone cannot validate this console setting.
 
 After packaging, CI generates `zh` and `en` bullet lists (1–12 lines, at most 1000 characters
 each, matching the card input limit). Invalid generation blocks release; there is no invented
@@ -129,6 +158,13 @@ fallback. The review card initially shows only the bilingual preview and two act
 - **取消** discards edits and restores the original preview; it does not approve release.
 - Empty, malformed or unchanged submissions stay in the editor. Translation failure or
   timeout retains Chinese and offers resubmission; it never silently publishes the old text.
+
+If submit/cancel leaves the card unchanged, check who originally opened the editor: another
+member's actions are ignored. The original editor must cancel before a different member can
+open a new edit. Each Chinese bullet must start with a hyphen followed by a space (`- `).
+The editor fills the available card width. Format errors return an immediate error toast
+and remain visible above the input with the draft preserved; receipt of a callback is not
+reported as successful submission. Translation and publication still run outside the callback.
 
 Callbacks must match the actual chat/message, current revision and optional configured
 reviewer. Event IDs are deduplicated, and revisions change on every transition so old buttons

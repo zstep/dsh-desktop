@@ -27,7 +27,7 @@ function fail(code, status = 409) {
 export function connectionAdapter(consumer) {
   if (!consumer || consumer.status !== 'declared' || !versioned(consumer.version)) return 'needs-adapter'
   if (consumer.adapter === 'desktop-imagegen') return consumer.version === '0.1.0' ? 'desktop-imagegen' : 'needs-adapter'
-  if (consumer.adapter === 'llm-pi-ai') return consumer.version === '0.2.1-rc.3' ? 'already-connected' : 'needs-adapter'
+  if (consumer.adapter === 'llm-pi-ai') return consumer.version === '0.2.2-alpha.2' ? 'already-connected' : 'needs-adapter'
   if (consumer.adapter === 'image-generation') return consumer.version === '0.1.0' ? 'already-connected' : 'needs-adapter'
   if (consumer.adapter !== undefined) return 'needs-adapter'
   return identifier(consumer.id) && !dangerous.has(consumer.id) && Array.isArray(consumer.capabilities) &&

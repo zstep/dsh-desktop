@@ -58,7 +58,9 @@ describe('postinstall patch replay', () => {
       ))
       // Also catch missing EOF metadata that patch-package may tolerate but git rejects.
       await writeFile(file, source)
-      const start = text.indexOf('@@ -344,5 +344,7 @@')
+      const addition = text.indexOf('+export declare function registerHostPreparation')
+      expect(addition).toBeGreaterThan(-1)
+      const start = text.lastIndexOf('@@ -', addition)
       expect(start).toBeGreaterThan(-1)
       const end = text.indexOf('diff --git ', start)
       const isolated = `diff --git a/${target} b/${target}\n--- a/${target}\n+++ b/${target}\n${text.slice(start, end)}`

@@ -3,7 +3,8 @@ import { createRequire } from 'node:module'
 import { join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isAlias, isMap, isScalar, isSeq, parseDocument } from 'yaml'
-import { composeEntries, PROFILE_TEMPLATES, readDisabledProfileBundles } from '@deepseek-ai/dsh-app-boot'
+import { composeEntries, readDisabledProfileBundles } from '@deepseek-ai/dsh-app-boot'
+import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
 import { readModelServiceConsumerDeclaration, type ModelServiceCapability, type ModelServiceConsumerDeclaration } from '../../shared/model-service'
 import { readEffectiveDisabledHostPlugins } from './host-plugin-selection'
 import { SAFE_MODE_PROFILE } from './safe-mode-profile'
@@ -49,7 +50,7 @@ interface StaticSource {
 }
 
 const ADAPTERS = new Map<string, { version: string; adapter: ReviewedAdapter; capabilities: ModelServiceCapability[] }>([
-  ['@deepseek-ai/dsh-llm-pi-ai', { version: '0.2.1-rc.3', adapter: 'llm-pi-ai', capabilities: ['chat.completions'] }],
+  ['@deepseek-ai/dsh-llm-pi-ai', { version: '0.2.2-alpha.2', adapter: 'llm-pi-ai', capabilities: ['chat.completions'] }],
   ['dsh-desktop-imagegen', { version: '0.1.0', adapter: 'desktop-imagegen', capabilities: ['chat.completions', 'image.generate'] }],
   ['dsh-image-generation', { version: '0.1.0', adapter: 'image-generation', capabilities: ['image.generate'] }]
 ])
@@ -220,7 +221,7 @@ async function inspectCandidate(candidate: Candidate): Promise<ModelServiceConsu
     if (!adapter && !declaration) {
       // Reviewed runtime bundles compose infrastructure, not model consumers.
       // Never hide declarations or unknown/replaced versions of these packages.
-      if (resolved.installationOwned && pkg.version === '0.2.1-rc.3' &&
+      if (resolved.installationOwned && pkg.version === '0.2.2-alpha.2' &&
         ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'].includes(candidate.id)) return undefined
       return ADAPTERS.has(candidate.id) || candidate.showUnsupported
         ? { id: candidate.id, version: pkg.version, status: 'needs-adapter', capabilities: [] }
