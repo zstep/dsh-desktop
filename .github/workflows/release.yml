@@ -1129,7 +1129,8 @@ jobs:
             exit 0
           fi
           python3 -m venv "$RUNNER_TEMP/oss-env"
-          "$RUNNER_TEMP/oss-env/bin/pip" install -q boto3
+          # Aliyun OSS rejects boto3>=1.36 flexible-checksum aws-chunked trailer (STREAMING-UNSIGNED-PAYLOAD-TRAILER).
+          "$RUNNER_TEMP/oss-env/bin/pip" install -q "boto3<1.36"
           "$RUNNER_TEMP/oss-env/bin/python3" scripts/mirror-to-oss.py \
             --directory release-assets --version "${RELEASE_TAG#v}"
 

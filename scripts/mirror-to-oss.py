@@ -19,6 +19,10 @@ served from dshdesktop.com (this mirror only feeds the public download page).
 Credentials reuse the same S3 environment as open-webui's STORAGE_PROVIDER=s3:
     S3_ENDPOINT_URL, S3_REGION_NAME, S3_BUCKET_NAME, S3_ACCESS_KEY_ID,
     S3_SECRET_ACCESS_KEY, and optional S3_ADDRESSING_STYLE.
+
+boto3 must be <1.36: Aliyun OSS rejects the flexible-checksum aws-chunked
+trailer (STREAMING-UNSIGNED-PAYLOAD-TRAILER) that newer botocore emits for
+multipart PutObject/UploadPart, and a 300 MB+ DMG always uploads multipart.
 """
 
 import argparse
