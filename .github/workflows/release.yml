@@ -369,9 +369,9 @@ jobs:
           name: ${{ matrix.artifact }}-dev
           retention-days: 3
           path: |
-            dist-dev/dsh-desktop-dev-mac-${{ matrix.arch }}.dmg
-            dist-dev/dsh-desktop-dev-mac-${{ matrix.arch }}.zip
-            dist-dev/dsh-desktop-dev-mac-${{ matrix.arch }}.zip.blockmap
+            dist-dev/pengbao-ai-dev-mac-${{ matrix.arch }}.dmg
+            dist-dev/pengbao-ai-dev-mac-${{ matrix.arch }}.zip
+            dist-dev/pengbao-ai-dev-mac-${{ matrix.arch }}.zip.blockmap
           compression-level: 0
           if-no-files-found: error
 
@@ -477,7 +477,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.windows_smoke == true
         shell: pwsh
         env:
-          SMOKE_EXE: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'signed' || inputs.mode == 'prerelease'))) && 'dist\win-unpacked\DSH Desktop.exe' || 'dist-dev\win-unpacked\DSH Desktop Dev.exe' }}
+          SMOKE_EXE: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'signed' || inputs.mode == 'prerelease'))) && 'dist\win-unpacked\DSH Desktop.exe' || 'dist-dev\win-unpacked\Pengbao AI Dev.exe' }}
           SMOKE_USERDATA: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'signed' || inputs.mode == 'prerelease'))) && 'dsh-desktop' || 'dsh-desktop-dev' }}
         run: |
           $userData = Join-Path $env:APPDATA $env:SMOKE_USERDATA
@@ -529,7 +529,7 @@ jobs:
             $endpoint = $null
             while ((Get-Date) -lt $deadline) {
               if ($desktop.HasExited) {
-                throw "DSH Desktop Dev exited before Harness was ready (exit code $($desktop.ExitCode))."
+                throw "Desktop app exited before Harness was ready (exit code $($desktop.ExitCode))."
               }
               if (Test-Path $logPath) {
                 $log = Get-Content -Raw $logPath
@@ -598,7 +598,7 @@ jobs:
               throw 'Harness process exited after workspace and session creation.'
             }
             if ($desktop.HasExited) {
-              throw "DSH Desktop Dev exited after workspace and session creation (exit code $($desktop.ExitCode))."
+              throw "Desktop app exited after workspace and session creation (exit code $($desktop.ExitCode))."
             }
             Write-Host 'Packaged Windows Harness smoke test passed.'
           } finally {
@@ -666,8 +666,8 @@ jobs:
           name: windows-x64-dev
           retention-days: 3
           path: |
-            dist-dev/dsh-desktop-dev-windows-x64-setup.exe
-            dist-dev/dsh-desktop-dev-windows-x64-setup.exe.blockmap
+            dist-dev/pengbao-ai-dev-windows-x64-setup.exe
+            dist-dev/pengbao-ai-dev-windows-x64-setup.exe.blockmap
             dist-dev/latest.yml
           compression-level: 0
           if-no-files-found: error

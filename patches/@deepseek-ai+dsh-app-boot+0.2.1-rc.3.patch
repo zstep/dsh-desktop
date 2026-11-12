@@ -121,7 +121,7 @@ index 39401ea..0d6a319 100644
 +	// Keep this allowlist bound to installation source URLs and empty config.
 +	// All other command-line/home overrides keep their existing priority.
 +	const editableDefaults = new Map();
-+	for (const [id, name] of [["dsh-desktop-model-service", "dsh-desktop-model-service"]]) try { editableDefaults.set(id, pathToFileURL(createRequire(context.installAnchor).resolve(name)).href); } catch {}
++	for (const [id, name] of [["imagegen", "dsh-desktop-imagegen"], ["dsh-desktop-model-service", "dsh-desktop-model-service"]]) try { editableDefaults.set(id, pathToFileURL(createRequire(context.installAnchor).resolve(name)).href); } catch {}
 +	const defaults = [];
 +	const overlays = context.overlays.map((patch) => {
 +		if (patch.id !== void 0 || !Array.isArray(patch.insert)) return patch;

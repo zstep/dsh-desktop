@@ -68,4 +68,21 @@ describe('postinstall patch replay', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  it('keeps imagegen preparation wired and its authoritative patch content in sync', async () => {
+    const scripts = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8')).scripts as Record<string, string>
+    expect(scripts['imagegen:prepare']).toBe('node scripts/prepare-imagegen.mjs')
+    for (const name of ['dev', 'build', 'pretest', 'pretest:watch']) {
+      expect(scripts[name]).toContain('npm run imagegen:prepare')
+    }
+    // The derived client is gitignored, so every build/test path must generate it.
+    const appBoot = await readFile(patchPath('@deepseek-ai/dsh-app-boot'), 'utf8')
+    expect(appBoot).toContain('[["imagegen", "dsh-desktop-imagegen"], ["dsh-desktop-model-service", "dsh-desktop-model-service"]]')
+    const imagegen = await readFile(patchPath('@dickpy/dsh-imagegen'), 'utf8')
+    for (const marker of ['applyWithHost', 'managedParameterInvalid', 'HOST_CHANNEL_ID']) {
+      expect(imagegen).toContain(marker)
+    }
+    const prepare = await readFile(path.join(projectRoot, 'scripts/prepare-imagegen.mjs'), 'utf8')
+    expect(prepare).toContain("adapter.includes('HOST_CHANNEL_ID')")
+  })
 })

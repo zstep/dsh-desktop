@@ -24,8 +24,9 @@
   ],
   "scripts": {
     "postinstall": "patch-package && node scripts/install-brand-assets.mjs && install-electron --no",
-    "dev": "npm run office:prepare && npm run ppt:build && electron-vite dev",
-    "build": "npm run brand:generate && npm run icons:generate && npm run loader:generate && npm run office:prepare && npm run ppt:build && electron-vite build",
+    "imagegen:prepare": "node scripts/prepare-imagegen.mjs",
+    "dev": "npm run imagegen:prepare && npm run office:prepare && npm run ppt:build && electron-vite dev",
+    "build": "npm run imagegen:prepare && npm run brand:generate && npm run icons:generate && npm run loader:generate && npm run office:prepare && npm run ppt:build && electron-vite build",
     "brand:generate": "node scripts/generate-brand-assets.mjs",
     "icons:generate": "node scripts/generate-app-icons.mjs",
     "loader:generate": "node scripts/generate-loader-gifs.mjs",
@@ -43,8 +44,8 @@
     "package:mac:x64": "node scripts/verify-target.mjs darwin x64 && npm run build && electron-builder --mac --x64 --publish never",
     "package:win": "node scripts/verify-target.mjs win32 x64 && npm run build && node scripts/electron-builder-windows.mjs --win --x64 --publish never",
     "ppt:build": "node scripts/prepare-ppt-runtime.mjs",
-    "pretest": "npm run office:prepare && npm run ppt:build",
-    "pretest:watch": "npm run office:prepare && npm run ppt:build",
+    "pretest": "npm run imagegen:prepare && npm run office:prepare && npm run ppt:build",
+    "pretest:watch": "npm run imagegen:prepare && npm run office:prepare && npm run ppt:build",
     "office:prepare": "node scripts/office-runtime/prepare.mjs && node scripts/office-runtime/prepare-templates.mjs"
   },
   "dependencies": {

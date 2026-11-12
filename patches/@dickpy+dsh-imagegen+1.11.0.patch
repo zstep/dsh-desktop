@@ -1,5 +1,4 @@
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dickpy/dsh-imagegen/lib/client.js
-index 54f01f1..b4d0a90 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/client.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/client.js
 @@ -915,6 +915,17 @@ window.__ModuleLoader__.load({
@@ -38,7 +37,16 @@ index 54f01f1..b4d0a90 100644
  			"settings.promptModel": "Chat model",
  			"settings.promptModelHint": "Select or enter a model supporting /chat/completions.",
  			"settings.promptModelDetectionHint": "Uses the image API by default. Detect and select one model.",
-@@ -44695,13 +44717,19 @@ window.__ModuleLoader__.load({
+@@ -3655,6 +3677,8 @@ window.__ModuleLoader__.load({
+ 				}))).task;
+ 			}
+ 			async taskRetry(id) {
++                const previous = await this.taskGet(id);
++                if (previous.request.channelId === "desktop-managed" && !window.confirm(managedCopy[activeImageGenLanguage() === "zh" ? "zh" : "en"].retry)) return previous;
+ 				return (await readEnvelope(await fetch(TASK_API.retry, {
+ 					method: "POST",
+ 					headers: { "content-type": "application/json" },
+@@ -44695,13 +44719,19 @@ window.__ModuleLoader__.load({
  		*/
  		/** Resolve a selection against the current groups, keeping the preferred channel when possible. */
  		function resolveModelChoice(groups, value, preferredChannelId) {
@@ -59,7 +67,7 @@ index 54f01f1..b4d0a90 100644
  		function ModelPicker(props) {
  			const resolved = resolveModelChoice(props.groups, props.value);
  			const [open, setOpen] = (0, react.useState)(false);
-@@ -44828,7 +44856,9 @@ window.__ModuleLoader__.load({
+@@ -44828,7 +44858,9 @@ window.__ModuleLoader__.load({
  							});
  							setOpen(false);
  						},
@@ -70,7 +78,7 @@ index 54f01f1..b4d0a90 100644
  					}, model)),
  					(draftGroup?.models.length ?? 0) === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
  						className: model_picker_module_css_default.empty,
-@@ -44843,10 +44873,10 @@ window.__ModuleLoader__.load({
+@@ -44843,10 +44875,10 @@ window.__ModuleLoader__.load({
  				"data-variant": props.variant ?? "panel",
  				"data-open": open ? "" : void 0,
  				disabled: props.disabled === true || props.groups.length === 0,
@@ -83,7 +91,7 @@ index 54f01f1..b4d0a90 100644
  				onClick: toggle,
  				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
  					className: model_picker_module_css_default.value,
-@@ -44862,7 +44892,7 @@ window.__ModuleLoader__.load({
+@@ -44862,7 +44894,7 @@ window.__ModuleLoader__.load({
  						}),
  						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
  							className: model_picker_module_css_default.model,
@@ -92,7 +100,7 @@ index 54f01f1..b4d0a90 100644
  						})
  					]
  				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-@@ -54247,6 +54277,7 @@ window.__ModuleLoader__.load({
+@@ -54247,6 +54279,7 @@ window.__ModuleLoader__.load({
  					if (writable !== void 0) draft.writable = writable;
  					draft.status = "ready";
  					draft.value = view.value;
@@ -100,7 +108,7 @@ index 54f01f1..b4d0a90 100644
  				});
  				const secretSets = Object.fromEntries((view.secrets ?? []).map((secret) => [secret.path.join("."), secret.set]));
  				this.keySet.set(Object.values(secretSets).some(Boolean));
-@@ -54293,6 +54324,7 @@ window.__ModuleLoader__.load({
+@@ -54293,6 +54326,7 @@ window.__ModuleLoader__.load({
  				return models.length === 0 ? [] : [{
  					id: channel.id,
  					name: channel.name.trim() || channel.id,
@@ -108,10 +116,39 @@ index 54f01f1..b4d0a90 100644
  					models
  				}];
  			});
-@@ -55028,11 +55060,36 @@ window.__ModuleLoader__.load({
+@@ -55028,11 +55062,65 @@ window.__ModuleLoader__.load({
  			return CONFIG_WIDTH_DEFAULT;
  		}
  		/** Read the current config from the settings scope snapshot. */
++/** Explicit capability selection only; never infer capabilities from model names. */
++function managedParameters(image, model) {
++  const contract = image?.generationParameters
++  const id = model === image?.id ? image?.defaultModel?.id : model
++  const capability = contract?.contractVersion === 1 && /^[a-f0-9]{64}$/.test(contract.revision)
++    ? contract.models?.find((entry) => entry.id === id) : undefined
++  return { maxImages: capability?.maxImages ?? 1, qualities: capability?.qualities ?? ['auto'], details: capability?.details ?? [''],
++    ...(capability ? { parameterContractVersion: 1, parameterRevision: contract.revision } : {}) }
++}
++function managedParameterInvalid(parameters, n, quality, detail) {
++  return !Number.isInteger(n) || n < 1 || n > parameters.maxImages || !parameters.qualities.includes(quality) || !parameters.details.includes(detail)
++}
++const managedCopy = {
++  zh: {
++    manage: '管理模型底座', legacy: '当前模型未声明高级参数能力，仅支持单张、自动质量与默认细节。',
++    declared: '仅启用服务明确声明的参数。质量为供应商质量级别，不代表固定 1K / 2K / 4K；比例按兼容像素尺寸近似转换，实际支持由模型决定。',
++    invalid: '模型或能力已改变，当前数量、质量或细节不受支持。请明确重新选择；不会静默降档或发送请求。',
++    retry: '这是一次新的生图请求，上一请求可能已生成并计费。重新提交可能重复计费，确认继续？',
++    diagnostic: '复制安全诊断', auto: '自动', low: '低质量', medium: '中质量', high: '高质量'
++  },
++  en: {
++    manage: 'Manage model foundation', legacy: 'This model has no declared advanced parameters. Only one image, automatic quality and default detail are supported.',
++    declared: 'Only declared options are enabled. Provider quality does not guarantee 1K / 2K / 4K. Aspect ratios use approximate compatible pixel sizes; actual support depends on the model.',
++    invalid: 'The model or capability changed. These count, quality or detail values are unsupported. Select them explicitly again; no silent fallback or request is sent.',
++    retry: 'This is a NEW generation request. The previous request may have generated images and incurred charges. Resubmitting may charge again. Continue?',
++    diagnostic: 'Copy safe diagnostics', auto: 'Automatic', low: 'Low quality', medium: 'Medium quality', high: 'High quality'
++  }
++}
++
 +		function managedModelChoice(config) {
 +			const id = config?.desktopImageModelId;
 +			if (id === void 0 || id === "") return "desktop-managed";
@@ -149,7 +186,7 @@ index 54f01f1..b4d0a90 100644
  			return value;
  		}
  		/** Track one redacted secret field without exposing its value to the panel. */
-@@ -55378,14 +55435,14 @@ window.__ModuleLoader__.load({
+@@ -55378,14 +55466,14 @@ window.__ModuleLoader__.load({
  					window.clearInterval(timer);
  				};
  			}, [active, subscriptionChannelsKey]);
@@ -166,7 +203,7 @@ index 54f01f1..b4d0a90 100644
  			const [tab, setTab] = (0, react.useState)("text");
  			const [workspace, setWorkspace] = (0, react.useState)("normal");
  			const [pptImport, setPptImport] = (0, react.useState)();
-@@ -55401,6 +55458,7 @@ window.__ModuleLoader__.load({
+@@ -55401,6 +55489,7 @@ window.__ModuleLoader__.load({
  			const [canvasImportRequest, setCanvasImportRequest] = (0, react.useState)();
  			/** Switch to a normal-generation tab, leaving any task workspace. */
  			const openTab = (next) => {
@@ -174,7 +211,7 @@ index 54f01f1..b4d0a90 100644
  				setWorkspace("normal");
  				setTab(next);
  			};
-@@ -55417,8 +55475,13 @@ window.__ModuleLoader__.load({
+@@ -55417,8 +55506,13 @@ window.__ModuleLoader__.load({
  			const [quality, setQuality] = (0, react.useState)("auto");
  			const [count, setCount] = (0, react.useState)(1);
  			const [detail, setDetail] = (0, react.useState)("");
@@ -190,7 +227,7 @@ index 54f01f1..b4d0a90 100644
  			const [compareEnabled, setCompareEnabled] = (0, react.useState)(false);
  			/** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
  			const [compareModels, setCompareModels] = (0, react.useState)([]);
-@@ -55600,7 +55663,7 @@ window.__ModuleLoader__.load({
+@@ -55600,7 +55694,7 @@ window.__ModuleLoader__.load({
  			const sidebarHistoryHost = useSidebarHistoryHost();
  			const modeGroups = tab === "edit" ? modelGroups.map((group) => ({
  				...group,
@@ -199,7 +236,7 @@ index 54f01f1..b4d0a90 100644
  			})).filter((group) => group.models.length > 0) : modelGroups;
  			const modeModels = [...new Set(modeGroups.flatMap((group) => group.models))];
  			const previewStage = (0, react.useRef)(null);
-@@ -55630,6 +55693,7 @@ window.__ModuleLoader__.load({
+@@ -55630,6 +55724,7 @@ window.__ModuleLoader__.load({
  			}, []);
  			(0, react.useEffect)(() => {
  				if (ecommerceAnchor === null) return;
@@ -207,7 +244,7 @@ index 54f01f1..b4d0a90 100644
  				const anchor = ecommerceAnchor;
  				const mains = tasks.filter((task) => anchor.mainTaskIds.includes(task.id));
  				if (mains.length === 0) return;
-@@ -55661,9 +55725,10 @@ window.__ModuleLoader__.load({
+@@ -55661,9 +55756,10 @@ window.__ModuleLoader__.load({
  				ecommerceAnchor
  			]);
  			(0, react.useEffect)(() => {
@@ -220,7 +257,7 @@ index 54f01f1..b4d0a90 100644
  					model: preferred
  				}, defaultChannelId);
  				setModel(selected.model);
-@@ -55677,7 +55742,7 @@ window.__ModuleLoader__.load({
+@@ -55677,7 +55773,7 @@ window.__ModuleLoader__.load({
  					if (retained.length > 0) return retained;
  					return selected.model === "" ? [] : [modelChoiceKey(selected)];
  				});
@@ -229,7 +266,16 @@ index 54f01f1..b4d0a90 100644
  			const filteredGallery = gallery.filter((entry) => {
  				if (galleryFilter === "all") return true;
  				if (galleryFilter === "text" || galleryFilter === "edit") return entry.mode === galleryFilter;
-@@ -55780,6 +55845,7 @@ window.__ModuleLoader__.load({
+@@ -55760,7 +55856,7 @@ window.__ModuleLoader__.load({
+ 								if (completed?.result !== void 0) {
+ 									setImages(completed.result.images);
+ 									if (completed.result.history !== void 0) setHistory(completed.result.history);
+-									setError(completed.result.historyError ?? null);
++									setError(completed.result.partialMessage ?? completed.result.historyError ?? null);
+ 								}
+ 								return next;
+ 							});
+@@ -55780,6 +55876,7 @@ window.__ModuleLoader__.load({
  				};
  			}, [api, comparison]);
  			(0, react.useEffect)(() => {
@@ -237,7 +283,7 @@ index 54f01f1..b4d0a90 100644
  				let disposed = false;
  				let checking = false;
  				const check = () => {
-@@ -55817,6 +55883,7 @@ window.__ModuleLoader__.load({
+@@ -55817,6 +55914,7 @@ window.__ModuleLoader__.load({
  				return () => window.removeEventListener("pointerdown", close, true);
  			}, [updateOpen]);
  			const applyUpdate = async () => {
@@ -245,7 +291,7 @@ index 54f01f1..b4d0a90 100644
  				if (update === null || updating) return;
  				setUpdating(true);
  				setUpdateMessage(null);
-@@ -55915,6 +55982,7 @@ window.__ModuleLoader__.load({
+@@ -55915,6 +56013,7 @@ window.__ModuleLoader__.load({
  			*  refs cap at MAX_ECOMMERCE_ASSETS; the style group holds a single image
  			*  that gets replaced on re-upload. */
  			const acceptEcommerceFiles = (files, role = "product") => {
@@ -253,15 +299,16 @@ index 54f01f1..b4d0a90 100644
  				if (files === void 0) return;
  				const incoming = Array.from(files).filter((file) => file.type.startsWith("image/") && file.size <= REF_IMAGE_MAX_BYTES);
  				if (incoming.length === 0) {
-@@ -55956,6 +56024,7 @@ window.__ModuleLoader__.load({
+@@ -55956,6 +56055,8 @@ window.__ModuleLoader__.load({
  			};
  			/** Run one generation. */
  			const handleGenerate = async () => {
-+				if (managedSelected && (tab === "edit" || count !== 1 || !["", "auto"].includes(quality) || detail !== "")) { setError(tt("settings.hostUnsupported")); return; }
++				if (managedSelected && (tab === "edit" || parameterInvalid)) { setError(parameterReason); return; }
++                if (managedSelected && tasks.some(task => task.request.channelId === "desktop-managed" && ["failed", "cancelled"].includes(task.status)) && !window.confirm(parameterCopy.retry)) return;
  				if (submitting || tab === "edit" && editReferences.reading) return;
  				if (!enabled) {
  					openSettingsGuide("disabled");
-@@ -55965,7 +56034,11 @@ window.__ModuleLoader__.load({
+@@ -55965,7 +56066,11 @@ window.__ModuleLoader__.load({
  					channelId: modelChannelId,
  					model
  				}, defaultChannelId);
@@ -274,7 +321,15 @@ index 54f01f1..b4d0a90 100644
  					openSettingsGuide("generation");
  					return;
  				}
-@@ -56033,12 +56106,17 @@ window.__ModuleLoader__.load({
+@@ -55984,6 +56089,7 @@ window.__ModuleLoader__.load({
+ 					size,
+ 					quality,
+ 					n: count,
++                    ...(managedSelected && parameterOptions.parameterRevision ? { parameterContractVersion: 1, parameterRevision: parameterOptions.parameterRevision } : {}),
+ 					detail,
+ 					...tab === "edit" && editReferences.images.length > 0 ? {
+ 						image: editReferences.images[0].dataUrl,
+@@ -56033,12 +56139,17 @@ window.__ModuleLoader__.load({
  				}
  			};
  			const handleEcommerceGenerate = async () => {
@@ -293,17 +348,33 @@ index 54f01f1..b4d0a90 100644
  					openSettingsGuide("generation");
  					return;
  				}
-@@ -56545,10 +56623,16 @@ window.__ModuleLoader__.load({
+@@ -56166,6 +56277,7 @@ window.__ModuleLoader__.load({
+ 					setEcommercePreview(false);
+ 					setError(null);
+ 					setViewingHistoryId(entry.id);
++                    if (entry.complete === false) setError(`仅保存 ${entry.images.length}/${entry.requested ?? entry.n} 张；部分图片未生成或下载失败。`);
+ 					setGalleryViewingId(null);
+ 				} catch (caught) {
+ 					setError(errorMessage(caught));
+@@ -56269,6 +56381,7 @@ window.__ModuleLoader__.load({
+ 					setComparison(null);
+ 					setError(null);
+ 					setViewingHistoryId(entry.id);
++                    if (entry.complete === false) setError(`仅保存 ${entry.images.length}/${entry.requested ?? entry.n} 张；部分图片未生成或下载失败。`);
+ 					setGalleryViewingId(null);
+ 				} catch (caught) {
+ 					setError(errorMessage(caught));
+@@ -56545,10 +56658,16 @@ window.__ModuleLoader__.load({
  			}, defaultChannelId)]).filter((choice) => modeGroups.some((group) => group.id === choice.channelId && group.models.includes(choice.model)));
  			const editLimit = editTargetChoices.length > 0 ? Math.min(...editTargetChoices.map(referenceLimitForChoice)) : 5;
  			const referencePolicyWarning = tab === "edit" && editReferences.images.length > editLimit ? tt("edit.modelLimit", { count: editLimit }) : null;
 -			const generateDisabled = submitting || modeModels.length === 0 || promptOverLimit || tab === "edit" && (editReferences.reading || referencePolicyWarning !== null);
 +			const managedSelected = config?.host?.image?.active === true && modelChannelId === config.host.image.id;
-+			(0, react.useEffect)(() => {
-+				if (!managedSelected) return;
-+				setQuality("auto"); setCount(1); setDetail("");
-+			}, [managedSelected]);
-+			const generateDisabled = managedSelected && (tab === "edit" || count !== 1 || !["", "auto"].includes(quality) || detail !== "") || submitting || modeModels.length === 0 || promptOverLimit || tab === "edit" && (editReferences.reading || referencePolicyWarning !== null);
++            const parameterOptions = managedParameters(config?.host?.image, model);
++            const parameterInvalid = managedSelected && managedParameterInvalid(parameterOptions, count, quality, detail);
++            const parameterCopy = managedCopy[activeImageGenLanguage() === "zh" ? "zh" : "en"];
++            const parameterReason = parameterInvalid ? parameterCopy.invalid : parameterOptions.parameterRevision ? parameterCopy.declared : parameterCopy.legacy;
++			const generateDisabled = managedSelected && (tab === "edit" || parameterInvalid) || submitting || modeModels.length === 0 || promptOverLimit || tab === "edit" && (editReferences.reading || referencePolicyWarning !== null);
  			const ecommerceSlots = ecommerce.slots.filter((slot) => slot.enabled && slot.count > 0);
  			const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0);
 -			const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === "" || ecommerce.language === "custom" && effectiveEcommerceLanguage(ecommerce) === "";
@@ -312,7 +383,7 @@ index 54f01f1..b4d0a90 100644
  			const ecommerceFileInput = (0, react.useRef)(null);
  			/** Which group (主图/风格) the shared file input uploads into. */
  			const ecommerceUploadRoleRef = (0, react.useRef)("product");
-@@ -56715,6 +56799,7 @@ window.__ModuleLoader__.load({
+@@ -56715,6 +56834,7 @@ window.__ModuleLoader__.load({
  				}
  			};
  			const addPreviewToEdit = () => {
@@ -320,7 +391,7 @@ index 54f01f1..b4d0a90 100644
  				if (previewImage === null || preview === null) return;
  				openTab("edit");
  				setError(null);
-@@ -57364,9 +57449,9 @@ window.__ModuleLoader__.load({
+@@ -57364,9 +57484,9 @@ window.__ModuleLoader__.load({
  															children: tt("mode.text")
  														}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  															active: tab === "edit",
@@ -333,7 +404,7 @@ index 54f01f1..b4d0a90 100644
  															className: panel_module_css_default.modePill,
  															children: tt("mode.edit")
  														})]
-@@ -57427,6 +57512,8 @@ window.__ModuleLoader__.load({
+@@ -57427,6 +57547,8 @@ window.__ModuleLoader__.load({
  																	type: "button",
  																	className: panel_module_css_default.ecommerceAssetAdd,
  																	"data-ecommerce-upload": "",
@@ -342,7 +413,7 @@ index 54f01f1..b4d0a90 100644
  																	title: tt("ecommerce.uploadRef"),
  																	onClick: () => {
  																		ecommerceUploadRoleRef.current = "product";
-@@ -57448,6 +57535,8 @@ window.__ModuleLoader__.load({
+@@ -57448,6 +57570,8 @@ window.__ModuleLoader__.load({
  																type: "button",
  																className: panel_module_css_default.ecommerceUploadHero,
  																"data-ecommerce-upload": "",
@@ -351,7 +422,7 @@ index 54f01f1..b4d0a90 100644
  																onClick: () => {
  																	ecommerceUploadRoleRef.current = "product";
  																	ecommerceFileInput.current?.click();
-@@ -57523,6 +57612,8 @@ window.__ModuleLoader__.load({
+@@ -57523,6 +57647,8 @@ window.__ModuleLoader__.load({
  																	type: "button",
  																	className: panel_module_css_default.ecommerceAssetAdd,
  																	"data-ecommerce-upload": "",
@@ -360,7 +431,7 @@ index 54f01f1..b4d0a90 100644
  																	title: tt("ecommerce.styleRefUpload"),
  																	onClick: () => {
  																		ecommerceUploadRoleRef.current = "style";
-@@ -57748,6 +57839,7 @@ window.__ModuleLoader__.load({
+@@ -57748,6 +57874,7 @@ window.__ModuleLoader__.load({
  																			value: slot.refRole ?? "product",
  																			"data-ecommerce-ref-select": "",
  																			"aria-label": `${tt("ecommerce.refSelect")} · ${slot.label}`,
@@ -368,7 +439,7 @@ index 54f01f1..b4d0a90 100644
  																			onChange: (value) => setEcommerce((previous) => ({
  																				...previous,
  																				slots: previous.slots.map((item) => item.key === slot.key ? {
-@@ -57771,6 +57863,7 @@ window.__ModuleLoader__.load({
+@@ -57771,6 +57898,7 @@ window.__ModuleLoader__.load({
  															className: panel_module_css_default.ecommerceSection,
  															children: [
  																/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: tt("ecommerce.generation") }),
@@ -376,7 +447,7 @@ index 54f01f1..b4d0a90 100644
  																/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ModelPicker, {
  																	groups: modeGroups,
  																	value: {
-@@ -57783,17 +57876,16 @@ window.__ModuleLoader__.load({
+@@ -57783,20 +57911,20 @@ window.__ModuleLoader__.load({
  																	emptyLabel: tt("model.noEditModels"),
  																	ariaLabel: tt("model.label"),
  																	disabled: submitting,
@@ -388,8 +459,10 @@ index 54f01f1..b4d0a90 100644
  																}),
  																/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
  																	className: panel_module_css_default.optionRow,
- 																	children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+-																	children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
++																	children: (managedSelected ? ["auto", "low", "medium", "high"] : QUALITIES).map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																		active: quality === option,
++                            "data-testid": `imagegen-quality-${option}`,
 +																		disabled: managedSelected,
 +																		title: managedSelected ? tt("settings.hostUnsupported") : void 0,
  																		onClick: () => {
@@ -397,32 +470,61 @@ index 54f01f1..b4d0a90 100644
 +																			if (!managedSelected) setQuality(option);
  																		},
  																		className: panel_module_css_default.optionPill,
- 																		children: tt(`quality.${option}`)
-@@ -57884,6 +57976,7 @@ window.__ModuleLoader__.load({
+-																		children: tt(`quality.${option}`)
++																		children: managedSelected ? parameterCopy[option] : tt(`quality.${option}`)
+ 																	}, option))
+ 																})
+ 															]
+@@ -57860,7 +57988,11 @@ window.__ModuleLoader__.load({
+ 													children: [
+ 														/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+ 															className: panel_module_css_default.paramGroup,
+-															children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
++															children: [
++                managedSelected ? (0, react_jsx_runtime.jsxs)("div", { children: [
++                  (0, react_jsx_runtime.jsx)("p", { role: "status", "data-managed-parameter-status": "", children: parameterReason }),
++                  (0, react_jsx_runtime.jsx)("button", { type: "button", "data-testid": "imagegen-model-service-shortcut", onClick: () => window.dispatchEvent(new Event("dsh-desktop-model-service:open")), children: parameterCopy.manage })
++                ] }) : null,/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+ 																className: panel_module_css_default.paramLabel,
+ 																children: tt("params.size")
+ 															}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+@@ -57882,13 +58014,15 @@ window.__ModuleLoader__.load({
+ 																children: tt("params.quality")
+ 															}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
  																className: panel_module_css_default.optionRow,
- 																children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
+-																children: QUALITIES.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
++																children: (managedSelected ? ["auto", "low", "medium", "high"] : QUALITIES).map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																	active: quality === option,
-+																	disabled: managedSelected && option !== "auto",
++                            "data-testid": `imagegen-quality-${option}`,
++																	disabled: managedSelected && !parameterOptions.qualities.includes(option),
  																	onClick: () => {
  																		setQuality(option);
  																	},
-@@ -57906,6 +57999,7 @@ window.__ModuleLoader__.load({
+ 																	className: panel_module_css_default.optionPill,
+-																	children: tt(`quality.${option}`)
++																	children: managedSelected ? parameterCopy[option] : tt(`quality.${option}`)
+ 																}, option))
+ 															})]
+ 														}),
+@@ -57906,6 +58040,8 @@ window.__ModuleLoader__.load({
  																	4
  																].map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																	active: count === option,
-+																	disabled: managedSelected && option !== 1,
++                            "data-testid": `imagegen-count-${option}`,
++																	disabled: managedSelected && option > parameterOptions.maxImages,
  																	onClick: () => {
  																		setCount(option);
  																	},
-@@ -57925,6 +58019,7 @@ window.__ModuleLoader__.load({
+@@ -57925,6 +58061,8 @@ window.__ModuleLoader__.load({
  																	className: panel_module_css_default.optionRow,
  																	children: DETAILS.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
  																		active: detail === option,
-+																		disabled: managedSelected && option !== "",
++                            "data-testid": `imagegen-detail-${option || "auto"}`,
++																		disabled: managedSelected && !parameterOptions.details.includes(option),
  																		onClick: () => {
  																			setDetail(option);
  																		},
-@@ -58017,10 +58112,7 @@ window.__ModuleLoader__.load({
+@@ -58017,10 +58155,7 @@ window.__ModuleLoader__.load({
  														emptyLabel: tt("model.noEditModels"),
  														ariaLabel: tt("model.label"),
  														disabled: submitting,
@@ -434,7 +536,7 @@ index 54f01f1..b4d0a90 100644
  													})]
  												}) : null,
  												isGeneration ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-@@ -58049,14 +58141,15 @@ window.__ModuleLoader__.load({
+@@ -58049,14 +58184,15 @@ window.__ModuleLoader__.load({
  																	model: option
  																});
  																return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
@@ -452,7 +554,7 @@ index 54f01f1..b4d0a90 100644
  																}, key);
  															})]
  														}, group.id || "__default__"))
-@@ -58092,7 +58185,7 @@ window.__ModuleLoader__.load({
+@@ -58092,7 +58228,7 @@ window.__ModuleLoader__.load({
  									defaultChannelId,
  									connected,
  									connectedChannelIds,
@@ -461,7 +563,21 @@ index 54f01f1..b4d0a90 100644
  									history,
  									gallery,
  									tasks,
-@@ -59240,6 +59333,8 @@ window.__ModuleLoader__.load({
+@@ -58647,10 +58783,11 @@ window.__ModuleLoader__.load({
+ 															},
+ 															children: tt("tasks.retry")
+ 														}) : null,
+-														task.error !== void 0 && task.error !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
++														task.result?.complete === false ? (0, react_jsx_runtime.jsxs)("div", { role: "status", "data-testid": "imagegen-partial-result", children: [task.result.partialMessage, ...(task.result.failures ?? []).map(failure => (0, react_jsx_runtime.jsxs)("p", { children: [`#${failure.index + 1} · ${failure.code}`, failure.diagnostic ? (0, react_jsx_runtime.jsx)("button", { type: "button", "data-testid": "imagegen-copy-diagnostic", onClick: () => { void navigator.clipboard.writeText(JSON.stringify(failure.diagnostic, null, 2)).catch(() => {}); }, children: parameterCopy.diagnostic }) : null] }, failure.index))] }) : null,
++                                                        task.error !== void 0 && task.error !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+ 															className: panel_module_css_default.taskError,
+ 															role: "status",
+-															children: task.error
++															children: [task.error, task.diagnostic ? (0, react_jsx_runtime.jsx)("button", { type: "button", "data-testid": "imagegen-copy-diagnostic", onClick: () => { void navigator.clipboard.writeText(JSON.stringify(task.diagnostic, null, 2)).catch(() => {}); }, children: parameterCopy.diagnostic }) : null]
+ 														}) : null
+ 													]
+ 												}, task.id))
+@@ -59240,6 +59377,8 @@ window.__ModuleLoader__.load({
  													type: "button",
  													className: panel_module_css_default.lightboxEdit,
  													onClick: addPreviewToEdit,
@@ -470,7 +586,7 @@ index 54f01f1..b4d0a90 100644
  													children: tt("preview.addToEdit")
  												}),
  												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
-@@ -60618,6 +60713,8 @@ window.__ModuleLoader__.load({
+@@ -60618,6 +60757,8 @@ window.__ModuleLoader__.load({
  					booleanField("enabled"),
  					booleanField("announceToAgent"),
  					booleanField("allowAgentImageGeneration"),
@@ -479,7 +595,7 @@ index 54f01f1..b4d0a90 100644
  					textField("promptApiUrl"),
  					secretField("promptApiKey"),
  					textField("promptModel"),
-@@ -60648,6 +60745,9 @@ window.__ModuleLoader__.load({
+@@ -60648,6 +60789,9 @@ window.__ModuleLoader__.load({
  					enabled: this.form.field("enabled"),
  					announceToAgent: this.form.field("announceToAgent"),
  					allowAgentImageGeneration: this.form.field("allowAgentImageGeneration"),
@@ -489,17 +605,18 @@ index 54f01f1..b4d0a90 100644
  					promptApiUrl: this.form.field("promptApiUrl"),
  					promptApiKey: this.form.field("promptApiKey"),
  					promptModel: this.form.field("promptModel"),
-@@ -60750,6 +60850,33 @@ window.__ModuleLoader__.load({
+@@ -60750,6 +60894,34 @@ window.__ModuleLoader__.load({
  		* @param props - locale copy, the card snapshot, and the form actions.
  		* @returns the card, or nothing while the namespace is still loading.
  		*/
 +		function HostServiceField(props) {
 +			const { service, field, label, disabled, onChange, t } = props;
++            const copy = managedCopy[activeImageGenLanguage() === "zh" ? "zh" : "en"];
 +			if (!service) return null;
 +			return (0, react_jsx_runtime.jsxs)("div", {
 +				className: settings_card_module_css_default.field,
 +				"data-dsh-imagegen-host-service": props.kind,
-+				children: [
++				children: [(0, react_jsx_runtime.jsx)("button", { type: "button", "data-testid": "imagegen-model-service-shortcut", onClick: () => window.dispatchEvent(new Event("dsh-desktop-model-service:open")), children: copy.manage }),
 +					(0, react_jsx_runtime.jsxs)("label", { children: [
 +						(0, react_jsx_runtime.jsx)("span", { className: settings_card_module_css_default.label, children: label }),
 +						(0, react_jsx_runtime.jsx)("select", {
@@ -523,7 +640,7 @@ index 54f01f1..b4d0a90 100644
  		function ImageGenSettingsSection(props) {
  			const t = tt;
  			useImageGenLanguageTick();
-@@ -61087,16 +61214,16 @@ window.__ModuleLoader__.load({
+@@ -61087,16 +61259,16 @@ window.__ModuleLoader__.load({
  			const editing = editingId === null ? void 0 : channels.find((channel) => channel.id === editingId);
  			const readyChannels = channels.filter((channel) => state.channels.keySet[channel.id] === true && channel.models.length > 0).length;
  			const totalModels = channels.reduce((total, channel) => total + channel.models.length, 0);
@@ -544,7 +661,7 @@ index 54f01f1..b4d0a90 100644
  				channels: channels.length,
  				models: totalModels
  			});
-@@ -61222,7 +61349,11 @@ window.__ModuleLoader__.load({
+@@ -61222,7 +61394,11 @@ window.__ModuleLoader__.load({
  								onToggle: () => {
  									setActiveSection(activeSection === "channels" ? null : "channels");
  								},
@@ -557,7 +674,7 @@ index 54f01f1..b4d0a90 100644
  									className: settings_card_module_css_default.channelEmpty,
  									children: t("channels.empty")
  								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-@@ -61415,6 +61546,11 @@ window.__ModuleLoader__.load({
+@@ -61415,6 +61591,11 @@ window.__ModuleLoader__.load({
  									setActiveSection(activeSection === "prompt" ? null : "prompt");
  								},
  								children: [
