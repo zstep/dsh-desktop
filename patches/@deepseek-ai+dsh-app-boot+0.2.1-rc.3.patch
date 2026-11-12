@@ -249,13 +249,14 @@ index 81323a0..7aacd3a 100644
  export { ResolutionRestartRequired } from './profile-resolution/resolver.ts';
  /**
 @@ -344,5 +344,7 @@
- * mounted, `plugin tree failed to load` afterwards. Cyclic causes terminate
- * diagnostic traversal without replacing the original cause.
- */
+  * mounted, `plugin tree failed to load` afterwards. Cyclic causes terminate
+  * diagnostic traversal without replacing the original cause.
+  */
  export declare function boot(binName: string, absoluteConfigPath: string, patches?: PatchOptions[], prepare?: (ctx: Context) => Promise<void> | void, bareModuleBaseUrl?: string): Promise<Context>;
 +/** Register asynchronous host setup run after `prepare` but before config entries mount. */
 +export declare function registerHostPreparation(callback: (ctx: Context) => Promise<void> | void): () => void;
  //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts b/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts
 index 9594009..caa9718 100644
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/types/plugin-compatibility.d.ts

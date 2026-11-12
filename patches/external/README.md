@@ -1,6 +1,6 @@
 # 外部插件兼容补丁
 
-这里保存不属于 Desktop npm 依赖的可选插件补丁。它们不参与根目录 `patch-package` postinstall；仅重新打包 Desktop 不会修复用户已安装的插件。
+这里保存不属于 Desktop npm 依赖的可选插件补丁，使用 `.diff` 后缀，避免被 `patch-package` 递归识别为 Desktop 依赖补丁。它们不参与根目录 postinstall；仅重新打包 Desktop 不会修复用户已安装的插件。
 
 ## dsh-hyperframes 0.11.3：npm 定位
 

@@ -60,7 +60,7 @@ beforeAll(async () => {
   const root = await temporaryRoot()
   const path = await file(join(root, 'lib/media-workbench.js'), imports + '\n'.repeat(12) + originalLookup)
   const apply = (...args: string[]) => {
-    const result = spawnSync('git', ['apply', ...args, join(project, 'patches/external/dsh-hyperframes+0.11.3.patch')], {
+    const result = spawnSync('git', ['apply', ...args, join(project, 'patches/external/dsh-hyperframes+0.11.3.diff')], {
       cwd: root, encoding: 'utf8'
     })
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0)
