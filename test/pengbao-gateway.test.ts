@@ -99,7 +99,7 @@ describe('Pengbao gateway', () => {
     expect(result.status).toBe(200)
     expect(result.body).toBe(sse)
     expect(seen.url).toBe('/api/v1/chat/completions')
-    expect(seen.body).toEqual({ model: 'm', messages, tools: [] })
+    expect(seen.body).toEqual({ model: 'm', messages, tools: [], features: { memory: true } })
     expect(seen.headers?.authorization).toBe('Bearer private-jwt')
     expect(seen.headers?.['x-secret']).toBeUndefined()
     expect(seen.headers?.cookie).toBeUndefined()
@@ -123,7 +123,7 @@ describe('Pengbao gateway', () => {
       res.end('{"choices":[]}')
     })
     expect((await request(gateway, chat({ model: 'vision', messages }))).status).toBe(200)
-    expect(forwarded).toEqual({ model: 'vision', messages, tools: [] })
+    expect(forwarded).toEqual({ model: 'vision', messages, tools: [], features: { memory: true } })
     expect((await request(gateway, { method: 'POST', path: '/v1/images/generations', body: '{}' })).status).toBe(401)
   })
 
