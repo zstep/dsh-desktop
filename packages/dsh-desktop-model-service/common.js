@@ -15,6 +15,10 @@ const MESSAGES = Object.freeze({
   CANCELLED: 'Model service operation was cancelled.', DISPOSED: 'Model service scope has ended.',
   BUSY: 'Model service is busy. Try again later.', FAILED: 'Model service request failed.',
   IMAGE_TIMEOUT_UNKNOWN: 'Image generation returned HTTP 504. The timeout source is unknown. The server may still complete and charge for this request. This request will not be retried automatically.',
+  IMAGE_PROVIDER_AUTH: 'Image provider authentication failed; this is an administrator configuration issue.',
+  IMAGE_PROVIDER_REJECTED: 'The image generation service rejected the request; the underlying cause is unavailable.',
+  IMAGE_FETCH: 'The image was generated but could not be retrieved. The request may still have been charged.',
+  IMAGE_STORE: 'The image was generated but could not be saved. The request may still have been charged.',
   IMAGE_PARAMETERS_UNSUPPORTED: 'Image parameters are unsupported or have changed. Refresh model capabilities.',
   IMAGE_TIMEOUT: 'The local image generation deadline expired. The server may still complete generation and you may be charged for the image. This request will not be retried automatically.',
   IMAGE_UPSTREAM_TIMEOUT: 'Image generation returned HTTP 504 (upstream timeout). The server may still complete generation and you may be charged for the image. This request will not be retried automatically.',
@@ -32,7 +36,7 @@ export class ModelServiceError extends Error {
 export function fail(code) { throw new ModelServiceError(code) }
 // Translate only known bridge codes; never reflect transport messages, causes or URLs.
 const IMAGE_ERRORS = Object.freeze({
-  IMAGE_DISABLED: 'FORBIDDEN', IMAGE_FORBIDDEN: 'FORBIDDEN', IMAGE_AUTH: 'UNAUTHENTICATED',
+  IMAGE_PROVIDER_AUTH: 'FAILED', IMAGE_PROVIDER_REJECTED: 'IMAGE_PROVIDER_REJECTED', IMAGE_FETCH: 'IMAGE_FETCH', IMAGE_STORE: 'IMAGE_STORE',
   IMAGE_NETWORK: 'UNAVAILABLE', IMAGE_TIMEOUT_UNKNOWN: 'IMAGE_TIMEOUT_UNKNOWN', IMAGE_PARAMETERS_UNSUPPORTED: 'IMAGE_PARAMETERS_UNSUPPORTED', IMAGE_TIMEOUT: 'IMAGE_TIMEOUT', IMAGE_UPSTREAM_TIMEOUT: 'IMAGE_UPSTREAM_TIMEOUT',
   IMAGE_RESPONSE: 'INVALID_RESPONSE', IMAGE_TOO_LARGE: 'TOO_LARGE', IMAGE_INVALID_REQUEST: 'INVALID_REQUEST',
   IMAGE_BUSY: 'BUSY', IMAGE_REVOKED: 'IMAGE_REVOKED', CANCELLED: 'IMAGE_CANCELLED', IMAGE_MODEL_UNSUPPORTED: 'UNSUPPORTED',

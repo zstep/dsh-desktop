@@ -179,6 +179,23 @@ it.each(['IMAGE_MODEL_UNSUPPORTED', 'IMAGE_MODEL_UNAVAILABLE'])('returns a safe 
   await expect(module.getDesktopImageBridge().generate('PRIVATE_PROMPT', { model: 'chosen' })).rejects.toMatchObject({ code, status: 400, message: expect.not.stringMatching(/PRIVATE_PROMPT|aaaa/) })
 })
 
+it.each([
+  ['IMAGE_PROVIDER_AUTH', 502],
+  ['IMAGE_PROVIDER_REJECTED', 502],
+  ['IMAGE_FETCH', 502],
+  ['IMAGE_STORE', 502],
+])('preserves safe generation classification %s without provider text', async (code, status) => {
+  const requestId = `pb-${'e'.repeat(32)}`
+  const diagnostic = { requestId, stage: 'generation', code, elapsedMs: 41, upstreamStatus: 400,
+    backend: { phase: code === 'IMAGE_FETCH' ? 'image-fetch' : code === 'IMAGE_STORE' ? 'store' : 'provider-response', elapsedMs: 19, providerStatus: 400 }, secret: token }
+  const gatewayUrl = await server((_req, res) => {
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: { code, message: `${token} PRIVATE_PROMPT`, diagnostic } }))
+  })
+  const module = await registry(); module.registerDesktopImageBridge({ gatewayUrl, capabilityToken: token })
+  await expect(module.getDesktopImageBridge().generate('PRIVATE_PROMPT')).rejects.toMatchObject({ code, status, diagnostic: expect.objectContaining({ code, backend: expect.any(Object) }), message: expect.not.stringMatching(/PRIVATE_PROMPT|aaaa/) })
+})
+
 it('distinguishes an upstream HTTP 504 from the local deadline without retrying', async () => {
   let calls = 0
   const gatewayUrl = await server((_req, res) => {

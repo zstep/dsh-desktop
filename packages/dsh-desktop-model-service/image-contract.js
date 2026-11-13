@@ -30,11 +30,15 @@ export function validateImageParameters(contract, modelId, input) {
   return model
 }
 const STAGES = ['status', 'catalog', 'generation', 'descriptor', 'download', 'bitmap']
-const CODES = ['IMAGE_DISABLED', 'IMAGE_FORBIDDEN', 'IMAGE_AUTH', 'IMAGE_NETWORK', 'IMAGE_TIMEOUT', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_TIMEOUT_UNKNOWN', 'IMAGE_RESPONSE', 'IMAGE_TOO_LARGE', 'IMAGE_INVALID_REQUEST', 'IMAGE_BUSY', 'IMAGE_REVOKED', 'IMAGE_MODEL_UNSUPPORTED', 'IMAGE_MODEL_UNAVAILABLE', 'IMAGE_PARAMETERS_UNSUPPORTED']
+const CODES = ['IMAGE_DISABLED', 'IMAGE_FORBIDDEN', 'IMAGE_AUTH', 'IMAGE_NETWORK', 'IMAGE_TIMEOUT', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_TIMEOUT_UNKNOWN', 'IMAGE_RESPONSE', 'IMAGE_TOO_LARGE', 'IMAGE_INVALID_REQUEST', 'IMAGE_BUSY', 'IMAGE_REVOKED', 'IMAGE_MODEL_UNSUPPORTED', 'IMAGE_MODEL_UNAVAILABLE', 'IMAGE_PARAMETERS_UNSUPPORTED', 'IMAGE_PROVIDER_AUTH', 'IMAGE_PROVIDER_REJECTED', 'IMAGE_FETCH', 'IMAGE_STORE']
+const BACKEND_PHASES = ['provider-request', 'provider-response', 'image-fetch', 'store']
 export function imageDiagnostic(value) {
   if (!object(value) || typeof value.requestId !== 'string' || !/^pb-[a-f0-9]{32}$/.test(value.requestId) || !STAGES.includes(value.stage) || !CODES.includes(value.code) ||
     !Number.isSafeInteger(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 86_400_000 ||
-    (value.upstreamStatus !== undefined && (!Number.isSafeInteger(value.upstreamStatus) || value.upstreamStatus < 100 || value.upstreamStatus > 599))) return undefined
+    (value.upstreamStatus !== undefined && (!Number.isSafeInteger(value.upstreamStatus) || value.upstreamStatus < 100 || value.upstreamStatus > 599)) ||
+    (value.backend !== undefined && (!object(value.backend) || !BACKEND_PHASES.includes(value.backend.phase) || !Number.isSafeInteger(value.backend.elapsedMs) || value.backend.elapsedMs < 0 || value.backend.elapsedMs > 86_400_000 ||
+      (value.backend.providerStatus !== undefined && (!Number.isSafeInteger(value.backend.providerStatus) || value.backend.providerStatus < 100 || value.backend.providerStatus > 599)))) ) return undefined
   return { requestId: value.requestId, stage: value.stage, code: value.code, elapsedMs: value.elapsedMs,
-    ...(value.upstreamStatus === undefined ? {} : { upstreamStatus: value.upstreamStatus }) }
+    ...(value.upstreamStatus === undefined ? {} : { upstreamStatus: value.upstreamStatus }),
+    ...(value.backend === undefined ? {} : { backend: { phase: value.backend.phase, elapsedMs: value.backend.elapsedMs, ...(value.backend.providerStatus === undefined ? {} : { providerStatus: value.backend.providerStatus }) } }) }
 }

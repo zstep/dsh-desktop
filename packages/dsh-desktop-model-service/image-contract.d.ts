@@ -9,12 +9,18 @@ export interface ImageParameterContract {
   revision: string
   models: ImageParameterModel[]
 }
+export interface ImageBackendDiagnostic {
+  phase: 'provider-request' | 'provider-response' | 'image-fetch' | 'store'
+  elapsedMs: number
+  providerStatus?: number
+}
 export interface ImageDiagnostic {
   requestId: string
   stage: 'status' | 'catalog' | 'generation' | 'descriptor' | 'download' | 'bitmap'
   code: string
   elapsedMs: number
   upstreamStatus?: number
+  backend?: ImageBackendDiagnostic
 }
 export const IMAGE_BATCH_BYTES: number
 export const IMAGE_MAX_COUNT: number

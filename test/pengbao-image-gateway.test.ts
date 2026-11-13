@@ -147,6 +147,31 @@ describe('Pengbao image gateway parameter batches', () => {
     await expectError(await request(gateway, lease.capabilityToken, BATCH, input), 400, 'IMAGE_PARAMETERS_UNSUPPORTED')
     expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
   })
+  it('classifies a structured provider rejection without calling it an invalid image payload', async () => {
+    const requestId = `pb-${'d'.repeat(32)}`
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === GENERATE) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: {
+          type: 'image_generation_error', contractVersion: 1, requestId,
+          code: 'IMAGE_PROVIDER_REJECTED', phase: 'provider-response', elapsedMs: 42, providerStatus: 400
+        } }))
+        return
+      }
+      defaults(req, res)
+    })
+    await expectError(await request(gateway, lease.capabilityToken), 502, 'IMAGE_PROVIDER_REJECTED')
+    expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
+  })
+  it('maps an untyped generation 400 to a neutral provider rejection', async () => {
+    const { gateway, lease } = await fixture((req, res) => {
+      if (req.url === GENERATE) { res.writeHead(400, { 'content-type': 'text/plain' }); res.end('secret provider body'); return }
+      defaults(req, res)
+    })
+    const response = await request(gateway, lease.capabilityToken)
+    expect(response.status).toBe(502)
+    expect((await response.json()).error).toMatchObject({ code: 'IMAGE_PROVIDER_REJECTED', message: expect.stringContaining('rejected') })
+  })
   it('refuses undeclared capabilities without breaking the legacy single-image path', async () => {
     const { gateway, lease, seen } = await fixture((req, res) => req.url === METADATA ? metadata(res, null) : defaults(req, res))
     // An explicit empty declaration authorizes no overrides.

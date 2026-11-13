@@ -367,7 +367,7 @@ export function createModelService({ llm, getBindings = () => ({}), signal, tran
               return { index: item.index, data: Buffer.from(item.data), mime: item.mime }
             })
             const failures = result.failures.map(item => {
-              if (!record(item) || !['IMAGE_RESPONSE', 'IMAGE_NETWORK', 'IMAGE_TOO_LARGE', 'IMAGE_TIMEOUT', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_TIMEOUT_UNKNOWN', 'IMAGE_AUTH', 'IMAGE_FORBIDDEN', 'IMAGE_REVOKED', 'IMAGE_BUSY'].includes(item.code)) fail('INVALID_RESPONSE')
+              if (!record(item) || !['IMAGE_RESPONSE', 'IMAGE_NETWORK', 'IMAGE_TOO_LARGE', 'IMAGE_TIMEOUT', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_TIMEOUT_UNKNOWN', 'IMAGE_AUTH', 'IMAGE_FORBIDDEN', 'IMAGE_REVOKED', 'IMAGE_BUSY', 'IMAGE_PROVIDER_AUTH', 'IMAGE_PROVIDER_REJECTED', 'IMAGE_FETCH', 'IMAGE_STORE'].includes(item.code)) fail('INVALID_RESPONSE')
               const diagnostic = imageDiagnostic(item.diagnostic)
               return { index: index(item.index), code: item.code, ...(diagnostic?.code === item.code ? { diagnostic } : {}) }
             })

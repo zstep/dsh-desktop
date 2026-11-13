@@ -15,7 +15,13 @@ export interface PengbaoImageLease {
 type ImageReason = 'available' | 'disabled' | 'forbidden' | 'unauthenticated' | 'unavailable'
 type ImageErrorCode = 'IMAGE_DISABLED' | 'IMAGE_FORBIDDEN' | 'IMAGE_AUTH' | 'IMAGE_NETWORK' | 'IMAGE_TIMEOUT' | 'IMAGE_UPSTREAM_TIMEOUT' |
   'IMAGE_RESPONSE' | 'IMAGE_TOO_LARGE' | 'IMAGE_INVALID_REQUEST' | 'IMAGE_BUSY' | 'IMAGE_REVOKED' |
-  'IMAGE_MODEL_UNSUPPORTED' | 'IMAGE_MODEL_UNAVAILABLE' | 'IMAGE_PARAMETERS_UNSUPPORTED'
+  'IMAGE_MODEL_UNSUPPORTED' | 'IMAGE_MODEL_UNAVAILABLE' | 'IMAGE_PARAMETERS_UNSUPPORTED' | 'IMAGE_PROVIDER_AUTH' | 'IMAGE_PROVIDER_REJECTED' | 'IMAGE_FETCH' | 'IMAGE_STORE'
+
+export interface PengbaoImageBackendDiagnostic {
+  phase: 'provider-request' | 'provider-response' | 'image-fetch' | 'store'
+  elapsedMs: number
+  providerStatus?: number
+}
 
 export interface PengbaoImageFailure {
   requestId: string
@@ -23,6 +29,7 @@ export interface PengbaoImageFailure {
   code: ImageErrorCode
   elapsedMs: number
   upstreamStatus?: number
+  backend?: PengbaoImageBackendDiagnostic
 }
 
 type ImageCatalog = {
@@ -35,6 +42,7 @@ type ImageCatalog = {
 type ImageInput = { prompt: string; size?: string; model?: string; n?: number; quality?: string; detail?: string; response_format?: string; parameterContractVersion?: number; parameterRevision?: string }
 
 class ImageFailure extends Error {
+  backend?: PengbaoImageBackendDiagnostic
   constructor(readonly status: number, readonly code: ImageErrorCode, readonly upstreamStatus?: number) { super(code) }
 }
 
@@ -220,11 +228,22 @@ function downloadPath(value: unknown): string {
   return descriptor.url as string
 }
 
+function imageBackendDiagnostic(value: unknown, requestId: string, code: ImageErrorCode): PengbaoImageBackendDiagnostic | undefined {
+  const row = record(value)
+  if (!row || row.type !== 'image_generation_error' || row.contractVersion !== 1 || row.requestId !== requestId ||
+    !['provider-request', 'provider-response', 'image-fetch', 'store'].includes(row.phase as string) || row.code !== code ||
+    !Number.isSafeInteger(row.elapsedMs) || row.elapsedMs < 0 || row.elapsedMs > 86_400_000 ||
+    (row.providerStatus !== undefined && (!Number.isSafeInteger(row.providerStatus) || row.providerStatus < 100 || row.providerStatus > 599))) return undefined
+  return { phase: row.phase as PengbaoImageBackendDiagnostic['phase'], elapsedMs: row.elapsedMs as number,
+    ...(row.providerStatus === undefined ? {} : { providerStatus: row.providerStatus as number }) }
+}
+
 function bitmapMatches(body: Buffer, type: string): boolean {
   return type === 'image/png' ? body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) :
     type === 'image/jpeg' ? body.length >= 3 && body[0] === 255 && body[1] === 216 && body[2] === 255 :
       type === 'image/webp' && body.length >= 12 && body.toString('ascii', 0, 4) === 'RIFF' && body.toString('ascii', 8, 12) === 'WEBP'
 }
+
 
 function inlineBitmap(value: unknown): { data: Buffer; type: 'image/png' | 'image/jpeg' | 'image/webp' } | undefined {
   const row = record(value)
@@ -282,22 +301,36 @@ export function createImageGateway(options: {
     signal.throwIfAborted()
     if (allowMissing && !response.redirected && response.type !== 'opaqueredirect' && [404, 405].includes(response.status)) return response
     if (response.redirected || response.type === 'opaqueredirect' || !response.ok) {
-      if (body?.parameterContractVersion === 1 && !response.redirected && response.type !== 'opaqueredirect' && [400, 409].includes(response.status)) {
+      let structured: ImageFailure | undefined
+      if (body && !response.redirected && response.type !== 'opaqueredirect' && response.status >= 400 && response.status <= 599 && response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'application/json') {
         try {
-          const rejection = record(await json(response, signal))
-          const code = record(rejection?.detail)?.code
-          if (code === 'IMAGE_MODEL_UNAVAILABLE') throw new ImageFailure(400, 'IMAGE_MODEL_UNAVAILABLE', response.status)
-          if (typeof code === 'string' && ['IMAGE_PARAMETER_CONTRACT_UNSUPPORTED', 'IMAGE_PARAMETER_REVISION_STALE', 'IMAGE_PARAMETER_CAPABILITIES_UNAVAILABLE', 'IMAGE_PARAMETERS_INVALID', 'IMAGE_PARAMETER_CONFIG_CONFLICT'].includes(code)) throw new ImageFailure(400, 'IMAGE_PARAMETERS_UNSUPPORTED', response.status)
+          const payload = record(await json(response, signal, 16 * 1024))
+          const detail = record(payload?.error) ?? record(payload?.detail)
+          const code = detail?.code
+          const allowed = ['IMAGE_PROVIDER_AUTH', 'IMAGE_PROVIDER_REJECTED', 'IMAGE_BUSY', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_NETWORK', 'IMAGE_FETCH', 'IMAGE_STORE', 'IMAGE_RESPONSE']
+          if (typeof code === 'string' && allowed.includes(code)) {
+            const backend = imageBackendDiagnostic(detail, correlation.get(signal) ?? '', code as ImageErrorCode)
+            if (backend) {
+              structured = new ImageFailure(response.status === 429 ? 429 : response.status === 504 ? 504 : 502, code as ImageErrorCode, response.status)
+              structured.backend = backend
+            }
+          }
+          const contractCode = record(payload?.detail)?.code
+          if (body.parameterContractVersion === 1 && [400, 409].includes(response.status)) {
+            if (contractCode === 'IMAGE_MODEL_UNAVAILABLE') throw new ImageFailure(400, 'IMAGE_MODEL_UNAVAILABLE', response.status)
+            if (typeof contractCode === 'string' && ['IMAGE_PARAMETER_CONTRACT_UNSUPPORTED', 'IMAGE_PARAMETER_REVISION_STALE', 'IMAGE_PARAMETER_CAPABILITIES_UNAVAILABLE', 'IMAGE_PARAMETERS_INVALID', 'IMAGE_PARAMETER_CONFIG_CONFLICT'].includes(contractCode)) throw new ImageFailure(400, 'IMAGE_PARAMETERS_UNSUPPORTED', response.status)
+          }
         } catch (error) {
-          if (signal.aborted || (error instanceof ImageFailure && ['IMAGE_MODEL_UNAVAILABLE', 'IMAGE_PARAMETERS_UNSUPPORTED'].includes(error.code))) throw error
+          if (signal.aborted || error instanceof ImageFailure) throw error
         }
       }
       void response.body?.cancel().catch(() => { /* Never expose upstream errors or redirect bodies. */ })
+      if (structured) throw structured
       if (response.status === 401) throw new ImageFailure(401, 'IMAGE_AUTH', response.status)
       if (response.status === 403) throw new ImageFailure(403, 'IMAGE_FORBIDDEN', response.status)
       if (response.status === 429) throw new ImageFailure(429, 'IMAGE_BUSY', response.status)
       if (response.status === 504) throw new ImageFailure(504, 'IMAGE_UPSTREAM_TIMEOUT', response.status)
-      throw new ImageFailure(502, response.status >= 500 ? 'IMAGE_NETWORK' : 'IMAGE_RESPONSE', response.status)
+      throw new ImageFailure(502, response.status >= 500 ? 'IMAGE_NETWORK' : response.status === 400 && body ? 'IMAGE_PROVIDER_REJECTED' : 'IMAGE_RESPONSE', response.status)
     }
     return response
   }
@@ -379,7 +412,8 @@ export function createImageGateway(options: {
       const requestId = `pb-${randomBytes(16).toString('hex')}`
       let stage: PengbaoImageFailure['stage'] = isModels ? 'catalog' : isGenerate || isBatch ? 'generation' : 'status'
       const diagnostic = (failure: ImageFailure): PengbaoImageFailure => ({ requestId, stage, code: failure.code, elapsedMs: Date.now() - started,
-        ...(failure.upstreamStatus === undefined ? {} : { upstreamStatus: failure.upstreamStatus }) })
+        ...(failure.upstreamStatus === undefined ? {} : { upstreamStatus: failure.upstreamStatus }),
+        ...(failure.backend === undefined ? {} : { backend: failure.backend }) })
       const report = (failure: ImageFailure) => {
         try {
           options.onFailure?.(diagnostic(failure))
