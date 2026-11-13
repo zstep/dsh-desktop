@@ -284,7 +284,7 @@ describe('private Harness child message handoff', () => {
   it('sends a tool-call request and its correlated result through the real pi-ai adapter and gateway', async () => {
     const calls: { method: string; body?: Record<string, unknown>; auth?: string }[] = []
     const gateway = await startPengbaoGateway({
-      jwt: 'private-jwt',
+      jwt: 'private-jwt', timeoutMs: 100, chatIdleTimeoutMs: 500, chatMaxDurationMs: 5000,
       fetch: async (input, init) => {
         const url = new URL(String(input))
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
@@ -292,7 +292,16 @@ describe('private Harness child message handoff', () => {
         if (url.pathname.endsWith('/models')) return Response.json({ data: [{ id: 'known-tools-model' }] })
         const messages = body?.messages as Array<Record<string, unknown>> | undefined
         if (messages?.some(message => message.role === 'tool')) {
-          return new Response('data: {"choices":[{"delta":{"content":"tool result received"}}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+          return new Response(new ReadableStream<Uint8Array>({
+            async start(controller) {
+              for (const text of ['tool ', 'result ', 'received']) {
+                await new Promise(resolve => setTimeout(resolve, 60))
+                controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`))
+              }
+              controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+              controller.close()
+            }
+          }), { headers: { 'content-type': 'text/event-stream' } })
         }
         return new Response('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_local_file","arguments":"{\\"path\\":\\"notes.txt\\"}"}}]}}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
       }
@@ -340,8 +349,9 @@ describe('private Harness child message handoff', () => {
         createMessage({ role: 'tool', source: { kind: 'tool', callId: ToolCallId('call_1') }, toolCallId: ToolCallId('call_1'), content: [{ type: 'text', text: 'file contents' }] })
       ]
     })) second.push(chunk)
-    expect(second.some(chunk => chunk.type === 'text-delta' && chunk.text === 'tool result received')).toBe(true)
+    expect(second.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join('')).toBe('tool result received')
     expect(calls).toHaveLength(2)
+    expect(calls.every(call => call.auth === 'Bearer private-jwt' && JSON.stringify(call.body?.features) === '{"memory":true}')).toBe(true)
     expect(calls[0]?.auth).toBe('Bearer private-jwt')
     expect(calls[0]?.body?.tools).toEqual([expect.objectContaining({ function: expect.objectContaining({ name: 'read_local_file' }) })])
     expect(calls[1]?.body?.messages).toEqual(expect.arrayContaining([

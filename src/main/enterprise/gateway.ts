@@ -17,7 +17,7 @@ const IMAGE_FAMILY = /^(?:gpt-image(?:-|$)|dall-e(?:-|$)|imagen(?:-|$)|flux(?:[.
 
 export interface PengbaoGatewayFailure {
   requestId: string
-  kind: 'upstream-http' | 'upstream-response' | 'transport' | 'timeout' | 'cancelled'
+  kind: 'upstream-http' | 'upstream-response' | 'transport' | 'timeout' | 'cancelled' | 'request-size'
   upstreamRoute?: 'config' | 'models' | 'image-metadata'
   upstreamStatus?: number
   elapsedMs: number
@@ -27,6 +27,10 @@ export interface PengbaoGatewayFailure {
   firstByteMs?: number
   lastByteMs?: number
   abortReason?: 'deadline' | 'downstream' | 'revoked'
+  timeoutStage?: 'preflight' | 'upstream-idle' | 'chat-total' | 'downstream-blocked'
+  requestBytes?: number
+  maxBodyBytes?: number
+  sizeSource?: 'declared' | 'received'
   transportCode?: 'UND_ERR_SOCKET' | 'UND_ERR_CONNECT_TIMEOUT' | 'UND_ERR_HEADERS_TIMEOUT' | 'UND_ERR_BODY_TIMEOUT' | 'ECONNRESET' | 'ECONNREFUSED' | 'EPIPE' | 'ENOTFOUND' | 'EAI_AGAIN'
 }
 
@@ -55,7 +59,10 @@ export interface PengbaoGatewayOptions {
   fetch?: typeof fetch
   maxBodyBytes?: number
   maxConcurrent?: number
+  /** Request ingestion/preflight and metadata deadline; not a chat response deadline. */
   timeoutMs?: number
+  chatIdleTimeoutMs?: number
+  chatMaxDurationMs?: number
   imageTimeoutMs?: number
   imageMaxConcurrent?: number
   onFailure?: (failure: PengbaoGatewayFailure) => void
@@ -87,6 +94,10 @@ export interface PengbaoModelServiceGrant {
 
 class RequestFailure extends Error {
   constructor(readonly status: number, readonly upstreamStatus?: number) { super('Gateway request failed') }
+}
+
+class BodySizeFailure extends RequestFailure {
+  constructor(readonly requestBytes: number, readonly sizeSource: 'declared' | 'received') { super(413) }
 }
 
 function displayText(value: unknown): value is string {
@@ -146,7 +157,7 @@ async function readBody(req: IncomingMessage, limit: number, signal: AbortSignal
     const abort = () => error(signal.reason instanceof RequestFailure ? signal.reason : new RequestFailure(504))
     const data = (part: Buffer) => {
       size += part.length
-      if (size > limit) { req.pause(); error(new RequestFailure(413)); return }
+      if (size > limit) { req.pause(); error(new BodySizeFailure(size, 'received')); return }
       chunks.push(part)
     }
     const end = () => {
@@ -194,9 +205,15 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
   const maxBody = options.maxBodyBytes ?? 1_048_576
   const maxConcurrent = options.maxConcurrent ?? 4
   const timeout = options.timeoutMs ?? 120_000
+  const chatIdleTimeout = options.chatIdleTimeoutMs ?? 300_000
+  const chatMaxDuration = options.chatMaxDurationMs ?? 3_600_000
   const imageTimeout = options.imageTimeoutMs ?? IMAGE_GATEWAY_TIMEOUT_MS
   const imageMaxConcurrent = options.imageMaxConcurrent ?? 2
-  for (const limit of [maxBody, maxConcurrent, timeout, imageTimeout, imageMaxConcurrent]) {
+  for (const limit of [timeout, chatIdleTimeout, chatMaxDuration, imageTimeout]) {
+    // Node clamps overflowing timer delays to 1ms; reject rather than silently cut streams.
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 2_147_483_647) throw new Error('Invalid gateway limit')
+  }
+  for (const limit of [maxBody, maxConcurrent, imageMaxConcurrent]) {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('Invalid gateway limit')
   }
   const upstreamFetch = options.fetch ?? fetch
@@ -212,6 +229,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
   }
   modelGrants.add(defaultChatGrant)
   const active = new Set<AbortController>()
+  const activeChatSockets = new Map<IncomingMessage['socket'], number>()
   let stopping = false
   let authority = ''
   let stopPromise: Promise<void> | undefined
@@ -271,12 +289,14 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     // One ID per network attempt, independent of user/session IDs and caller headers.
     const requestId = `pb-${randomBytes(16).toString('hex')}`
     let forwarded = false
+    let failureReported = false
     let upstreamStatus: number | undefined
     let upstreamHeadersMs: number | undefined
     let firstByteMs: number | undefined
     let lastByteMs: number | undefined
     let bytesReceived = 0
     let abortReason: PengbaoGatewayFailure['abortReason']
+    let timeoutStage: PengbaoGatewayFailure['timeoutStage']
     const controller = new AbortController()
     const abort = (reason: NonNullable<PengbaoGatewayFailure['abortReason']>) => {
       if (controller.signal.aborted) return
@@ -287,7 +307,34 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     const abortGrantOperation = () => abort('revoked')
     grant.active.add(abortGrantOperation)
     if (grant.revoked) abortGrantOperation()
-    const timer = setTimeout(() => abort('deadline'), timeout)
+    const deadline = (stage: NonNullable<PengbaoGatewayFailure['timeoutStage']>) => {
+      if (controller.signal.aborted) return
+      timeoutStage = stage
+      abort('deadline')
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => deadline('preflight'), timeout)
+    const totalTimer = isChat ? setTimeout(() => deadline('chat-total'), chatMaxDuration) : undefined
+    const armChatTimer = (stage: 'upstream-idle' | 'downstream-blocked') => {
+      clearTimeout(timer)
+      if (!controller.signal.aborted) timer = setTimeout(() => deadline(stage), chatIdleTimeout)
+    }
+    // Only admitted inference uses the chat timers. Restore the socket for subsequent
+    // keep-alive requests; metadata, upload and image policies remain unchanged.
+    let chatSocket = false
+    const registerChatSocket = () => {
+      if (!isChat || chatSocket) return
+      activeChatSockets.set(req.socket, (activeChatSockets.get(req.socket) ?? 0) + 1)
+      req.socket.setTimeout(0)
+      chatSocket = true
+    }
+    const unregisterChatSocket = () => {
+      if (!chatSocket) return
+      const count = activeChatSockets.get(req.socket) ?? 0
+      if (count <= 1) activeChatSockets.delete(req.socket)
+      else activeChatSockets.set(req.socket, count - 1)
+      if (!req.socket.destroyed && !activeChatSockets.has(req.socket)) req.socket.setTimeout(serverTimeout)
+      chatSocket = false
+    }
     const close = () => { if (!res.writableFinished) abort('downstream') }
     req.once('aborted', close)
     res.once('close', close)
@@ -331,12 +378,13 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
           return value as Record<string, unknown>
         } catch (error) {
           if (!stopping) {
+            failureReported = true
             try {
               const code = transportCode(error)
               options.onFailure?.({ requestId, upstreamRoute: path === '/api/config' ? 'config' : path === '/api/v1/models' ? 'models' : 'image-metadata',
                 kind: abortReason === 'deadline' ? 'timeout' : abortReason ? 'cancelled' : response && !response.ok ? 'upstream-http' : invalidResponse ? 'upstream-response' : 'transport',
                 ...(response ? { upstreamStatus: response.status } : {}), elapsedMs: Date.now() - metadataStarted, phase, bytesReceived: size,
-                ...(abortReason ? { abortReason } : {}), ...(code && !abortReason ? { transportCode: code } : {}) })
+                ...(abortReason ? { abortReason } : {}), ...(timeoutStage ? { timeoutStage } : {}), ...(code && !abortReason ? { transportCode: code } : {}) })
             } catch { /* Diagnostics must not change request handling. */ }
           }
           throw error
@@ -397,7 +445,8 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
         return
       }
       if (req.headers['content-encoding']) throw new RequestFailure(415)
-      if (Number(req.headers['content-length'] ?? 0) > maxBody) throw new RequestFailure(413)
+      const declaredBytes = Number(req.headers['content-length'] ?? 0)
+      if (declaredBytes > maxBody) throw new BodySizeFailure(declaredBytes, 'declared')
       const body = isChat || isPluginChat ? chatBody(await readBody(req, maxBody, controller.signal)) : undefined
       if (body && grant.models !== undefined) {
         if (!grant.models.has(body.model as string)) denyLocal('not-granted', 'chat', body.model as string)
@@ -446,6 +495,10 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
         return
       }
       controller.signal.throwIfAborted()
+      if (isChat) {
+        registerChatSocket()
+        armChatTimer('upstream-idle')
+      }
       forwarded = true
       const upstreamOperation = upstreamFetch(`${PENGBAO_PRODUCT.serverUrl}/api/v1${isModels ? '/models' : '/chat/completions'}`, {
         method: isModels ? 'GET' : 'POST',
@@ -480,21 +533,30 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
           bytesReceived += value.byteLength
           lastByteMs = Date.now() - started
           firstByteMs ??= lastByteMs
+          if (isChat) armChatTimer('upstream-idle')
         }
         // Forward bytes, including sources/error events, without buffering SSE.
-        if (!res.write(value)) await once(res, 'drain', { signal: controller.signal })
+        if (!res.write(value)) {
+          // We deliberately stop reading upstream under backpressure. Bound the
+          // downstream stall instead of falsely diagnosing upstream inactivity.
+          if (isChat) armChatTimer('downstream-blocked')
+          await once(res, 'drain', { signal: controller.signal })
+          if (isChat) armChatTimer('upstream-idle')
+        }
       }
       res.end()
     } catch (error) {
-      if (forwarded && !stopping) {
+      if (!stopping && !failureReported && (forwarded || abortReason === 'deadline' || error instanceof BodySizeFailure)) {
         try {
           const code = transportCode(error)
-          options.onFailure?.({ requestId, kind: abortReason === 'downstream' ? 'cancelled' : abortReason === 'deadline' ? 'timeout' : abortReason === 'revoked' ? 'cancelled' : error instanceof RequestFailure ? 'upstream-http' : 'transport',
+          options.onFailure?.({ requestId, kind: error instanceof BodySizeFailure ? 'request-size' : abortReason === 'downstream' ? 'cancelled' : abortReason === 'deadline' ? 'timeout' : abortReason === 'revoked' ? 'cancelled' : error instanceof RequestFailure ? 'upstream-http' : 'transport',
             ...(upstreamStatus === undefined ? {} : { upstreamStatus }), elapsedMs: Date.now() - started,
             phase: firstByteMs !== undefined ? 'body' : upstreamHeadersMs !== undefined ? 'headers' : 'request', bytesReceived,
             ...(upstreamHeadersMs === undefined ? {} : { upstreamHeadersMs }),
             ...(firstByteMs === undefined ? {} : { firstByteMs, lastByteMs }),
             ...(abortReason === undefined ? {} : { abortReason }),
+            ...(timeoutStage === undefined ? {} : { timeoutStage }),
+            ...(error instanceof BodySizeFailure ? { requestBytes: error.requestBytes, maxBodyBytes: maxBody, sizeSource: error.sizeSource } : {}),
             ...(code === undefined || abortReason !== undefined ? {} : { transportCode: code }) })
         } catch { /* Diagnostics must not change request handling. */ }
       }
@@ -503,6 +565,8 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     } finally {
       cancel()
       clearTimeout(timer)
+      clearTimeout(totalTimer)
+      unregisterChatSocket()
       req.off('aborted', close)
       res.off('close', close)
       controller.signal.removeEventListener('abort', cancel)

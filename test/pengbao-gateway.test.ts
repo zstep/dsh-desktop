@@ -1,4 +1,5 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { connect as netConnect } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startPengbaoGateway, type PengbaoGateway, type PengbaoGatewayOptions } from '../src/main/enterprise/gateway'
 
@@ -329,6 +330,174 @@ describe('Pengbao gateway', () => {
     expect(onFailure).not.toHaveBeenCalled()
   })
 
+  it('keeps active chat SSE alive beyond the preflight budget without replay', async () => {
+    const onFailure = vi.fn()
+    let calls = 0
+    const gateway = await gatewayFor((_req, res) => {
+      calls++
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      let count = 0
+      const timer = setInterval(() => {
+        if (++count === 8) { clearInterval(timer); res.end('data: [DONE]\n\n') }
+        else res.write(': actual upstream activity\n\n')
+      }, 35)
+      res.once('close', () => clearInterval(timer))
+    }, { timeoutMs: 100, chatIdleTimeoutMs: 180, chatMaxDurationMs: 1500, imageTimeoutMs: 100, onFailure })
+    const result = await request(gateway, chat({ model: 'm', messages: [], stream: true }))
+    expect(result.status).toBe(200)
+    expect(result.body).toBe(': actual upstream activity\n\n'.repeat(7) + 'data: [DONE]\n\n')
+    expect(calls).toBe(1)
+    expect(onFailure).not.toHaveBeenCalled()
+  })
+
+  it.each(['request', 'headers', 'body'] as const)('bounds chat upstream silence during %s with an idle diagnosis', async phase => {
+    const onFailure = vi.fn()
+    const cancel = vi.fn()
+    const fetcher = vi.fn(async () => {
+      if (phase === 'request') return new Promise<Response>(() => {})
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { if (phase === 'body') controller.enqueue(new TextEncoder().encode('data: first\n\n')) },
+        cancel
+      }), { headers: { 'content-type': 'text/event-stream' } })
+    })
+    const gateway = await gatewayFor(() => {}, { timeoutMs: 1000, chatIdleTimeoutMs: 100, chatMaxDurationMs: 1500, fetch: fetcher, onFailure })
+    if (phase === 'request') expect((await request(gateway, chat({ model: 'm', messages: [] }))).status).toBe(504)
+    else await expect(request(gateway, chat({ model: 'm', messages: [] }))).rejects.toThrow()
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'timeout', phase, abortReason: 'deadline', timeoutStage: 'upstream-idle' }))
+    expect(onFailure.mock.calls[0]?.[0].elapsedMs).toBeLessThan(800)
+    if (phase !== 'request') expect(cancel).toHaveBeenCalledOnce()
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('bounds active chat by an independent total deadline', async () => {
+    const onFailure = vi.fn()
+    const gateway = await gatewayFor((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      const timer = setInterval(() => res.write(': active\n\n'), 25)
+      res.once('close', () => clearInterval(timer))
+    }, { timeoutMs: 1000, chatIdleTimeoutMs: 150, chatMaxDurationMs: 220, onFailure })
+    await expect(request(gateway, chat({ model: 'm', messages: [] }))).rejects.toThrow()
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'timeout', timeoutStage: 'chat-total', abortReason: 'deadline', phase: 'body' }))
+    expect(onFailure.mock.calls[0]?.[0].elapsedMs).toBeLessThan(800)
+  })
+
+  it('does not renew chat idle time for empty upstream chunks', async () => {
+    const onFailure = vi.fn()
+    let timer: ReturnType<typeof setInterval> | undefined
+    const gateway = await gatewayFor(() => {}, { timeoutMs: 1000, chatIdleTimeoutMs: 100, chatMaxDurationMs: 1500, onFailure,
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { timer = setInterval(() => controller.enqueue(new Uint8Array()), 20) },
+        cancel() { clearInterval(timer) }
+      }), { headers: { 'content-type': 'text/event-stream' } }) })
+    try {
+      await expect(request(gateway, chat({ model: 'm', messages: [] }))).rejects.toThrow()
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ timeoutStage: 'upstream-idle', bytesReceived: 0, phase: 'headers' }))
+    } finally { clearInterval(timer) }
+  })
+
+  it.each(['declared', 'received'] as const)('diagnoses local %s body overflow using only bounded numeric metadata', async source => {
+    const onFailure = vi.fn(() => { throw new Error('private sink') })
+    const upstream = vi.fn((_req: IncomingMessage, res: ServerResponse) => { res.end('{}') })
+    const gateway = await gatewayFor(upstream, { maxBodyBytes: 64, onFailure })
+    const body = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'PRIVATE'.repeat(30) }] })
+    const response = await request(gateway, { ...chat({}), body,
+      headers: source === 'declared' ? { 'Content-Length': String(Buffer.byteLength(body)) } : { 'Transfer-Encoding': 'chunked' } })
+    expect(response.status).toBe(413)
+    expect(upstream).not.toHaveBeenCalled()
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+      requestId: expect.stringMatching(/^pb-[a-f0-9]{32}$/), kind: 'request-size', phase: 'request',
+      elapsedMs: expect.any(Number), bytesReceived: 0, requestBytes: Buffer.byteLength(body), maxBodyBytes: 64, sizeSource: source
+    })
+    expect(JSON.stringify(onFailure.mock.calls) + response.body).not.toMatch(/PRIVATE|private sink|private-jwt/)
+  })
+
+  it('allows chat first-byte silence beyond the old socket/preflight timeout', async () => {
+    const gateway = await gatewayFor((_req, res) => {
+      const timer = setTimeout(() => res.end('{"choices":[]}'), 200)
+      res.once('close', () => clearTimeout(timer))
+    }, { timeoutMs: 80, imageTimeoutMs: 80, chatIdleTimeoutMs: 500, chatMaxDurationMs: 1500 })
+    expect((await request(gateway, chat({ model: 'm', messages: [] }))).body).toBe('{"choices":[]}')
+  })
+
+  it('keeps chat upload bounded by preflight time without dispatch', async () => {
+    const onFailure = vi.fn()
+    const fetcher = vi.fn(async () => Response.json({}))
+    const gateway = await gatewayFor(() => {}, { timeoutMs: 100, chatIdleTimeoutMs: 1000, onFailure, fetch: fetcher })
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(`${gateway.url}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${gateway.capabilityToken}`, 'Transfer-Encoding': 'chunked' } }, res => {
+        res.resume()
+        res.once('end', () => { req.destroy(); resolve(res.statusCode ?? 0) })
+      })
+      req.on('error', reject)
+      req.write('{"model":')
+    })
+    expect(status).toBe(504)
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'timeout', timeoutStage: 'preflight', phase: 'request' }))
+  })
+
+  it('bounds blocked chat downstream separately from upstream inactivity', async () => {
+    const onFailure = vi.fn()
+    const cancel = vi.fn()
+    let pulls = 0
+    const gateway = await gatewayFor(() => {}, { timeoutMs: 2000, chatIdleTimeoutMs: 180, chatMaxDurationMs: 2000, onFailure,
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) { pulls++; controller.enqueue(new Uint8Array(64 * 1024)) }, cancel
+      }), { headers: { 'content-type': 'text/event-stream' } }) })
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const req = httpRequest(`${gateway.url}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${gateway.capabilityToken}` } }, res => { res.pause(); resolve(res) })
+      req.on('error', reject)
+      req.end(JSON.stringify({ model: 'm', messages: [] }))
+    })
+    try {
+      await vi.waitFor(() => expect(onFailure).toHaveBeenCalledOnce(), { timeout: 1200 })
+      expect(onFailure.mock.calls[0]?.[0]).toMatchObject({ kind: 'timeout', timeoutStage: 'downstream-blocked', abortReason: 'deadline' })
+      expect(pulls).toBeLessThan(512)
+      expect(cancel).toHaveBeenCalledOnce()
+    } finally { response.destroy() }
+  })
+
+  it('cleans completed chat timers and releases slots before subsequent requests', async () => {
+    const failures = vi.fn()
+    const gateway = await gatewayFor((_req, res) => { res.end('data: [DONE]\n\n') }, {
+      maxConcurrent: 1, timeoutMs: 80, chatIdleTimeoutMs: 80, chatMaxDurationMs: 120, onFailure: failures
+    })
+    for (let i = 0; i < 2; i++) expect((await request(gateway, chat({ model: 'm', messages: [] }))).status).toBe(200)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(failures).not.toHaveBeenCalled()
+    expect((await request(gateway)).status).toBe(200)
+  })
+
+  it.each([0, -1, NaN, 0.5, Number.MAX_SAFE_INTEGER])('rejects unsafe chat timer limits: %s', async limit => {
+    for (const field of ['chatIdleTimeoutMs', 'chatMaxDurationMs']) {
+      await expect(startPengbaoGateway({ jwt: 'fixture', [field]: limit })).rejects.toThrow('Invalid gateway limit')
+    }
+  })
+
+  it('keeps a pipelined chat alive when a sibling chat completes first', async () => {
+    const gateway = await gatewayFor((_req, res) => {
+      const delay = calls++ === 0 ? 25 : 250
+      const timer = setTimeout(() => res.end('data: [DONE]\n\n'), delay)
+      res.once('close', () => clearTimeout(timer))
+    }, { timeoutMs: 80, imageTimeoutMs: 80, chatIdleTimeoutMs: 500, chatMaxDurationMs: 1500 })
+    let calls = 0
+    const socket = netConnect(gateway.port, '127.0.0.1')
+    await new Promise<void>((resolve, reject) => { socket.once('connect', () => resolve()); socket.once('error', reject) })
+    const chunks: Buffer[] = []
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`pipelined responses=${(Buffer.concat(chunks).toString().match(/data: \[DONE\]/g) ?? []).length}`)), 3000)
+      const finish = () => { clearTimeout(timeout); resolve() }
+      socket.on('data', chunk => {
+        chunks.push(chunk)
+        if ((Buffer.concat(chunks).toString().match(/data: \[DONE\]/g) ?? []).length === 2) finish()
+      })
+      socket.once('error', error => { clearTimeout(timeout); reject(error) })
+      socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: ${gateway.url.slice('http://'.length)}\r\nAuthorization: Bearer ${gateway.capabilityToken}\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: keep-alive\r\n\r\n{"model":"m","messages":[]}`)
+      socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: ${gateway.url.slice('http://'.length)}\r\nAuthorization: Bearer ${gateway.capabilityToken}\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: keep-alive\r\n\r\n{"model":"m","messages":[]}`)
+    })
+    socket.destroy()
+  })
+
   it('limits bodies, invalid JSON, concurrency, and request duration', async () => {
     let markStarted: () => void = () => { throw new Error('request gate not initialized') }
     const started = new Promise<void>(resolve => { markStarted = resolve })
@@ -342,7 +511,7 @@ describe('Pengbao gateway', () => {
     expect((await pending).status).toBe(504)
   })
 
-  it('streams before completion and cancels the upstream reader on downstream disconnect', async () => {
+  it.each(['models', 'chat'])('streams %s before completion and cancels the upstream reader on downstream disconnect', async route => {
     let closed = false
     const onFailure = vi.fn()
     const gateway = await gatewayFor((_req, res) => {
@@ -351,7 +520,7 @@ describe('Pengbao gateway', () => {
       res.write('data: first\n\n')
     }, { onFailure })
     await new Promise<void>((resolve, reject) => {
-      const req = httpRequest(`${gateway.url}/v1/models`, { headers: { Authorization: `Bearer ${gateway.capabilityToken}` } }, res => {
+      const req = httpRequest(`${gateway.url}/v1/${route === 'chat' ? 'chat/completions' : 'models'}`, { method: route === 'chat' ? 'POST' : 'GET', headers: { Authorization: `Bearer ${gateway.capabilityToken}` } }, res => {
         res.once('data', chunk => {
           expect(chunk.toString()).toBe('data: first\n\n')
           res.destroy()
@@ -359,7 +528,7 @@ describe('Pengbao gateway', () => {
         })
       })
       req.on('error', reject)
-      req.end()
+      req.end(route === 'chat' ? JSON.stringify({ model: 'm', messages: [] }) : undefined)
     })
     await vi.waitFor(() => expect(closed).toBe(true))
     await vi.waitFor(() => expect(onFailure).toHaveBeenCalledOnce())
@@ -393,7 +562,7 @@ describe('Pengbao gateway', () => {
     await vi.waitFor(() => expect(cancel).toHaveBeenCalled())
   })
 
-  it('revokes only its own grants and aborts only their active requests', async () => {
+  it.each(['models', 'chat'])('revokes only its own grants and aborts only their active %s requests', async route => {
     const signals: AbortSignal[] = []
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const signal = init?.signal
@@ -406,11 +575,12 @@ describe('Pengbao gateway', () => {
     const second = gateway.createModelServiceGrant(['chat.completions'])
     expect(first).toMatchObject({ contractVersion: 1, gatewayUrl: gateway.url, capabilities: ['chat.completions'] })
 
-    const firstRequest = request(gateway, { token: first.capabilityToken }).catch(() => undefined)
+    const routeOptions = route === 'chat' ? chat({ model: 'm', messages: [] }) : {}
+    const firstRequest = request(gateway, { ...routeOptions, token: first.capabilityToken }).catch(() => undefined)
     await vi.waitFor(() => expect(signals).toHaveLength(1))
-    const secondRequest = request(gateway, { token: second.capabilityToken }).catch(() => undefined)
+    const secondRequest = request(gateway, { ...routeOptions, token: second.capabilityToken }).catch(() => undefined)
     await vi.waitFor(() => expect(signals).toHaveLength(2))
-    const legacyRequest = request(gateway).catch(() => undefined)
+    const legacyRequest = request(gateway, routeOptions).catch(() => undefined)
     await vi.waitFor(() => expect(signals).toHaveLength(3))
 
     first.revoke()
