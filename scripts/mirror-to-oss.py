@@ -13,8 +13,8 @@ layout matches open-webui's ``routers/desktop_downloads.py`` contract:
     pengbao/desktop/pengbao-ai-<version>-windows-x64-setup.exe
 
 Versioned filenames keep a stable download URL from ever re-serving old bytes
-through a CDN/browser cache. The client's auto-update feed continues to be
-served from dshdesktop.com (this mirror only feeds the public download page).
+through a CDN/browser cache. The client checks this public catalog for newer
+versions and opens the Pengbao download page; it never installs an update feed.
 
 Credentials reuse the same S3 environment as open-webui's STORAGE_PROVIDER=s3:
     S3_ENDPOINT_URL, S3_REGION_NAME, S3_BUCKET_NAME, S3_ACCESS_KEY_ID,
@@ -112,7 +112,8 @@ def main() -> int:
     )
 
     platforms = []
-    object_version = f"{args.version}-{args.build_id}" if args.build_id else args.version
+    release_version = re.sub(r"\+pengbao\.([1-9][0-9]*)$", r".\1", args.version)
+    object_version = f"{release_version}-{args.build_id}" if args.build_id else release_version
     for pid, filename in INSTALLERS.items():
         source = directory / filename
         digest = sha256(source)
@@ -144,7 +145,7 @@ def main() -> int:
         print(f"uploaded and SHA-256 verified {key} ({size} bytes)", flush=True)
 
     catalog = {
-        "version": args.version,
+        "version": release_version,
         "releasedAt": datetime.now(timezone.utc).isoformat(),
         "sourceSha": args.source_sha,
         "buildId": args.build_id,

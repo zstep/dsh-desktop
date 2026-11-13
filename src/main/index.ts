@@ -1,3 +1,4 @@
+import { desktopVersion } from '../shared/desktop-version'
 import { HarnessBootFailures } from './harness-boot-failures'
 import { isMemoryExit } from './resource-diagnostics'
 import { ProcessRecovery } from './process-recovery'
@@ -2161,7 +2162,7 @@ function registerHarnessHandlers(): void {
     assertTrustedMainWindowEvent(event)
     const locale = harnessLocale()
     return {
-      desktopVersion: app.getVersion(),
+      desktopVersion: desktopVersion(app.getVersion()),
       harnessVersion:
         bundledHarnessVersion(bundledRuntimeRoot()) ?? (locale === 'zh' ? '未知' : 'Unknown'),
       locale
@@ -2196,7 +2197,7 @@ function assertTrustedSafeModeManagerEvent(event: IpcMainInvokeEvent): void {
 async function showAbout(window: BrowserWindow): Promise<void> {
   const locale = harnessLocale()
   const info = {
-    desktopVersion: app.getVersion(),
+    desktopVersion: desktopVersion(app.getVersion()),
     harnessVersion:
       bundledHarnessVersion(bundledRuntimeRoot()) ?? (locale === 'zh' ? '未知' : 'Unknown'),
     locale

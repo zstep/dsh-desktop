@@ -59,9 +59,9 @@ export function updateHeadline(status: UpdateStatus, locale: UpdateLocale): Upda
     case 'available':
       return {
         title: zh ? `检测到新版本 ${version}` : `New version ${version} available`,
-        description: zh
-          ? `${version} 已发布，同意后开始下载。`
-          : `${version} is ready to download.`
+        description: status.downloadPage
+          ? zh ? '点击前往鹏宝下载页面，下载安装新版。' : 'Open the Pengbao download page to get the new version.'
+          : zh ? `${version} 已发布，同意后开始下载。` : `${version} is ready to download.`
       }
     case 'downloading':
       return {

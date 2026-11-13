@@ -13,6 +13,7 @@ import {
   collectPluginEvidence,
   listConfigurablePlugins,
   materializeProposal,
+  materializedProposalModels,
   validateConfigurationProposal
 } from '../plugin-config-analysis.js'
 
@@ -582,7 +583,7 @@ test('maps role-less market schemas by field name instead of role annotations', 
     writes: [
       { path: ['channels', '$append'], value: { id: { $semantic: 'binding-id' }, name: { $semantic: 'label' },
         apiUrl: { $semantic: 'endpoint' }, protocol: 'chat-completions',
-        models: [{ alias: { $semantic: 'label' }, id: { $semantic: 'image-model' } }] }, evidenceIds: ['e1'] },
+        models: [{ alias: { $semantic: 'image-model' }, id: { $semantic: 'image-model' } }] }, evidenceIds: ['e1'] },
       { path: ['channelSecrets', '$binding-id'], value: { $semantic: 'credential' }, evidenceIds: ['e1'] },
       { path: ['defaultChannelId'], value: { $semantic: 'binding-id' }, evidenceIds: ['e1'] },
       { path: ['defaultModel'], value: { $semantic: 'image-model' }, evidenceIds: ['e1'] },
@@ -604,7 +605,7 @@ test('maps role-less market schemas by field name instead of role annotations', 
   assert.deepEqual(ops[0].path, ['channels', '0'])
   assert.equal(ops[0].append, true)
   assert.deepEqual(ops[0].value, { id: 'host-binding', name: 'Pengbao', apiUrl: values.endpoint,
-    protocol: 'chat-completions', models: [{ alias: 'Pengbao', id: 'image-default' }] })
+    protocol: 'chat-completions', models: [{ alias: 'image-default', id: 'image-default' }] })
   assert.deepEqual(ops[1], { path: ['channelSecrets', 'host-binding'], value: 'gateway-credential' })
   assert.deepEqual(ops[3], { path: ['defaultModel'], value: 'image-default' })
   assert.deepEqual(ops[9], { path: ['promptModel'], value: 'chat-default' })
@@ -628,6 +629,76 @@ test('maps role-less market schemas by field name instead of role annotations', 
   // Credentials remain restricted to schema-declared secret leaves.
   assert.throws(() => validateConfigurationProposal(append(['plainKey'], { $semantic: 'credential' }), schema.toJSON(), ['e1']),
     { code: 'INVALID_PROPOSAL' })
+})
+
+test('bounds cumulative nested model expansion before returning oversized output', () => {
+  const schema = z.object({
+    apiUrl: z.string(), apiKey: z.string().role('secret'),
+    models: z.array(z.object({ models: z.array(z.object({ models: z.array(z.string()) })) }))
+  })
+  const proposal = validateConfigurationProposal({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes: [
+    { path: ['apiUrl'], value: { $semantic: 'endpoint' }, evidenceIds: ['e1'] },
+    { path: ['apiKey'], value: { $semantic: 'credential' }, evidenceIds: ['e1'] },
+    { path: ['models'], value: [{ models: [{ models: [{ $semantic: 'chat-model' }] }] }], evidenceIds: ['e1'] }
+  ] }, schema.toJSON(), ['e1'])
+  const values = { endpoint: 'http://127.0.0.1/v1', credential: 'host-secret', chatModel: 'm0' }
+  const small = materializeProposal(proposal, { ...values, chatModels: ['m0', 'm1'] })
+  assert.deepEqual(small[2].value, [
+    { models: [{ models: ['m0', 'm1'] }, { models: ['m0', 'm1'] }] },
+    { models: [{ models: ['m0', 'm1'] }, { models: ['m0', 'm1'] }] }
+  ])
+  assert.deepEqual(materializedProposalModels(small), { 'chat.completions': ['m0', 'm1'], 'image.generate': [] })
+  assert.equal(Object.isFrozen(materializedProposalModels(small)['chat.completions']), true)
+  assert.deepEqual(Reflect.ownKeys(small), ['0', '1', '2', 'length'])
+  assert.throws(() => materializedProposalModels(structuredClone(small)), { code: 'INVALID_HOST_VALUES' })
+  assert.throws(() => materializeProposal(proposal, {
+    ...values, chatModels: Array.from({ length: 24 }, (_, index) => `m${index}`)
+  }), { code: 'INVALID_HOST_VALUES' })
+})
+
+test('bounds cumulative materialized string bytes across expanded writes', () => {
+  const schema = z.object({ apiUrl: z.string(), apiKey: z.string().role('secret'),
+    models: z.array(z.object({ id: z.string(), alias: z.string() })) })
+  const proposal = validateConfigurationProposal({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes: [
+    { path: ['apiUrl'], value: { $semantic: 'endpoint' }, evidenceIds: ['e1'] },
+    { path: ['apiKey'], value: { $semantic: 'credential' }, evidenceIds: ['e1'] },
+    { path: ['models'], value: [{ id: { $semantic: 'chat-model' }, alias: { $semantic: 'chat-model' } }], evidenceIds: ['e1'] }
+  ] }, schema.toJSON(), ['e1'])
+  assert.throws(() => materializeProposal(proposal, {
+    endpoint: 'http://127.0.0.1/v1', credential: 'host-secret', chatModel: 'default',
+    chatModels: Array.from({ length: 40 }, (_, index) => `${index}-${'m'.repeat(4096)}`)
+  }), { code: 'INVALID_HOST_VALUES' })
+})
+
+test('never fills a model alias with the host display label', () => {
+  // A model alias is what the plugin's model picker shows and resolves; the
+  // host label ("Pengbao") is a channel name, so a label leaf here would
+  // replace every model name with the same non-model string.
+  const schema = z.object({
+    channels: z.array(z.object({
+      id: z.string(),
+      name: z.string().default(''),
+      apiUrl: z.string().default(''),
+      models: z.array(z.object({ alias: z.string(), id: z.string() })).default([])
+    })).default([]),
+    channelSecrets: z.dict(z.string().role('secret')).default({}),
+    defaultChannelId: z.string().default('')
+  })
+  const writes = aliasValue => [
+    { path: ['channels', '$append'], value: { id: { $semantic: 'binding-id' }, name: { $semantic: 'label' },
+      apiUrl: { $semantic: 'endpoint' }, models: [{ alias: aliasValue, id: { $semantic: 'image-model' } }] }, evidenceIds: ['e1'] },
+    { path: ['channelSecrets', '$binding-id'], value: { $semantic: 'credential' }, evidenceIds: ['e1'] },
+    { path: ['defaultChannelId'], value: { $semantic: 'binding-id' }, evidenceIds: ['e1'] }
+  ]
+  const proposal = aliasValue => ({ contractVersion: 1, protocol: 'openai', capabilities: ['image.generate'], writes: writes(aliasValue) })
+  assert.throws(() => validateConfigurationProposal(proposal({ $semantic: 'label' }), schema.toJSON(), ['e1']),
+    { code: 'INVALID_PROPOSAL' })
+  const accepted = validateConfigurationProposal(proposal({ $semantic: 'image-model' }), schema.toJSON(), ['e1'])
+  const values = { endpoint: 'http://127.0.0.1:43127/v1', credential: 'gateway-credential', imageModel: 'image-default',
+    bindingId: 'host-binding', label: 'Pengbao', current: {} }
+  const ops = materializeProposal(accepted, values)
+  assert.deepEqual(ops[0].value, { id: 'host-binding', name: 'Pengbao', apiUrl: values.endpoint,
+    models: [{ alias: 'image-default', id: 'image-default' }] })
 })
 
 test('analyzes with server default and rejects tool or malformed output', async () => {

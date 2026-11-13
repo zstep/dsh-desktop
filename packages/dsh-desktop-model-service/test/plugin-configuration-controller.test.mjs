@@ -27,7 +27,7 @@ const IMAGE_PROPOSAL = {
 }
 const token = seed => seed.repeat(32).slice(0, 32)
 
-async function fixture({ image = false } = {}) {
+async function fixture({ image = false, collections = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-plugin-controller-'))
   const profileDir = join(root, 'profiles', 'web')
   const packageRoot = join(profileDir, 'node_modules', '@fixture', 'chatplugin')
@@ -54,7 +54,11 @@ async function fixture({ image = false } = {}) {
     baseUrl: z.string(),
     apiKey: z.string().role('secret'),
     model: z.string(),
-    ...(image ? { imageModel: z.string() } : {})
+    ...(image ? { imageModel: z.string() } : {}),
+    ...(collections ? { channels: z.array(z.object({
+      id: z.string(), name: z.string(), apiUrl: z.string(), protocol: z.const('rig-chat-literal'),
+      models: z.array(z.object({ alias: z.string(), id: z.string() }))
+    })).default([]) } : {})
   })
   const entry = {
     options: { id: 'fixture-chat', name: '@fixture/chatplugin', config: undefined },
@@ -206,10 +210,55 @@ async function staleApprovalTests(t, broker) {
   })
 }
 
+async function modelCollectionScenario() {
+  const { root, profileDir, entry, ctx, service, effects } = await fixture({ image: true, collections: true })
+  const catalog = await service.catalog()
+  catalog.models.push(
+    { id: 'rig-image-fast', name: 'Fast Picture', capabilities: ['image.generate'] },
+    { id: 'rig-chat-extra', name: 'Other Chat', capabilities: ['chat.completions'] },
+    { id: 'rig-chat-literal', name: 'Protocol collision', capabilities: ['chat.completions'] },
+    { id: 'Pengbao', name: 'Label collision', capabilities: ['chat.completions'] }
+  )
+  service.catalog = async () => catalog
+  const mapping = { ...IMAGE_PROPOSAL, writes: [...IMAGE_PROPOSAL.writes, {
+    path: ['channels', '$append'], value: {
+      id: { $semantic: 'binding-id' }, name: { $semantic: 'label' }, apiUrl: { $semantic: 'endpoint' }, protocol: 'rig-chat-literal',
+      models: [{ alias: { $semantic: 'image-model' }, id: { $semantic: 'image-model' } }]
+    }, evidenceIds: ['e1']
+  }] }
+  ctx.llm.stream = () => (async function* () {
+    yield { type: 'text-delta', text: JSON.stringify(mapping) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+  const controller = createPluginConfigurationController(ctx, service)
+  try {
+    await installPluginConfigurationRuntime(ctx)
+    const analysis = await controller.analyze({ entryId: 'fixture-chat' })
+    const channel = analysis.writes.find(write => write.path[0] === 'channels').value
+    assert.equal(channel.name, 'Pengbao')
+    assert.deepEqual(channel.models, [
+      { alias: 'rig-image', id: 'rig-image' },
+      { alias: 'rig-image-fast', id: 'rig-image-fast' }
+    ])
+    assert.equal(analysis.writes.find(write => write.path[0] === 'imageModel').value, 'rig-image')
+    const applied = await controller.apply({ planId: analysis.planId })
+    assert.deepEqual(entry.options.config.channels[0].models, channel.models)
+    const [binding] = await readPluginConfigurations(profileDir)
+    assert.deepEqual(binding.policy.models, ['rig-chat', 'rig-image', 'rig-image-fast'])
+    await controller.rollback({ receiptId: applied.receiptId })
+    assert.equal(entry.options.config, undefined)
+  } finally {
+    controller.dispose()
+    for (const cleanup of effects) await cleanup()
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 test('analyze, apply, and rollback keep markers in the profile layer and compare absent config as empty', async t => {
   const broker = await gateway()
   registerPrivatePluginConfiguration(broker.registration)
   try {
+    await t.test('model collections expose every authorized image model while scalar fields retain defaults', modelCollectionScenario)
     await t.test('large bundle changes inside or outside snippets invalidate approval without config writes', async t => {
       await staleApprovalTests(t, broker)
     })

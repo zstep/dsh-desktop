@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   updater: { setFeedURL: vi.fn(), checkForUpdates: vi.fn(), downloadUpdate: vi.fn(), quitAndInstall: vi.fn(), on: vi.fn() }
 }))
 vi.mock('electron', () => ({
-  app: { isPackaged: true, getVersion: () => '0.13.0', getPath: () => mocks.root, isReady: () => true },
+  app: { isPackaged: false, getVersion: () => '0.13.0', getPath: () => mocks.root, isReady: () => true },
   BrowserWindow: { getAllWindows: () => [] },
   powerMonitor: { on: vi.fn(), removeListener: vi.fn() },
   ipcMain: { handle: vi.fn((name: string, handler: (...args: unknown[]) => unknown) => mocks.handlers.set(name, handler)) }

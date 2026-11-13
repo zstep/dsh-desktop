@@ -38,9 +38,9 @@ class FakeS3:
 
 
 class MirrorTests(unittest.TestCase):
-    def run_mirror(self, directory, client):
+    def run_mirror(self, directory, client, version='0.13.2'):
         env = {name: 'fixture' for name in ['S3_ENDPOINT_URL', 'S3_REGION_NAME', 'S3_BUCKET_NAME', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY']}
-        with patch.dict(os.environ, env), patch.object(boto3, 'client', return_value=client, create=True), patch.object(sys, 'argv', ['mirror', '--directory', directory, '--version', '0.13.2', '--build-id', '123-1', '--source-sha', 'abc123']):
+        with patch.dict(os.environ, env), patch.object(boto3, 'client', return_value=client, create=True), patch.object(sys, 'argv', ['mirror', '--directory', directory, '--version', version, '--build-id', '123-1', '--source-sha', 'abc123']):
             return mirror.main()
 
     def populate(self, root):
@@ -62,6 +62,16 @@ class MirrorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'catalog unchanged'):
                 self.run_mirror(root, client)
             self.assertIsNone(client.catalog)
+
+    def test_pengbao_revision_uses_short_public_version(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.populate(root)
+            client = FakeS3()
+            self.assertEqual(self.run_mirror(root, client, '0.13.2+pengbao.1'), 0)
+            self.assertEqual(client.catalog['version'], '0.13.2.1')
+            for entry in client.catalog['platforms']:
+                self.assertIn('0.13.2.1-123-1-', entry['filename'])
+                self.assertNotIn('+', entry['filename'])
 
     def test_all_three_verified_then_catalog_published(self):
         with tempfile.TemporaryDirectory() as root:

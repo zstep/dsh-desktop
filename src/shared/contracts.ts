@@ -34,6 +34,8 @@ export interface UpdateStatus {
   phase: UpdatePhase
   currentVersion: string
   availableVersion?: string
+  /** Website-only update: open the fixed Pengbao download page, never install in-app. */
+  downloadPage?: boolean
   percent?: number
   message?: string
   manual: boolean

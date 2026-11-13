@@ -25,10 +25,13 @@ describe('desktop update policy', () => {
     expect(AUTO_INSTALL_ON_APP_QUIT).toBe(false)
   })
 
-  it('enables remote updates only in packaged builds', () => {
-    expect(supportsAutoUpdates(true, 'darwin')).toBe(true)
-    expect(supportsAutoUpdates(true, 'win32')).toBe(true)
-    expect(supportsAutoUpdates(true, 'linux')).toBe(true)
+  it('never checks the inherited upstream update service', () => {
+    // The inherited policy and feed belong to another product (DSH Desktop),
+    // so a check could offer an installer that is not Pengbao AI. Updates stay
+    // disabled until a Pengbao-owned update service exists.
+    expect(supportsAutoUpdates(true, 'darwin')).toBe(false)
+    expect(supportsAutoUpdates(true, 'win32')).toBe(false)
+    expect(supportsAutoUpdates(true, 'linux')).toBe(false)
     expect(supportsAutoUpdates(false, 'darwin')).toBe(false)
     expect(supportsAutoUpdates(false, 'win32')).toBe(false)
   })

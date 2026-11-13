@@ -1,9 +1,11 @@
+import { desktopVersion } from '../../shared/desktop-version'
 import { encodePopupNotesMetadata } from '../../shared/update-release-notes'
 import { join } from 'node:path'
 import { ApplicationRollback, type ApplicationRollbackStatus } from './application-rollback'
 import { checkDesktopUpdate } from '../desktop-service'
 import { isPrereleaseVersion, isVersion } from '../desktop-service/service'
-import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron'
+import { app, BrowserWindow, ipcMain, net, powerMonitor, shell } from 'electron'
+import { checkWebsiteUpdate, PENGBAO_DOWNLOAD_URL } from './website-update'
 import electronUpdater from 'electron-updater'
 import type { UpdateStatus } from '../../shared/contracts'
 import {
@@ -35,7 +37,7 @@ import {
 
 const { autoUpdater } = electronUpdater
 
-let status = initialUpdateStatus(app.getVersion())
+let status = initialUpdateStatus(desktopVersion(app.getVersion()))
 let prepareToInstall: (() => Promise<void>) | undefined
 let installFailed: (() => Promise<void>) | undefined
 let canCheckAutomatically: (() => boolean) | undefined
@@ -180,15 +182,15 @@ export function startUpdateManager(options: {
   if (started) return
   started = true
 
-  if (!supportsUpdates()) {
+  if (!supportsUpdates() && !supportsWebsiteUpdates()) {
     transition({
       type: 'unsupported',
-      message: 'Pengbao updates are unavailable until an update service is configured.'
+      message: 'Update checks are unavailable in development builds.'
     })
     return
   }
 
-  configureUpdater()
+  if (supportsUpdates()) configureUpdater()
   startupTimer = setTimeout(
     () => void checkForUpdates(false, 'startup'),
     UPDATE_STARTUP_DELAY_MS + Math.random() * UPDATE_STARTUP_JITTER_MS
@@ -200,11 +202,33 @@ export function startUpdateManager(options: {
 export async function checkForUpdates(manual = false, source: UpdateStatus['source'] = manual ? 'manual' : 'runtime'): Promise<UpdateStatus> {
   if (rollbackOwnsUpdater || installing || (!manual && canCheckAutomatically?.() === false)) return getUpdateStatus()
   if (manual) status.presentationId = ++presentationId
+  if (!supportsUpdates() && supportsWebsiteUpdates()) {
+    if (checkPromise) {
+      if (manual) transition({ type: 'present-manual' })
+      await checkPromise
+      return getUpdateStatus()
+    }
+    transition({ type: 'check', manual, source })
+    lastCheckedAt = Date.now()
+    checkPromise = (async () => {
+      try {
+        const release = await checkWebsiteUpdate(desktopVersion(app.getVersion()), process.platform, process.arch,
+          (url, init) => net.fetch(url, init))
+        if (release && shouldOfferUpdate(release.version, currentSkippedVersion(), status.manual)) {
+          transition({ type: 'available', version: release.version, downloadPage: true })
+        } else transition({ type: 'not-available' })
+      } catch {
+        transition({ type: 'error', message: 'Unable to check the Pengbao download page.' })
+      } finally { checkPromise = undefined }
+    })()
+    await checkPromise
+    return getUpdateStatus()
+  }
   if (!supportsUpdates()) {
     transition(
       {
         type: 'unsupported',
-        message: 'Pengbao updates are unavailable until an update service is configured.'
+        message: 'Update checks are unavailable in development builds.'
       },
       manual
     )
@@ -282,10 +306,16 @@ export async function checkForUpdates(manual = false, source: UpdateStatus['sour
  * action — an update sits at `available` until it is taken.
  */
 export async function downloadAvailableUpdate(): Promise<UpdateStatus> {
+  if (!supportsUpdates() && supportsWebsiteUpdates() && status.phase === 'available' && status.downloadPage) {
+    // The catalog and renderer never supply this destination.
+    await shell.openExternal(PENGBAO_DOWNLOAD_URL)
+    return getUpdateStatus()
+  }
   return downloadAvailableUpdateOwned()
 }
 
 async function downloadAvailableUpdateOwned(owner?: symbol): Promise<UpdateStatus> {
+  if (status.phase === 'available' && status.downloadPage) return getUpdateStatus()
   if (!supportsUpdates()) return getUpdateStatus()
   if ((rollbackOwnsUpdater && owner !== ROLLBACK_OWNER) || installing) return getUpdateStatus()
   if (status.phase !== 'available' || downloading) return getUpdateStatus()
@@ -320,6 +350,7 @@ export async function installSpecificVersion(version: unknown): Promise<UpdateSt
 }
 
 async function installSpecificVersionOwned(version: unknown, owner?: symbol): Promise<UpdateStatus> {
+  if (status.downloadPage) return getUpdateStatus()
   if ((rollbackOwnsUpdater && owner !== ROLLBACK_OWNER) || installing) return getUpdateStatus()
   if (!isVersion(version) || compareVersions(version, app.getVersion()) >= 0) return getUpdateStatus()
   if (!supportsUpdates()) return getUpdateStatus()
@@ -482,6 +513,10 @@ function transition(event: UpdateStateEvent, manualOverride?: boolean): void {
 
 function checkAfterResume(): void {
   if (shouldCheckAfterResume(lastCheckedAt)) void checkForUpdates()
+}
+
+function supportsWebsiteUpdates(): boolean {
+  return app.isPackaged && (process.platform === 'darwin' || process.platform === 'win32')
 }
 
 function supportsUpdates(): boolean {

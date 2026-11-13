@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { collectPluginEvidence, listConfigurablePlugins, analyzePluginConfiguration, materializeProposal } from './plugin-config-analysis.js'
+import { collectPluginEvidence, listConfigurablePlugins, analyzePluginConfiguration, materializeProposal, materializedProposalModels } from './plugin-config-analysis.js'
 import { configurationDigest, getPluginConfigurationRuntime, pluginConfigurationReference,
   readPluginConfigurations, writePluginConfigurations } from './plugin-configuration-runtime.js'
 
@@ -45,7 +45,13 @@ function hostValues(catalog, bindingId, current) {
   const chatModel = catalog.defaults?.['chat.completions']
   const imageModel = catalog.defaults?.['image.generate']
   if (!chatModel) fail('MODEL_UNAVAILABLE')
+  const modelIds = (capability, preferred) => [...new Set([
+    ...(preferred ? [preferred] : []),
+    ...catalog.models.filter(model => model.capabilities.includes(capability)).map(model => model.id)
+  ])]
   const values = { bindingId, current, chatModel, label: 'Pengbao',
+    chatModels: modelIds('chat.completions', chatModel),
+    imageModels: modelIds('image.generate', imageModel),
     endpoint: pluginConfigurationReference(bindingId, 'endpoint'),
     credential: pluginConfigurationReference(bindingId, 'credential') }
   // Materialization validates values as bounded JSON, where an undefined
@@ -115,8 +121,11 @@ export function createPluginConfigurationController(ctx, service) {
         const planId = randomUUID()
         const identity = { bindingId, entryId: input.entryId, namespace: input.entryId, packageName: evidence.identity.packageName,
           packageVersion: evidence.identity.packageVersion, revision: evidence.revision, schemaDigest: evidence.identity.schemaDigest, evidenceDigest: evidence.identity.evidenceDigest }
+        const configuredModels = materializedProposalModels(writes)
+        const models = [...new Set(proposal.capabilities.flatMap(scope => configuredModels[scope]))]
+        if (!models.length || models.length > 256) fail('MODEL_UNAVAILABLE')
         const policy = { bindingId, entryId: input.entryId, packageName: identity.packageName, packageVersion: identity.packageVersion,
-          capabilities: [...proposal.capabilities], models: [...new Set(proposal.capabilities.map(scope => scope === 'chat.completions' ? values.chatModel : values.imageModel))] }
+          capabilities: [...proposal.capabilities], models }
         const plan = { planId, entry: row.entry, identity, policy, evidence, raw, candidate,
           catalog: catalogSnapshot(catalog), expiresAt: Date.now() + TTL }
         plans.set(planId, plan)

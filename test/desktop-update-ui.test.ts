@@ -62,6 +62,20 @@ afterEach(() => {
 const status = (phase: UpdateStatus['phase'], extra: Partial<UpdateStatus> = {}): UpdateStatus => ({ phase, currentVersion: '1.0.0', manual: true, presentationId: 7, ...extra })
 
 describe('desktop update presentation at the IPC boundary', () => {
+  it('opens the download page for website updates without showing install progress', async () => {
+    const ui = await mount(Promise.resolve(status('idle', { manual: false })))
+    ui.emit(status('available', { locale: 'zh', availableVersion: '0.13.2.2', downloadPage: true }))
+    const action = required(ui.shadow.querySelector<HTMLButtonElement>('.primary'))
+    expect(action.textContent).toBe('前往下载页面')
+    expect(ui.shadow.textContent).toContain('鹏宝下载页面')
+    action.click()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(ipc.invoke).toHaveBeenCalledWith('updates:download')
+    expect(ui.shadow.querySelector<HTMLButtonElement>('.primary')?.disabled).toBe(false)
+    expect(ui.shadow.querySelector('[role="progressbar"]')).toBeNull()
+    expect(ipc.invoke).not.toHaveBeenCalledWith('updates:install')
+  })
   it.each(['zh', 'en'] as const)('renders safe Markdown notes in %s with a keyboard-scrollable region', async locale => {
     const ui = await mount(Promise.resolve(status('idle', { manual: false })))
     ui.emit(status('checking', { locale, presentationId: 8 }))

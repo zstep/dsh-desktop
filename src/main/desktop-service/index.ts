@@ -93,7 +93,10 @@ export function initializeDesktopService(options: { getExitContext?: () => GpuEx
       stateDir: join(app.getPath('userData'), 'desktop-service'),
       logPath: join(app.getPath('userData'), 'desktop-service', 'diagnostics.log'),
       version: app.getVersion(), platform: process.platform, arch: process.arch,
-      remoteEnabled: true,
+      // The inherited policy service belongs to another product, and this
+      // build has no Pengbao-owned update or crash endpoint: keep every
+      // request local instead of draining reports or update checks remotely.
+      remoteEnabled: false,
       // Chromium networking uses the same proxy configuration as the desktop app.
       request: (url, init) => net.fetch(url, init),
       // Crash reports stay local: this build never uploads them.

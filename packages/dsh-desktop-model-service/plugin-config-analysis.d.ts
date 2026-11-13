@@ -28,11 +28,13 @@ export interface PluginEvidence {
 export type Template = null | string | number | boolean | { $semantic: Semantic } | Template[] | { [key: string]: Template }
 export interface ConfigurationWrite { path: string[]; value: Template; evidenceIds: string[] }
 export interface ConfigurationProposal { contractVersion: 1; protocol: 'openai'; capabilities: Capability[]; writes: ConfigurationWrite[] }
-export interface MaterializationValues { endpoint: string; credential: string; chatModel?: string; imageModel?: string; bindingId?: string; label?: string; current?: unknown }
+export interface MaterializationValues { endpoint: string; credential: string; chatModel?: string; imageModel?: string; chatModels?: string[]; imageModels?: string[]; bindingId?: string; label?: string; current?: unknown }
 export interface MaterializedWrite { path: string[]; value: unknown; append?: true }
 export function configurationSchemaDigest(schema: unknown): string
 export function listConfigurablePlugins(ctx: unknown): Promise<ConfigurablePlugin[]>
 export function collectPluginEvidence(ctx: unknown, entryId: string): Promise<PluginEvidence>
 export function validateConfigurationProposal(proposal: unknown, schema: unknown, evidenceIds: string[]): ConfigurationProposal
 export function materializeProposal(proposal: ConfigurationProposal, values: MaterializationValues): MaterializedWrite[]
+/** Model-semantic substitutions for the exact operations array returned by materializeProposal; excluded from its JSON shape. */
+export function materializedProposalModels(writes: MaterializedWrite[]): Readonly<Record<Capability, readonly string[]>>
 export function analyzePluginConfiguration(ctx: unknown, evidence: PluginEvidence, options?: { signal?: AbortSignal; selection?: { provider: 'pengbao'; model: string } }): Promise<ConfigurationProposal>

@@ -195,12 +195,16 @@ function render(): void {
 
   if (status.phase === 'available') {
     const actions = element('div', 'actions')
-    const accept = button(locale === 'zh' ? '更新' : 'Update', 'primary')
+    const accept = button(status.downloadPage
+      ? locale === 'zh' ? '前往下载页面' : 'Open download page'
+      : locale === 'zh' ? '更新' : 'Update', 'primary')
     accept.disabled = accepting
     accept.addEventListener('click', () => {
       accepting = true
       render()
-      void ipcRenderer.invoke('updates:download').catch((error: unknown) => {
+      void ipcRenderer.invoke('updates:download').then(() => {
+        if (status.downloadPage) { accepting = false; render() }
+      }).catch((error: unknown) => {
         accepting = false
         showActionError(error)
         console.error('[updater] unable to download update', error)
