@@ -58,6 +58,12 @@ export interface PengbaoGatewayOptions {
   jwt: string
   fetch?: typeof fetch
   maxBodyBytes?: number
+  /**
+   * Chat inference bodies carry the whole conversation (tool output included), so
+   * they outgrow the metadata cap by orders of magnitude on long sessions. Kept
+   * separate so `/v1/models` and config reads stay tightly bounded.
+   */
+  maxChatBodyBytes?: number
   maxConcurrent?: number
   /** Request ingestion/preflight and metadata deadline; not a chat response deadline. */
   timeoutMs?: number
@@ -203,6 +209,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
   let jwt = options.jwt
   if (!jwt || /[\r\n]/.test(jwt)) throw new Error('Invalid gateway credential')
   const maxBody = options.maxBodyBytes ?? 1_048_576
+  const maxChatBody = options.maxChatBodyBytes ?? 33_554_432
   const maxConcurrent = options.maxConcurrent ?? 4
   const timeout = options.timeoutMs ?? 120_000
   const chatIdleTimeout = options.chatIdleTimeoutMs ?? 300_000
@@ -213,7 +220,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     // Node clamps overflowing timer delays to 1ms; reject rather than silently cut streams.
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 2_147_483_647) throw new Error('Invalid gateway limit')
   }
-  for (const limit of [maxBody, maxConcurrent, imageMaxConcurrent]) {
+  for (const limit of [maxBody, maxChatBody, maxConcurrent, imageMaxConcurrent]) {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('Invalid gateway limit')
   }
   const upstreamFetch = options.fetch ?? fetch
@@ -284,6 +291,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     const isDefaults = req.method === 'GET' && req.url === '/v1/model-service/defaults' && grant.capabilities.has('chat.completions') && grant.models === undefined
     if (!isModels && !isPluginModels && !isPluginChat && !isChat && !isDefaults) return fail(res, 404)
     if (!grant.capabilities.has('chat.completions') && !isDefaults) return fail(res, 401)
+    const bodyLimit = isChat || isPluginChat ? maxChatBody : maxBody
     if (active.size >= maxConcurrent) return fail(res, 429)
     const started = Date.now()
     // One ID per network attempt, independent of user/session IDs and caller headers.
@@ -446,8 +454,8 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
       }
       if (req.headers['content-encoding']) throw new RequestFailure(415)
       const declaredBytes = Number(req.headers['content-length'] ?? 0)
-      if (declaredBytes > maxBody) throw new BodySizeFailure(declaredBytes, 'declared')
-      const body = isChat || isPluginChat ? chatBody(await readBody(req, maxBody, controller.signal)) : undefined
+      if (declaredBytes > bodyLimit) throw new BodySizeFailure(declaredBytes, 'declared')
+      const body = isChat || isPluginChat ? chatBody(await readBody(req, bodyLimit, controller.signal)) : undefined
       if (body && grant.models !== undefined) {
         if (!grant.models.has(body.model as string)) denyLocal('not-granted', 'chat', body.model as string)
         // Compatibility chat currently supports text/tool inference only, never arbitrary media URLs.
@@ -556,9 +564,24 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
             ...(firstByteMs === undefined ? {} : { firstByteMs, lastByteMs }),
             ...(abortReason === undefined ? {} : { abortReason }),
             ...(timeoutStage === undefined ? {} : { timeoutStage }),
-            ...(error instanceof BodySizeFailure ? { requestBytes: error.requestBytes, maxBodyBytes: maxBody, sizeSource: error.sizeSource } : {}),
+            ...(error instanceof BodySizeFailure ? { requestBytes: error.requestBytes, maxBodyBytes: bodyLimit, sizeSource: error.sizeSource } : {}),
             ...(code === undefined || abortReason !== undefined ? {} : { transportCode: code }) })
         } catch { /* Diagnostics must not change request handling. */ }
+      }
+      // Discard an unread request body before responding so the client can read
+      // the error instead of losing the connection mid-upload (which surfaces as
+      // a transport error and a pointless retry loop). Bounded: a client that
+      // keeps uploading forever must not pin the slot.
+      if (error instanceof BodySizeFailure && !req.destroyed && !req.complete) {
+        req.resume()
+        await new Promise<void>(resolve => {
+          const finish = () => { clearTimeout(timer); req.off('end', finish); req.off('close', finish); req.off('error', finish); resolve() }
+          const timer = setTimeout(finish, 5_000)
+          timer.unref()
+          req.once('end', finish)
+          req.once('close', finish)
+          req.once('error', finish)
+        })
       }
       fail(res, error instanceof RequestFailure ? error.status : controller.signal.aborted ? 504 : 502,
         error instanceof RequestFailure ? error.upstreamStatus : undefined)

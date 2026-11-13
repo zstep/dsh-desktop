@@ -398,7 +398,7 @@ describe('Pengbao gateway', () => {
   it.each(['declared', 'received'] as const)('diagnoses local %s body overflow using only bounded numeric metadata', async source => {
     const onFailure = vi.fn(() => { throw new Error('private sink') })
     const upstream = vi.fn((_req: IncomingMessage, res: ServerResponse) => { res.end('{}') })
-    const gateway = await gatewayFor(upstream, { maxBodyBytes: 64, onFailure })
+    const gateway = await gatewayFor(upstream, { maxChatBodyBytes: 64, onFailure })
     const body = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'PRIVATE'.repeat(30) }] })
     const response = await request(gateway, { ...chat({}), body,
       headers: source === 'declared' ? { 'Content-Length': String(Buffer.byteLength(body)) } : { 'Transfer-Encoding': 'chunked' } })
@@ -498,10 +498,57 @@ describe('Pengbao gateway', () => {
     socket.destroy()
   })
 
+  it('forwards multi-megabyte chat bodies that exceed the metadata cap', async () => {
+    const received: number[] = []
+    const gateway = await gatewayFor((req, res) => {
+      let size = 0
+      req.on('data', chunk => { size += chunk.length })
+      req.on('end', () => {
+        received.push(size)
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end('data: [DONE]\n\n')
+      })
+    })
+    const body = JSON.stringify({
+      model: 'm',
+      messages: [{ role: 'user', content: 'conversation '.repeat(340_000) }]
+    })
+    expect(Buffer.byteLength(body)).toBeGreaterThan(4 * 1024 * 1024)
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${gateway.capabilityToken}`, 'Content-Type': 'application/json' },
+      body
+    })
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('[DONE]')
+    // The gateway re-serializes the validated body, so compare bounds rather than exact bytes.
+    expect(received).toHaveLength(1)
+    expect(received[0]).toBeGreaterThan(4 * 1024 * 1024)
+  })
+
+  it('delivers an oversized chat body error the client can read instead of a transport reset', async () => {
+    const upstream = vi.fn((_req: IncomingMessage, res: ServerResponse) => { res.end('{}') })
+    const gateway = await gatewayFor(upstream, { maxChatBodyBytes: 64 })
+    // One MiB was enough to surface as ECONNRESET before the body was drained.
+    const body = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'x'.repeat(1024 * 1024) }] })
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${gateway.capabilityToken}`, 'Content-Type': 'application/json' },
+      body
+    })
+    expect(response.status).toBe(413)
+    expect(await response.text()).not.toContain('x')
+    expect(upstream).not.toHaveBeenCalled()
+  })
+
+  it.each([0, -1, NaN, 0.5, Infinity])('rejects unsafe chat body limits: %s', async limit => {
+    await expect(startPengbaoGateway({ jwt: 'fixture', maxChatBodyBytes: limit })).rejects.toThrow('Invalid gateway limit')
+  })
+
   it('limits bodies, invalid JSON, concurrency, and request duration', async () => {
     let markStarted: () => void = () => { throw new Error('request gate not initialized') }
     const started = new Promise<void>(resolve => { markStarted = resolve })
-    const gateway = await gatewayFor(() => { markStarted() }, { maxBodyBytes: 64, maxConcurrent: 1, timeoutMs: 1000 })
+    const gateway = await gatewayFor(() => { markStarted() }, { maxChatBodyBytes: 64, maxConcurrent: 1, timeoutMs: 1000 })
     expect((await request(gateway, chat({ model: 'm', messages: [], padding: 'x'.repeat(100) }))).status).toBe(413)
     expect((await request(gateway, { method: 'POST', path: '/v1/chat/completions', body: '{' })).status).toBe(400)
     const pending = request(gateway)
