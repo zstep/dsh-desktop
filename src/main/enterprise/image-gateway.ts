@@ -60,7 +60,11 @@ const MESSAGES: Record<ImageErrorCode, string> = {
   IMAGE_REVOKED: 'Image generation access was revoked. The server may still complete and charge for the request.',
   IMAGE_MODEL_UNSUPPORTED: 'This service does not support choosing an image model per request.',
   IMAGE_MODEL_UNAVAILABLE: 'The selected image model is no longer available. Refresh the model list and try again.',
-  IMAGE_PARAMETERS_UNSUPPORTED: 'The selected image parameters are unsupported or have changed. Refresh model capabilities.'
+  IMAGE_PARAMETERS_UNSUPPORTED: 'The selected image parameters are unsupported or have changed. Refresh model capabilities.',
+  IMAGE_PROVIDER_AUTH: 'The image provider rejected authentication; this is an administrator configuration issue.',
+  IMAGE_PROVIDER_REJECTED: 'The image generation service rejected the request; the underlying cause is unavailable.',
+  IMAGE_FETCH: 'The image was generated but could not be retrieved. The request may still have been charged.',
+  IMAGE_STORE: 'The image was generated but could not be saved. The request may still have been charged.',
 }
 
 function fail(res: ServerResponse, failure: ImageFailure, diagnostic?: PengbaoImageFailure): void {
