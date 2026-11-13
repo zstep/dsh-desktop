@@ -329,7 +329,7 @@ describe('packaged Harness shell', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it.each(['api/pluginMarket/search'])('lets %s finish after the ordinary deadline without replay', async path => {
+  it.each(['api/pluginMarket/search', 'api/model-service.configuration.analyze'])('lets %s finish after the ordinary deadline without replay', async path => {
     vi.useFakeTimers()
     let complete!: (response: Response) => void
     const fetcher = vi.fn<typeof fetch>()
@@ -352,6 +352,11 @@ describe('packaged Harness shell', () => {
   })
 
   it.each([
+    ['api/model-service.configuration.analyze', 'POST', 75_000],
+    ['api/model-service.configuration.analyze', 'GET', 30_000],
+    ['api/model-service.configuration.analyze/other', 'POST', 30_000],
+    ['api/model-service.configuration.analyze-extra', 'POST', 30_000],
+    ['api/model-service.configuration.inventory', 'GET', 30_000],
     ['api/pluginMarket/search', 'POST', 100_000],
     ['api/pluginMarket/search', 'GET', 30_000],
     ['api/pluginMarket/search/other', 'POST', 30_000],
@@ -381,9 +386,13 @@ describe('packaged Harness shell', () => {
     expect(response.status).toBe(504)
     expect(response.headers.get('content-type')).toContain('application/json')
     const body = await response.json()
-    expect(body.error).toContain('timed out')
-    expect(body.error).not.toContain('private')
-    if (deadline === 240_000) expect(body.error).toContain('charged')
+    if (path === 'api/model-service.configuration.analyze' && method === 'POST') {
+      expect(body).toEqual({ code: 'ANALYSIS_TIMEOUT' })
+    } else {
+      expect(body.error).toContain('timed out')
+      expect(body.error).not.toContain('private')
+      if (deadline === 240_000) expect(body.error).toContain('charged')
+    }
     expect(fetcher).toHaveBeenCalledTimes(3)
     expect(vi.getTimerCount()).toBe(0)
   })

@@ -5,6 +5,7 @@ import { isHarnessShellUrl, type HarnessBootPayload } from '../shared/harness-bo
 export { HARNESS_SHELL_URL, isHarnessShellUrl } from '../shared/harness-boot'
 const SHELL_ORIGIN = 'dsh-desktop://harness'
 const TIMEOUT_MS = 30_000
+const ANALYSIS_TIMEOUT_MS = 75_000
 // Painting returns its JSON only after generation/editing and image storage finish.
 const IMAGE_PAINT_TIMEOUT_MS = 240_000
 // Market search waits for the index's bounded 90-second download and parsing.
@@ -231,7 +232,8 @@ export class HarnessShell {
     if (!backend) return new Response('Harness unavailable', { status: 503, headers: { 'cache-control': 'no-store' } })
     const painting = request.method === 'POST' && url.pathname === '/plugins/copylee-image-gen/paint'
     const marketSearch = request.method === 'POST' && url.pathname === '/api/pluginMarket/search'
-    const timeoutMs = painting ? IMAGE_PAINT_TIMEOUT_MS : marketSearch ? MARKET_SEARCH_TIMEOUT_MS : TIMEOUT_MS
+    const configurationAnalysis = request.method === 'POST' && url.pathname === '/api/model-service.configuration.analyze'
+    const timeoutMs = painting ? IMAGE_PAINT_TIMEOUT_MS : marketSearch ? MARKET_SEARCH_TIMEOUT_MS : configurationAnalysis ? ANALYSIS_TIMEOUT_MS : TIMEOUT_MS
     const operation = this.operation(request.signal, timeoutMs)
     try {
       const headers = new Headers(request.headers)
@@ -296,11 +298,13 @@ export class HarnessShell {
       return new Response(body, { status: response.status, statusText: response.statusText, headers: responseHeaders })
     } catch {
       operation.finish()
-      if (operation.timedOut()) return Response.json({
-        error: painting
-          ? 'Image operation timed out. The server may still have generated and charged for the image. Do not automatically retry.'
-          : 'Harness request timed out.'
-      }, { status: 504, headers: { 'cache-control': 'no-store' } })
+      if (operation.timedOut()) return Response.json(
+        configurationAnalysis ? { code: 'ANALYSIS_TIMEOUT' } : {
+          error: painting
+            ? 'Image operation timed out. The server may still have generated and charged for the image. Do not automatically retry.'
+            : 'Harness request timed out.'
+        },
+        { status: 504, headers: { 'cache-control': 'no-store' } })
       return new Response('Harness proxy failed', { status: 502 })
     }
   }
