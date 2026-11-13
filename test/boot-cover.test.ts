@@ -94,7 +94,9 @@ describe('boot cover lifecycle', () => {
 expect(shadow?.querySelector('h1')?.textContent).toBe('Starting Pengbao AI')
     expect(shadow?.querySelector('img.mark')?.getAttribute('src')).toBe(BOOT_COVER_MARK_URL)
     expect(shadow?.querySelectorAll('img')).toHaveLength(1)
-    expect(BOOT_COVER_MARK_URL).toBe('dsh-desktop://desktop/startup-whale.gif')
+    expect(shadow?.querySelector('img.mark')?.getAttribute('src')).toBe('dsh-desktop://desktop/pengbao-b2-mark.png')
+    expect(shadow?.querySelector('img.mark')?.getAttribute('width')).toBe('480')
+    expect(shadow?.querySelector('img.mark')?.getAttribute('height')).toBe('480')
     expect(shadow?.querySelector('.markFrame')?.getAttribute('aria-hidden')).toBe('true')
 
     const desktop = document.implementation.createHTMLDocument()
@@ -146,7 +148,7 @@ expect(painted?.shadowRoot?.querySelector('h1')?.textContent).toBe('正在启动
     const root = doc.getElementById(BOOT_COVER_ID)
     const css = root?.shadowRoot?.querySelector('style')?.textContent ?? ''
     expect(root?.style.background).toBe('rgb(251, 251, 251)')
-    expect(css).toContain('aspect-ratio:480 / 276')
+    expect(css).toContain('aspect-ratio:1 / 1')
     expect(css).toContain('width:min(280px, 100%)')
     expect(css).toContain('translateY(-80px)')
     expect(css).not.toContain('pixelated')
