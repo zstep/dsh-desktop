@@ -1,7 +1,20 @@
 export type Semantic = 'endpoint' | 'credential' | 'chat-model' | 'image-model' | 'binding-id' | 'label'
 export type Capability = 'chat.completions' | 'image.generate'
 export interface ConfigurablePlugin { entryId: string; namespace: string; packageName: string; packageVersion: string; supported: boolean; reason: string }
-export interface EvidenceFile { id: string; path: string; digest: string; bytes: number; text: string; stat?: { size: number; mtimeMs: number; ino: number; dev: number } }
+export interface EvidenceFile {
+  id: string
+  path: string
+  /** SHA-256 of the entire original file, including bytes outside ranges. */
+  digest: string
+  /** Original file size, not the selected text size. */
+  bytes: number
+  /** UTF-8 excerpts joined with a single newline; manifest text is complete. */
+  text: string
+  /** Half-open byte offsets in the original file, sorted and non-overlapping. */
+  ranges: { start: number; end: number }[]
+  truncated: boolean
+  stat?: { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }
+}
 export interface PluginEvidence {
   identity: { entryId: string; namespace: string; packageName: string; packageVersion: string; root: string; schemaDigest: string; evidenceDigest: string; files: { path: string; digest: string }[] }
   /** Sanitized full runtime Config.toJSON() schema, without defaults or revived callbacks. */

@@ -87,6 +87,8 @@ export interface ModelService {
   catalog(options?: OperationOptions): Promise<ModelCatalog>
   status(options?: OperationOptions): Promise<ServiceStatus>
   imageStatus(options?: OperationOptions): Promise<Availability>
+  /** Server-declared chat default IDs, validated for boot-time selection. */
+  chatDefaults(options?: OperationOptions): Promise<{ readonly defaultModels: readonly string[] }>
   consumers(): readonly ConsumerRecord[]
   forConsumer(id: string): ConsumerScope
   dispose(): void

@@ -1,9 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { realpath } from 'node:fs/promises'
+import fsPromises, { realpath } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import z from '@deepseek-ai/schemastery'
 import {
   analyzePluginConfiguration,
@@ -38,6 +41,368 @@ async function fixture() {
   }
   return { root, schema, ctx, entry }
 }
+
+const chatProposal = ids => ({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes: [
+  { path: ['endpoint'], value: { $semantic: 'endpoint' }, evidenceIds: ids },
+  { path: ['credential', '$binding-id'], value: { token: { $semantic: 'credential' } }, evidenceIds: ids },
+  { path: ['chatModel'], value: { $semantic: 'chat-model' }, evidenceIds: ids }
+] })
+
+function offlineModel(requests, answer = chatProposal(['e2'])) {
+  return { stream(request) {
+    requests.push(request)
+    return (async function* () {
+      yield { type: 'text-delta', text: JSON.stringify(answer) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })()
+  } }
+}
+
+// Dropping oversized sources, hashing only excerpts, or using character offsets
+// instead of byte offsets must each break this observable evidence contract.
+test('extracts deterministic byte-ranged evidence from 1 MiB server and 3.5 MiB client bundles', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const sources = new Map()
+  for (const [path, size, marker, offset] of [
+    ['index.js', 1024 * 1024, 'fetch(config.endpoint + "/chat/completions", {model: config.chatModel})', 64 * 1024 - 20],
+    ['client.js', 3.5 * 1024 * 1024, 'const Config = {credential: "schema-only"}; /* 客户端实现 */', 3 * 1024 * 1024]
+  ]) {
+    const source = Buffer.alloc(size, 120)
+    source.write(marker, offset)
+    // UTF-8 at both potential excerpt boundaries must not produce replacements.
+    for (const position of [offset - 2049, offset + 2046]) source.write('界', position)
+    sources.set(path, source)
+    await writeFile(join(packageRoot, path), source)
+  }
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.deepEqual(evidence.files.map(file => file.path), ['package.json', 'index.js', 'client.js'])
+  for (const file of evidence.files.slice(1)) {
+    const source = sources.get(file.path)
+    assert.equal(file.bytes, source.length)
+    assert.equal(file.digest, createHash('sha256').update(source).digest('hex'))
+    assert.equal(file.truncated, true)
+    assert.ok(file.ranges.length > 0 && file.ranges.length <= 8)
+    assert.equal(file.text, file.ranges.map(({ start, end }) => {
+      assert.ok(start >= 0 && end <= source.length && end > start && end - start <= 4096)
+      return source.subarray(start, end).toString('utf8')
+    }).join('\n'))
+    assert.equal(file.text.includes('�'), false)
+    assert.ok(Buffer.byteLength(file.text) <= 8 * 4096 + 7)
+  }
+  assert.match(evidence.files[1].text, /\/chat\/completions/)
+  assert.match(evidence.files[2].text, /schema-only/)
+  assert.deepEqual(await collectPluginEvidence(ctx, 'fixture-provider'), evidence)
+  const requests = []
+  await analyzePluginConfiguration({ ...ctx, llm: offlineModel(requests) }, evidence,
+    { selection: { provider: 'pengbao', model: 'offline' } })
+  const payloadText = requests[0].messages[0].content[0].text
+  const payload = JSON.parse(payloadText)
+  assert.match(payloadText, /\/chat\/completions/)
+  assert.deepEqual(payload.files[1].ranges, evidence.files[1].ranges)
+  assert.equal(payload.files[1].bytes, 1024 * 1024)
+  assert.equal(payload.files[1].truncated, true)
+  assert.equal(payloadText.includes(root), false)
+  assert.equal(payloadText.includes('secret-from-host'), false)
+  assert.ok(Buffer.byteLength(payloadText) <= 256 * 1024)
+})
+
+test('bounds serialized model evidence including schema, escaping and complete manifest', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  // Each source fits the old text budget, but JSON escaping does not.
+  for (const path of ['index.js', 'client.js', 'config.js', 'schema.js']) {
+    await writeFile(join(packageRoot, path), 'config.endpoint;' + '\\'.repeat(60 * 1024))
+  }
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  const requests = []
+  await analyzePluginConfiguration({ ...ctx, llm: offlineModel(requests) }, evidence,
+    { selection: { provider: 'pengbao', model: 'offline' } })
+  const text = requests[0].messages[0].content[0].text
+  assert.ok(Buffer.byteLength(text) <= 256 * 1024, `serialized bytes: ${Buffer.byteLength(text)}`)
+  const payload = JSON.parse(text)
+  assert.equal(payload.files[0].text, evidence.files[0].text)
+  assert.equal(payload.files[0].truncated, false)
+  assert.ok(payload.files.slice(1).some(file => file.text.includes('config.endpoint')))
+  assert.ok(evidence.files.length <= 12)
+  assert.ok(evidence.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0) <= 256 * 1024)
+})
+
+test('trims model materials deterministically while preserving complete manifest and rejecting removed evidence ids', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const paths = Array.from({ length: 14 }, (_, index) => `config-${String(index).padStart(2, '0')}.js`)
+  const manifest = JSON.stringify({ name: 'fixture-provider', version: '1.2.3', main: 'index.js',
+    exports: Object.fromEntries(paths.map(path => [`./${path}`, `./${path}`])) })
+  await writeFile(join(packageRoot, 'package.json'), manifest)
+  const source = Buffer.alloc(128 * 1024, 92) // Backslashes double in serialized JSON.
+  for (const [index, anchor] of ['endpoint', 'credential', 'chatModel', 'Config', 'openai',
+    '/chat/completions', '/images/generations', '/images/edits', 'Authorization', 'Bearer '].entries()) {
+    source.write(anchor, 2048 + index * 12 * 1024)
+  }
+  for (const path of ['index.js', ...paths]) await writeFile(join(packageRoot, path), source)
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.ok(evidence.files.length <= 12)
+  assert.ok(evidence.files.reduce((bytes, file) => bytes + Buffer.byteLength(file.text), 0) <= 256 * 1024)
+  const requests = []
+  await analyzePluginConfiguration({ ...ctx, llm: offlineModel(requests) }, evidence,
+    { selection: { provider: 'pengbao', model: 'offline' } })
+  const first = requests[0].messages[0].content[0].text
+  const payload = JSON.parse(first)
+  assert.ok(Buffer.byteLength(first) <= 256 * 1024)
+  assert.equal(payload.files[0].text, manifest)
+  assert.ok(payload.files.length < evidence.files.length || payload.files.at(-1).ranges.length < evidence.files.find(file => file.id === payload.files.at(-1).id).ranges.length,
+    'serialization overhead must trim a source file or range')
+  await analyzePluginConfiguration({ ...ctx, llm: offlineModel(requests) }, evidence,
+    { selection: { provider: 'pengbao', model: 'offline' } })
+  assert.equal(requests[1].messages[0].content[0].text, first)
+  const removedId = evidence.files.find(file => !payload.files.some(sent => sent.id === file.id)).id
+  const original = console.warn
+  console.warn = () => {}
+  try {
+    await assert.rejects(() => analyzePluginConfiguration({ ...ctx, llm: offlineModel([], chatProposal([removedId])) }, evidence,
+      { selection: { provider: 'pengbao', model: 'offline' } }), { code: 'INVALID_PROPOSAL' })
+  } finally { console.warn = original }
+})
+
+test('rejects a schema and complete manifest that cannot fit serialized evidence before invoking the model', async t => {
+  const { ctx, entry, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  entry.fiber.runtime.Config = z.object({ endpoint: z.string(), credential: z.string().role('secret'),
+    chatModel: z.string(), protocol: z.const('\\'.repeat(140 * 1024)) })
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  const requests = []
+  await assert.rejects(() => analyzePluginConfiguration({ ...ctx, llm: offlineModel(requests) }, evidence,
+    { selection: { provider: 'pengbao', model: 'offline' } }), { code: 'EVIDENCE_UNAVAILABLE' })
+  assert.equal(requests.length, 0)
+})
+
+test('requires every manifest executable entrypoint when a sibling config file has usable anchors', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  await rm(join(packageRoot, 'index.js'))
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-provider', version: '1.2.3', main: 'server.js' }))
+  await writeFile(join(packageRoot, 'server.js'), Buffer.alloc(8 * 1024 * 1024 + 1, 120))
+  await writeFile(join(packageRoot, 'config.js'), 'config.endpoint + "/chat/completions"')
+  await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_UNAVAILABLE' })
+})
+
+// Omitting exports-only runtime targets would allow changed executable code to
+// retain the same approval identity even when a readable config sibling exists.
+test('rejects an oversized exports-only executable rather than approving only its config sibling', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  await rm(join(packageRoot, 'index.js'))
+  await mkdir(join(packageRoot, 'dist'))
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-provider', version: '1.2.3',
+    exports: { '.': './dist/server.js' } }))
+  await writeFile(join(packageRoot, 'dist/server.js'), Buffer.alloc(8 * 1024 * 1024 + 1, 120))
+  await writeFile(join(packageRoot, 'config.js'), 'config.endpoint + "/chat/completions"')
+  await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_UNAVAILABLE' })
+})
+
+test('binds conditional root export fallback targets to the evidence identity', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  await rm(join(packageRoot, 'index.js'))
+  await mkdir(join(packageRoot, 'dist'))
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-provider', version: '1.2.3',
+    exports: { '.': { import: ['./dist/server.mjs', './dist/fallback.mjs'], require: './dist/server.cjs' } } }))
+  for (const path of ['server.mjs', 'fallback.mjs', 'server.cjs']) {
+    await writeFile(join(packageRoot, 'dist', path), 'config.endpoint')
+  }
+  const before = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.deepEqual(before.files.map(file => file.path), ['package.json', 'dist/server.mjs', 'dist/fallback.mjs', 'dist/server.cjs'])
+  await writeFile(join(packageRoot, 'dist/fallback.mjs'), 'changed: config.endpoint')
+  const after = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.notEqual(before.identity.evidenceDigest, after.identity.evidenceDigest)
+})
+
+test('keeps a readable anchor-free bootstrap when it fits the evidence budget', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const source = `export { default } from './runtime.js'; /*${'x'.repeat(5 * 1024)}*/`
+  await writeFile(join(packageRoot, 'index.js'), source)
+  await writeFile(join(packageRoot, 'config.js'), 'config.endpoint + "/chat/completions"')
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  const bootstrap = evidence.files.find(file => file.path === 'index.js')
+  assert.equal(bootstrap.text, source)
+  assert.equal(bootstrap.truncated, false)
+  assert.equal(bootstrap.digest, createHash('sha256').update(source).digest('hex'))
+})
+
+test('collects required server and client before optional subpath exports exhaust allocation', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const paths = Array.from({ length: 23 }, (_, index) => `extra-${index}.js`)
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-provider', version: '1.2.3',
+    main: 'index.js', exports: Object.fromEntries(paths.map(path => [`./${path}`, `./${path}`])), dsh: { client: 'ui.js' } }))
+  for (const path of [...paths, 'ui.js']) await writeFile(join(packageRoot, path), 'config.endpoint')
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.ok(evidence.files.some(file => file.path === 'index.js'))
+  assert.ok(evidence.files.some(file => file.path === 'ui.js'))
+  assert.ok(evidence.files.length <= 12)
+})
+
+test('does not rescan duplicate candidate spellings and spend the aggregate scan budget twice', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const manifest = { name: 'fixture-provider', version: '1.2.3', main: 'index.js',
+    exports: { './first': './config.js', './second': 'config.js' } }
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest))
+  await writeFile(join(packageRoot, 'config.js'), Buffer.alloc(8 * 1024 * 1024, 120))
+  await writeFile(join(packageRoot, 'client.js'), 'config.endpoint + "/chat/completions"')
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.ok(evidence.files.some(file => file.path === 'client.js'))
+})
+
+test('rejects FIFO candidates without blocking or treating them as evidence', { skip: process.platform === 'win32' }, async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  execFileSync('mkfifo', [join(packageRoot, 'config.js')])
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.equal(evidence.files.some(file => file.path === 'config.js'), false)
+})
+
+test('collects regular nested manifest entrypoints without accepting symlink directories', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-provider', version: '1.2.3', main: 'src/index.ts' }))
+  await writeFile(join(packageRoot, 'src/index.ts'), 'config.endpoint + "/chat/completions"')
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.ok(evidence.files.some(file => file.path === 'src/index.ts'))
+  await rm(join(packageRoot, 'src'), { recursive: true })
+  await mkdir(join(root, 'outside'))
+  await writeFile(join(root, 'outside/index.ts'), 'config.endpoint')
+  await symlink(join(root, 'outside'), join(packageRoot, 'src'), process.platform === 'win32' ? 'junction' : 'dir')
+  await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_UNAVAILABLE' })
+})
+
+test('never enumerates a symlinked discovery directory outside the package', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const outside = join(root, 'outside')
+  await mkdir(outside)
+  await writeFile(join(outside, 'config-private.js'), 'private-fixture')
+  const linked = join(await realpath(packageRoot), 'lib')
+  await symlink(outside, linked, process.platform === 'win32' ? 'junction' : 'dir')
+  const originals = { readdir: fsPromises.readdir, opendir: fsPromises.opendir }
+  let outsideReads = 0
+  for (const name of Object.keys(originals)) fsPromises[name] = async (...args) => {
+    if (String(args[0]) === linked) outsideReads++
+    return originals[name](...args)
+  }
+  syncBuiltinESMExports()
+  try {
+    const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+    assert.equal(outsideReads, 0)
+    assert.equal(evidence.files.some(file => file.path.startsWith('lib/')), false)
+  } finally {
+    Object.assign(fsPromises, originals)
+    syncBuiltinESMExports()
+  }
+})
+
+test('rejects an earlier source changed while a later source is being read', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const source = join(packageRoot, 'index.js')
+  const later = join(packageRoot, 'client.js')
+  await writeFile(later, 'config.endpoint')
+  const originalOpen = fsPromises.open
+  let changed = false
+  fsPromises.open = async (...args) => {
+    if (args[0] === await realpath(later) && !changed) {
+      changed = true
+      await writeFile(source, 'changed implementation: config.endpoint')
+    }
+    return originalOpen(...args)
+  }
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_CHANGED' })
+    assert.equal(changed, true)
+  } finally {
+    fsPromises.open = originalOpen
+    syncBuiltinESMExports()
+  }
+})
+
+test('keeps evidence at the 8 MiB scan boundary and omits an oversized sibling', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  const source = Buffer.alloc(8 * 1024 * 1024, 120)
+  source.write('config.endpoint + "/chat/completions"', source.length - 100)
+  await writeFile(join(packageRoot, 'index.js'), source)
+  await writeFile(join(packageRoot, 'client.js'), Buffer.alloc(8 * 1024 * 1024 + 1, 120))
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  assert.deepEqual(evidence.files.map(file => file.path), ['package.json', 'index.js'])
+  assert.equal(evidence.files[1].bytes, 8 * 1024 * 1024)
+  assert.match(evidence.files[1].text, /\/chat\/completions/)
+})
+
+test('fails safely when local per-file or aggregate scan limits leave no implementation evidence', async t => {
+  for (const [name, sizes] of [
+    ['per-file', [8 * 1024 * 1024 + 1]],
+    // The manifest also counts toward the 16 MiB aggregate scan bound.
+    ['aggregate', [8 * 1024 * 1024, 8 * 1024 * 1024]]
+  ]) await t.test(name, async t => {
+    const { ctx, root } = await fixture()
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+    for (let index = 0; index < sizes.length; index++) {
+      const source = Buffer.alloc(sizes[index], 120)
+      if (index > 0) source.write('config.endpoint + "/chat/completions"', source.length - 100)
+      await writeFile(join(packageRoot, index === 0 ? 'index.js' : 'client.js'), source)
+    }
+    await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_UNAVAILABLE' })
+  })
+})
+
+test('rejects a file-symlink executable when the platform permits creating one', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  await rm(join(packageRoot, 'index.js'))
+  await writeFile(join(root, 'outside.js'), 'config.endpoint + "/chat/completions"')
+  try {
+    await symlink(join(root, 'outside.js'), join(packageRoot, 'index.js'), 'file')
+  } catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+      t.skip('Windows file symlink creation requires Developer Mode or elevation')
+      return
+    }
+    throw error
+  }
+  await writeFile(join(packageRoot, 'config.js'), 'config.endpoint')
+  await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_UNAVAILABLE' })
+})
+
+test('does not turn binary source or excluded credential files into implementation evidence', async t => {
+  const { ctx, root } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageRoot = join(root, 'profiles/web/node_modules/fixture-provider')
+  await writeFile(join(packageRoot, 'index.js'), Buffer.from('config.endpoint\0/chat/completions'))
+  await mkdir(join(packageRoot, 'credentials'))
+  await writeFile(join(packageRoot, 'credentials/config.js'), 'config.endpoint + "private-fixture-value"')
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-provider', version: '1.2.3',
+    main: 'index.js', exports: './credentials/config.js' }))
+  await assert.rejects(() => collectPluginEvidence(ctx, 'fixture-provider'), { code: 'EVIDENCE_UNAVAILABLE' })
+})
 
 test('lists and collects bounded package evidence without resolved values', async () => {
   const { ctx, root } = await fixture()
@@ -359,7 +724,8 @@ test('decodes a fenced proposal and repairs one rejected answer', async () => {
     assert.equal(calls[1].messages.length, 2)
     assert.match(calls[1].messages[1].content[0].text, /rejected by host validation/)
     assert.match(calls[1].messages[1].content[0].text, /INVALID_PROPOSAL: endpoint/)
-    assert.match(warnings.join('\n'), /output=".*https:\/\/literal.invalid/)
+    assert.equal(warnings.some(line => line.includes('https://literal.invalid')), false)
+    assert.match(warnings.join('\\n'), /analysis proposal rejected: INVALID_PROPOSAL: endpoint/)
     // Two rejected answers still surface the opaque code to the client.
     const rejected = { ...ctx, llm: { stream: () => (async function * () {
       yield { type: 'text-delta', text: invalid }

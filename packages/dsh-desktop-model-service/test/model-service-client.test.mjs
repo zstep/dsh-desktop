@@ -494,9 +494,25 @@ test('assistant keeps verification failure distinct from saved-active and offers
   app.dispose()
 })
 
+test('assistant explains missing implementation evidence without offering a save', async () => {
+  for (const language of ['en', 'zh']) {
+    const app = mount({ language, plugins: assistantPlugins(), request(endpoint, payload, next) {
+      return endpoint === 'configuration.analyze' ? Response.json({ code: 'EVIDENCE_UNAVAILABLE' }, { status: 422 }) : next(endpoint, payload)
+    } })
+    await app.settle()
+    await app.button('assistantAnalyze').props.onClick()
+    await app.settle()
+    assert.ok(app.html().includes(language === 'zh' ? '缺少足够的插件源码证据' : 'Not enough plugin source evidence'))
+    assert.equal(app.elements(node => node.type === 'button' && app.text(node) === app.t('assistantSave')).length, 0)
+    assert.equal(app.calls.some(call => call.endpoint === 'configuration.apply'), false)
+    app.dispose()
+  }
+})
+
 test('assistant reports each host-side apply failure with its own message', async () => {
   const cases = [['FORBIDDEN', 'assistantNotApproved'], ['RECOVERY_REQUIRED', 'assistantRecoveryRequired'],
-    ['PLAN_EXPIRED', 'assistantExpired'], ['VERIFICATION_FAILED', 'assistantVerificationFailed']]
+    ['PLAN_EXPIRED', 'assistantExpired'], ['VERIFICATION_FAILED', 'assistantVerificationFailed'],
+    ['EVIDENCE_CHANGED', 'assistantConflict'], ['ANALYSIS_TIMEOUT', 'assistantAnalysisTimeout']]
   for (const [code, key] of cases) {
     const app = mount({ plugins: assistantPlugins(), request(endpoint, payload, next) {
       return endpoint === 'configuration.apply' ? Response.json({ code }, { status: 409 }) : next(endpoint, payload)

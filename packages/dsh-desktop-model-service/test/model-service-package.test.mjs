@@ -88,6 +88,25 @@ test('server-only image default is metadata, not an image model selection', asyn
   service.dispose()
 })
 
+test('server chat defaults are exposed as validated IDs for boot-time selection', async () => {
+  const service = create()
+  assert.deepEqual(await service.chatDefaults(), { defaultModels: ['chat-model'] })
+  service.dispose()
+})
+
+test('chat defaults degrade to an empty list instead of failing startup', async () => {
+  const offline = createModelService({ transport: {
+    models: async () => [], defaults: async () => { throw new Error('offline') }
+  }, getBindings: () => ({}) })
+  assert.deepEqual(await offline.chatDefaults(), { defaultModels: [] })
+  offline.dispose()
+  const malformed = createModelService({ transport: {
+    models: async () => [], defaults: async () => ({ defaultModels: ['bad id', 'https://leak.test'] })
+  }, getBindings: () => ({}) })
+  await assert.rejects(() => malformed.chatDefaults(), { code: 'INVALID_RESPONSE' })
+  malformed.dispose()
+})
+
 test('malformed chat message is rejected before dispatch', () => {
   let dispatched = false
   const service = create({ stream: () => { dispatched = true; return (async function* () {})() } })

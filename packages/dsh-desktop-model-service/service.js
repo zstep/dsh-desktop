@@ -107,6 +107,21 @@ export function createModelService({ llm, getBindings = () => ({}), signal, tran
       || defaults.defaultModels.some(id => !identifier(id))) fail('INVALID_RESPONSE')
     return { models, defaultModel: defaults.defaultModels.find(id => models.some(model => model.id === id)) }
   }
+  /** Server-declared chat defaults as validated IDs. Never a catalog-order fallback. */
+  async function chatDefaults(options = {}) {
+    return bounded(lifetime, LIMITS.metadataMs, options, async signal => {
+      if (!hasChatRegistration() || typeof chatTransport.defaults !== 'function') return freeze({ defaultModels: [] })
+      let defaults
+      try { defaults = await chatTransport.defaults({ signal }) }
+      catch (error) {
+        if (signal.aborted || error?.code === 'INVALID_RESPONSE') throw error
+        return freeze({ defaultModels: [] })
+      }
+      if (!record(defaults) || !Array.isArray(defaults.defaultModels) || defaults.defaultModels.length > LIMITS.models
+        || defaults.defaultModels.some(id => !identifier(id))) fail('INVALID_RESPONSE')
+      return freeze({ defaultModels: [...new Set(defaults.defaultModels)] })
+    })
+  }
   async function bounded(life, timeout, options, task) {
     const op = life.operation(timeout, optionsSignal(options))
     try { return await op.wait(Promise.resolve().then(() => {
@@ -403,6 +418,6 @@ export function createModelService({ llm, getBindings = () => ({}), signal, tran
       return { available: current.available, reason: current.reason }
     })
   }
-  return Object.freeze({ contractVersion: 1, catalog, status, imageStatus: serviceImageStatus, forConsumer, consumers: () => records,
+  return Object.freeze({ contractVersion: 1, catalog, status, imageStatus: serviceImageStatus, chatDefaults, forConsumer, consumers: () => records,
     dispose() { lifetime.dispose(); for (const scope of scopes) scope.dispose(); chatTransport.dispose?.() } })
 }

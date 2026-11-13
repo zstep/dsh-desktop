@@ -1,5 +1,5 @@
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js
-index fe7f3d6..a48a370 100644
+index fe7f3d6..9a40940 100644
 --- a/node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js
 @@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
@@ -58,13 +58,17 @@ index fe7f3d6..a48a370 100644
  						"settings.action": {
  							kind: "list",
  							scope: "root"
-@@ -1566,6 +1570,9 @@ window.__ModuleLoader__.load({
+@@ -1563,7 +1567,13 @@ window.__ModuleLoader__.load({
+ 					},
+ 					inject: shellInjected
  				}, SettingsRoot);
-+				const openModelService = () => shellInstance.actions.openSection("desktop-model-service");
++				const openModelService = () => {
++					window.dispatchEvent(new CustomEvent("dsh-settings-plugins:select", { detail: { id: "desktop-model-service" } }));
++					shellInstance.actions.openSection("plugins");
++				};
 +				window.addEventListener("dsh-desktop-model-service:open", openModelService);
  				return () => {
 +					window.removeEventListener("dsh-desktop-model-service:open", openModelService);
  					disposeCommand();
  					disposeSlot();
  				};
- 			}));

@@ -1,0 +1,62 @@
+diff --git a/node_modules/@deepseek-ai/dsh-client-ui-settings-plugins/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-settings-plugins/lib/client.js
+index 49498ac..69796a5 100644
+--- a/node_modules/@deepseek-ai/dsh-client-ui-settings-plugins/lib/client.js
++++ b/node_modules/@deepseek-ai/dsh-client-ui-settings-plugins/lib/client.js
+@@ -34,13 +34,21 @@ window.__ModuleLoader__.load({
+ 		//#region lib/types/client/PluginsSettingsSection.js
+ 		/** Plugins settings section: localized tabs around feature-owned pages. */
+ 		/** Render one Plugins page whose contents arrive from feature-owned tabs; one contribution shows as the page itself. */
+-		function PluginsSettingsSection({ t, renderSlot, useTabs }) {
++		function PluginsSettingsSection({ t, renderSlot, useTabs, useSelection }) {
++			const selection = useSelection((value) => value);
++			const appliedSelection = (0, react.useRef)();
+ 			const tabsId = (0, react.useId)();
+ 			const tabRefs = (0, react.useRef)([]);
+ 			const rows = useTabs((value) => value);
+ 			const [activeId, setActiveId] = (0, react.useState)();
+ 			const [visitedIds, setVisitedIds] = (0, react.useState)(() => /* @__PURE__ */ new Set());
+-			const active = rows.find((row) => row.id === activeId)?.id ?? rows[0]?.id;
++			const requested = selection && selection !== appliedSelection.current && rows.some((row) => row.id === selection.id) ? selection.id : void 0;
++			const active = requested ?? rows.find((row) => row.id === activeId)?.id ?? rows[0]?.id;
++			(0, react.useEffect)(() => {
++				if (requested === void 0) return;
++				appliedSelection.current = selection;
++				setActiveId(requested);
++			}, [requested, selection]);
+ 			const single = rows.length === 1 ? rows[0] : void 0;
+ 			(0, react.useEffect)(() => {
+ 				if (active === void 0) return;
+@@ -224,10 +232,32 @@ window.__ModuleLoader__.load({
+ 				ru,
+ 				pt
+ 			}), "ui-settings-plugins: section dictionaries");
++			let selection;
++			const selectionListeners = /* @__PURE__ */ new Set();
++			ctx.effect(() => {
++				const select = (event) => {
++					const id = event.detail?.id;
++					if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) return;
++					selection = { id };
++					for (const listener of selectionListeners) listener();
++				};
++				window.addEventListener("dsh-settings-plugins:select", select);
++				return () => {
++					window.removeEventListener("dsh-settings-plugins:select", select);
++					selection = void 0;
++					selectionListeners.clear();
++				};
++			}, "ui-settings-plugins: child navigation");
+ 			let tabsVersion = -1;
+ 			let tabsRevision = -1;
+ 			let tabs = [];
+-			const sectionInjected = () => ({ hooks: { tabs: {
++			const sectionInjected = () => ({ hooks: { selection: {
++				getSnapshot: () => selection,
++				subscribe: (listener) => {
++					selectionListeners.add(listener);
++					return () => selectionListeners.delete(listener);
++				}
++			}, tabs: {
+ 				getSnapshot: () => {
+ 					const version = ctx.slots.getVersion("settings.plugins.tab");
+ 					const revision = ctx.locale.getSnapshot().revision;

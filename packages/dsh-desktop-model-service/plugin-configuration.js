@@ -282,10 +282,9 @@ export function setupPluginConfiguration(ctx, service) {
           return Response.json(result, { headers: { 'Cache-Control': 'no-store' } })
         } catch (error) {
           const allowed = ['INVALID_REQUEST', 'FORBIDDEN', 'CONFLICT', 'UNAVAILABLE', 'PLAN_EXPIRED', 'PLUGIN_UNAVAILABLE', 'MODEL_UNAVAILABLE',
-            'ANALYSIS_UNAVAILABLE', 'ANALYSIS_CANCELLED', 'ANALYSIS_TIMEOUT', 'ANALYSIS_LIMIT', 'INVALID_PROPOSAL', 'ANALYSIS_FAILED', 'VERIFICATION_FAILED', 'RECOVERY_REQUIRED']
+            'ANALYSIS_UNAVAILABLE', 'ANALYSIS_CANCELLED', 'ANALYSIS_TIMEOUT', 'ANALYSIS_LIMIT', 'EVIDENCE_UNAVAILABLE', 'EVIDENCE_CHANGED', 'INVALID_PROPOSAL', 'ANALYSIS_FAILED', 'VERIFICATION_FAILED', 'RECOVERY_REQUIRED']
           const code = error?.name === 'AbortError' ? 'ANALYSIS_CANCELLED' : allowed.includes(error?.code) ? error.code : 'UNAVAILABLE'
-          // Diagnostics only: the client wire still carries an opaque code. Keep the raw internal
-          // code in the log so a collapsed UNAVAILABLE can be traced without exposing any values.
+          // Diagnostics contain only fixed safe codes; never serialize model output or evidence.
           const detail = typeof error?.detail === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(error.detail) ? ` [${error.detail}]` : ''
           console.warn(`[model-service] configuration.${action} failed: ${code}${error?.code && error.code !== code ? ` (${error.code})` : ''}${detail}`)
           // Only a host approval denial may carry a fixed-vocabulary reason to the client.

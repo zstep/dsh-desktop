@@ -8,6 +8,7 @@ import z from '@deepseek-ai/schemastery'
 import { registerPrivatePluginConfiguration } from '../private.js'
 import { installPluginConfigurationRuntime, readPluginConfigurations } from '../plugin-configuration-runtime.js'
 import { createPluginConfigurationController } from '../plugin-configuration.js'
+import { collectPluginEvidence } from '../plugin-config-analysis.js'
 
 const proposal = writes => ({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes })
 const CHAT_PROPOSAL = proposal([
@@ -173,10 +174,45 @@ async function scenario({ image = false, apply }) {
   }
 }
 
+// If source digests cover snippets only, an unshown implementation change could
+// wrongly apply a stale approval and issue a credential lease.
+async function staleApprovalTests(t, broker) {
+  for (const position of [500_020, 100]) await t.test(`changed byte ${position}`, async () => {
+    const { root, profileDir, entry, ctx, service, effects } = await fixture()
+    const packageRoot = join(profileDir, 'node_modules/@fixture/chatplugin')
+    const source = Buffer.alloc(1024 * 1024, 120)
+    source.write('fetch(config.baseUrl + "/chat/completions", {apiKey: config.apiKey, model: config.model})', 500_000)
+    await writeFile(join(packageRoot, 'index.js'), source)
+    const controller = createPluginConfigurationController(ctx, service)
+    try {
+      await installPluginConfigurationRuntime(ctx)
+      const evidence = await collectPluginEvidence(ctx, 'fixture-chat')
+      const implementation = evidence.files.find(file => file.path === 'index.js')
+      assert.ok(implementation, 'large implementation must be part of the approval evidence')
+      assert.equal(implementation.ranges.some(({ start, end }) => start <= position && end > position), position !== 100)
+      const analysis = await controller.analyze({ entryId: 'fixture-chat' })
+      const before = broker.counts()
+      source[position] = source[position] === 121 ? 122 : 121
+      await writeFile(join(packageRoot, 'index.js'), source)
+      await assert.rejects(() => controller.apply({ planId: analysis.planId }), { code: 'CONFLICT' })
+      assert.equal(entry.options.config, undefined)
+      assert.deepEqual(await readPluginConfigurations(profileDir), [])
+      assert.deepEqual(broker.counts(), before)
+    } finally {
+      controller.dispose()
+      for (const cleanup of effects) await cleanup()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+}
+
 test('analyze, apply, and rollback keep markers in the profile layer and compare absent config as empty', async t => {
   const broker = await gateway()
   registerPrivatePluginConfiguration(broker.registration)
   try {
+    await t.test('large bundle changes inside or outside snippets invalidate approval without config writes', async t => {
+      await staleApprovalTests(t, broker)
+    })
     await t.test('chat-only catalog applies one chat model', async () => {
       const before = broker.counts()
       await scenario({ apply: async (controller, entry, profileDir) => {
