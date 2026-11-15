@@ -28,6 +28,10 @@
       "types": "./default-plugins.d.mts",
       "default": "./default-plugins.mjs"
     },
+    "./default-market": {
+      "types": "./default-market.d.mts",
+      "default": "./default-market.mjs"
+    },
     "./plugin-state": {
       "types": "./plugin-state.d.ts",
       "default": "./plugin-state.mjs"

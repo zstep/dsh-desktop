@@ -55,6 +55,7 @@ import {
   installProfileDependenciesWithDsh,
   removeProfilePluginWithDsh
 } from './runtime/profile-plugin-command'
+import { markDefaultMarketRemoved } from 'dsh-desktop-market-installer/default-market'
 import {
   demoteMarketGeneration,
   ensureMarketBaseline,
@@ -2037,6 +2038,7 @@ async function removeMarket(dshHome: string): Promise<{ ok: boolean; detail?: st
  */
 async function uninstallMarketAndRestart(): Promise<{ ok: boolean }> {
   const dshHome = accountHome()
+  await markDefaultMarketRemoved(join(dshHome, 'profiles', 'web'))
   await showSplash()
   await runtime.stop()
   const result = await removeMarket(dshHome)

@@ -10,6 +10,50 @@ import { ensurePluginMarketDefaults } from '../src/main/state/plugin-market-defa
 import { HarnessShell, HARNESS_SHELL_URL } from '../src/main/harness-shell'
 import { resolveTestNodeExecutable } from './node-executable'
 
+it('ships the default community index so Discover needs no manual source', async () => {
+  const root = resolve(import.meta.dirname, '..')
+  const home = await mkdtemp(join(tmpdir(), 'pengbao-market-default-'))
+  const dshEntryPath = join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
+  const profile = join(home, 'profiles', 'web')
+  let runtime: HarnessRuntime | undefined
+  try {
+    await ensurePluginMarketDefaults(home, dshEntryPath)
+    await symlink(join(root, 'node_modules'), join(home, 'profiles', 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
+    const probe = join(home, 'probe.mjs')
+    await writeFile(probe, `
+export const inject = ['pluginMarket', 'connection'];
+export function apply(ctx) {
+  ctx.connection.fetch.register({ path: '/api/market-default', methods: ['POST'], fetch: async () => Response.json(ctx.pluginMarket.listIndexes()) });
+}
+`)
+    const patch = join(home, 'probe.patch.yml')
+    await writeFile(patch, `${await readFile(join(root, 'build/dsh-desktop-safe.patch.yml'), 'utf8')}\n- insert:\n    - id: market-probe\n      name: ${JSON.stringify(pathToFileURL(probe).href)}\n`)
+    const activeRuntime = new HarnessRuntime({
+      dshEntryPath, nodeEntryPath: join(root, 'build/harness-node-entry.mjs'),
+      nodeExecutablePath: resolveTestNodeExecutable(), dshPatchPath: patch,
+      dshSafePatchPath: join(root, 'build/dsh-desktop-safe.patch.yml'), dshHome: home,
+      logPath: join(home, 'runtime.log'), startupTimeoutMs: 30_000, preferredPort: 0,
+      launchProcess: (executable, args, options) => spawn(executable, args, options), onChanged() {}
+    })
+    runtime = activeRuntime
+    await mkdir(join(home, 'launch-root'))
+    await activeRuntime.start(join(home, 'launch-root'))
+    const snapshot = activeRuntime.snapshot()
+    expect(snapshot.phase, snapshot.logs.join('\n')).toBe('ready')
+    if (!snapshot.url || !snapshot.authToken) throw new Error('Missing Harness endpoint')
+    const login = await fetch(`${snapshot.url}/?token=${encodeURIComponent(snapshot.authToken)}`, { redirect: 'manual' })
+    const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+    await login.body?.cancel()
+    const response = await fetch(`${snapshot.url}/api/market-default`, { method: 'POST', headers: { Cookie: cookie } })
+    expect(response.status, activeRuntime.snapshot().logs.join('\n')).toBe(200)
+    const indexes = await response.json()
+    expect(indexes.map((index: { url: string }) => index.url)).toContain('https://dshmarket.com/index.json')
+  } finally {
+    await runtime?.stop()
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+}, 180_000)
+
 it('boots bundled discovery, searches an index without installing, and persists editable sources across restart', async () => {
   const root = resolve(import.meta.dirname, '..')
   const home = await mkdtemp(join(tmpdir(), 'pengbao-market-runtime-'))

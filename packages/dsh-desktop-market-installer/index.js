@@ -22,11 +22,12 @@ import {
 import { DEFAULT_NPM_REGISTRY, resolveMarketRegistry } from './market-registry.mjs'
 import { forgetPlugin } from './plugin-state.mjs'
 import { provisionDefaultPlugins } from './default-plugins.mjs'
+import { markDefaultMarketInstalled, markDefaultMarketRemoved, readDefaultMarketIntent } from './default-market.mjs'
 import { SIDELINE_MARKER } from './pnpm-runner.mjs'
 import { removeTree } from './remove-tree.mjs'
 import { hideConsoleCmdAssignment, hideConsoleImportArguments } from './windows-hide-console.mjs'
 
-export const RECOMMENDED_MARKET_VERSION = '^1.66.47'
+export const RECOMMENDED_MARKET_VERSION = '1.66.47'
 export const MARKET_PACKAGE = 'dshmarket'
 export const MARKET_PROFILE = 'web'
 export const STATUS_PATH = '/dsh-desktop/market-installer/status'
@@ -180,6 +181,32 @@ function sendJson(res, status, payload) {
     'content-length': Buffer.byteLength(body)
   })
   res.end(body)
+}
+
+/**
+ * Restore only the known manifest bytes after a failed mutation. The existing
+ * lockfile is evidence of what pnpm attempted and must survive; deleting it
+ * would hide the failed operation without proving a clean rollback.
+ */
+export async function restoreFailedMarketOperation(manifestPath, manifestSnapshot) {
+  if (manifestSnapshot !== undefined) await atomicWrite(manifestPath, manifestSnapshot)
+}
+
+/**
+ * The package we just pinned must be the one the profile will boot: exact
+ * expected name/version and a readable bundle patch. A pnpm exit code alone
+ * cannot establish that.
+ */
+export async function verifyInstalledMarket(home) {
+  const directory = profileDirectory(home)
+  const installed = JSON.parse(await readFile(join(directory, 'node_modules', MARKET_PACKAGE, 'package.json'), 'utf8'))
+  if (installed?.name !== MARKET_PACKAGE || installed?.version !== RECOMMENDED_MARKET_VERSION) {
+    throw new Error(`Installed ${MARKET_PACKAGE} is ${installed?.name}@${installed?.version}, expected ${MARKET_PACKAGE}@${RECOMMENDED_MARKET_VERSION}.`)
+  }
+  const patch = installed?.dsh?.bundle?.patch
+  if (typeof patch !== 'string' || !existsSync(join(directory, 'node_modules', MARKET_PACKAGE, patch))) {
+    throw new Error(`Installed ${MARKET_PACKAGE} has no readable bundle patch.`)
+  }
 }
 
 function shellQuote(value) {
@@ -956,15 +983,6 @@ export async function apply(ctx) {
   ctx.effect(() => () => desktopPnpm.dispose(), 'dsh-desktop-market-installer: desktop pnpm')
   // Optional services become available after composition. Never hold ready on
   // market I/O, and never seed/provision the recovery Profile.
-  ctx.inject(['pluginMarket', 'pluginManager'], (marketCtx) => marketCtx.effect(() => {
-    const lifetime = new AbortController()
-    const manager = marketCtx.pluginManager
-    const profileDir = manager?.profile?.dir
-    if (typeof profileDir !== 'string' || resolve(profileDir) !== resolve(directory)) return () => {}
-    const report = error => process.stderr.write(`dsh-desktop: default plugin provisioning: ${error instanceof Error ? error.message : String(error)}\n`)
-    void provisionDefaultPlugins({ home, pluginMarket: marketCtx.pluginMarket, pluginManager: manager, signal: lifetime.signal, report }).catch(report)
-    return () => lifetime.abort()
-  }, 'dsh-desktop-market-installer: default plugins'))
 
   const runProfileCommand = async (args, action) => {
     const handle = desktopPnpm.runPlugin(args, directory)
@@ -1050,6 +1068,7 @@ export async function apply(ctx) {
     const current = await readMarketInstallation(home)
     if (current.installedVersion) {
       phase = 'idle'
+      await markDefaultMarketInstalled(directory, 'already-installed')
       return
     }
 
@@ -1070,16 +1089,14 @@ export async function apply(ctx) {
       if (!installed.installedVersion) {
         throw new Error('pnpm completed, but dshmarket was not found in the web profile.')
       }
+      await verifyInstalledMarket(home)
       phase = 'idle'
       detail = undefined
       restartRequired = true
+      await markDefaultMarketInstalled(directory, 'restart-required')
     } catch (error) {
       await cleanStaleTemporaryDirectories(home).catch(() => undefined)
-      if (manifestSnapshot !== undefined) {
-        await atomicWrite(manifestPath, manifestSnapshot).catch(() => undefined)
-      }
-      const lockfilePath = join(directory, 'pnpm-lock.yaml')
-      await rm(lockfilePath, { force: true }).catch(() => undefined)
+      await restoreFailedMarketOperation(manifestPath, manifestSnapshot).catch(() => undefined)
       phase = 'error'
       detail = error instanceof Error ? error.message : String(error)
       ctx.logger.warn(error instanceof Error ? error : new Error(detail))
@@ -1088,6 +1105,7 @@ export async function apply(ctx) {
 
   const runUninstall = async () => {
     phase = 'uninstalling'
+    await markDefaultMarketRemoved(directory)
     detail = undefined
     restartRequired = false
     const current = await readMarketInstallation(home)
@@ -1118,13 +1136,32 @@ export async function apply(ctx) {
       restartRequired = true
     } catch (error) {
       await cleanStaleTemporaryDirectories(home).catch(() => undefined)
-      const lockfilePath = join(directory, 'pnpm-lock.yaml')
-      await rm(lockfilePath, { force: true }).catch(() => undefined)
+      await restoreFailedMarketOperation(manifestPath, manifestSnapshot).catch(() => undefined)
       phase = 'error'
       detail = error instanceof Error ? error.message : String(error)
       ctx.logger.warn(error instanceof Error ? error : new Error(detail))
     }
   }
+
+  // Optional services become available after composition. Never hold ready on
+  // market I/O, and never seed/provision the recovery Profile.
+  ctx.inject(['pluginMarket', 'pluginManager'], (marketCtx) => marketCtx.effect(() => {
+    const lifetime = new AbortController()
+    const manager = marketCtx.pluginManager
+    const profileDir = manager?.profile?.dir
+    if (typeof profileDir !== 'string' || resolve(profileDir) !== resolve(directory)) return () => {}
+    const report = error => process.stderr.write(`dsh-desktop: default plugin provisioning: ${error instanceof Error ? error.message : String(error)}\n`)
+    const runProvisioning = async () => {
+      await provisionDefaultPlugins({ home, pluginMarket: marketCtx.pluginMarket, pluginManager: manager, signal: lifetime.signal, report })
+      if (lifetime.signal.aborted) return
+      const intent = await readDefaultMarketIntent(directory)
+      if (intent?.status !== 'pending' || operationPromise) return
+      operationPromise = runInstall().finally(() => { operationPromise = undefined })
+      await operationPromise
+    }
+    void runProvisioning().catch(report)
+    return () => lifetime.abort()
+  }, 'dsh-desktop-market-installer: default plugins'))
 
   ctx.inject(['webServer'], (webCtx) => webCtx.effect(() => {
     const disposeStatus = webCtx.webServer.register({

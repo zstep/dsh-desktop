@@ -23,7 +23,9 @@ import {
   isTrustedRequest,
   readMarketInstallation,
   resolvePnpmEntry,
+  restoreFailedMarketOperation,
   stagePnpmRunner,
+  verifyInstalledMarket,
   updateProfileNpmrc
 } from '../packages/dsh-desktop-market-installer/index.js'
 
@@ -36,10 +38,10 @@ describe('desktop plugin market installer', () => {
       'web',
       'add',
       '--workspace-root',
-      'dshmarket@^1.66.47'
+      'dshmarket@1.66.47'
     ])
     expect(MARKET_PACKAGE).toBe('dshmarket')
-    expect(RECOMMENDED_MARKET_VERSION).toBe('^1.66.47')
+    expect(RECOMMENDED_MARKET_VERSION).toBe('1.66.47')
     expect(STATUS_PATH).toBe('/dsh-desktop/market-installer/status')
     expect(INSTALL_PATH).toBe('/dsh-desktop/market-installer/install')
     expect(UNINSTALL_PATH).toBe('/dsh-desktop/market-installer/uninstall')
@@ -56,6 +58,30 @@ describe('desktop plugin market installer', () => {
 
   it('ships a resolvable pnpm binary instead of relying on the user PATH', () => {
     expect(resolvePnpmEntry()).toMatch(/node_modules[/\\]pnpm[/\\]bin[/\\]pnpm\.(c|m)js$/u)
+  })
+
+  it('rejects an installed package that is not the pinned market bundle', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-market-verify-'))
+    const profile = join(home, 'profiles', 'web')
+    const install = join(profile, 'node_modules', 'dshmarket')
+    await mkdir(install, { recursive: true })
+    await writeFile(join(install, 'package.json'), JSON.stringify({ name: 'dshmarket', version: '1.66.46', dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+    await writeFile(join(install, 'cordis.patch.yml'), '[]\n')
+    await expect(verifyInstalledMarket(home)).rejects.toThrow('expected dshmarket@1.66.47')
+  })
+
+  it('restores the manifest on failure but keeps the user lockfile as evidence', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-market-recovery-'))
+    const profile = join(home, 'profiles', 'web')
+    await mkdir(profile, { recursive: true })
+    const manifestPath = join(profile, 'package.json')
+    const lockfilePath = join(profile, 'pnpm-lock.yaml')
+    const snapshot = '{"dependencies":{}}\n'
+    await writeFile(manifestPath, '{"dependencies":{"dshmarket":"1.66.47"}}\n')
+    await writeFile(lockfilePath, 'lockfileVersion: 9\n')
+    await restoreFailedMarketOperation(manifestPath, snapshot)
+    expect(await readFile(manifestPath, 'utf8')).toBe(snapshot)
+    expect(await readFile(lockfilePath, 'utf8')).toBe('lockfileVersion: 9\n')
   })
 
   it('removes only Desktop’s exact legacy pnpm settings and preserves sensitive config bytes', () => {
@@ -164,7 +190,7 @@ describe('desktop plugin market installer', () => {
     const entry = join(dir, 'bin.js')
     await writeFile(bootstrap, '')
     const env = { DSH_DESKTOP_HIDE_CONSOLE_BOOTSTRAP: bootstrap }
-    expect(pluginCommandArguments(entry, ['add', 'dshmarket@^1.66.47'], env, 'win32')).toEqual([
+    expect(pluginCommandArguments(entry, ['add', 'dshmarket@1.66.47'], env, 'win32')).toEqual([
       '--import',
       pathToFileURL(bootstrap).href,
       entry,
@@ -172,7 +198,7 @@ describe('desktop plugin market installer', () => {
       '--profile',
       'web',
       'add',
-      'dshmarket@^1.66.47'
+      'dshmarket@1.66.47'
     ])
     expect(pluginCommandArguments(entry, ['add', 'demo'], env, 'darwin')[0]).toBe(entry)
   })

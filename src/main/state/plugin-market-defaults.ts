@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir } from 'node:fs/promises'
 import { prepareDefaultPluginIntent, retireLegacyImagePlugin } from 'dsh-desktop-market-installer/default-plugins'
+import { prepareDefaultMarketIntent } from 'dsh-desktop-market-installer/default-market'
 import { dirname, join } from 'node:path'
 import { loadOverlayPatches, resolveBundleDir } from '@deepseek-ai/dsh-app-boot'
 import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
@@ -63,6 +64,8 @@ export async function ensurePluginMarketDefaults(dshHome: string, dshEntryPath: 
     : record(JSON.parse(source))
   const dsh = record(manifest.dsh)
   const desktop = record(dsh.pengbao)
+  const fresh = source === undefined && profileEntries?.length === 0
+  await prepareDefaultMarketIntent(dshHome, { fresh })
   if (desktop.pluginMarketInitialized === true) {
     // Intent initialization also covers profiles whose discovery was seeded by
     // an earlier Desktop build; absence alone is not permission to install.
