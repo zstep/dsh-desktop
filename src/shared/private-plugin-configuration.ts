@@ -13,7 +13,7 @@ export interface PluginConfigurationPolicy {
   entryId: string
   packageName: string
   packageVersion: string
-  capabilities: readonly ModelServiceCapability[]
+  capabilities: readonly (ModelServiceCapability | 'video.generate')[]
   models: readonly string[]
 }
 
@@ -25,13 +25,13 @@ export function parsePluginConfigurationPolicy(value: unknown): PluginConfigurat
   if (Object.keys(item).some(key => !['bindingId', 'entryId', 'packageName', 'packageVersion', 'capabilities', 'models'].includes(key)) ||
     !text(item.bindingId) || !text(item.entryId) || !text(item.packageName) || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(item.packageName) ||
     !text(item.packageVersion, 128) || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/.test(item.packageVersion) ||
-    !Array.isArray(item.capabilities) || item.capabilities.length === 0 || item.capabilities.length > 2 ||
-    item.capabilities.some(scope => scope !== 'chat.completions' && scope !== 'image.generate') || new Set(item.capabilities).size !== item.capabilities.length ||
+    !Array.isArray(item.capabilities) || item.capabilities.length === 0 || item.capabilities.length > 3 ||
+    item.capabilities.some(scope => scope !== 'chat.completions' && scope !== 'image.generate' && scope !== 'video.generate') || new Set(item.capabilities).size !== item.capabilities.length ||
     !Array.isArray(item.models) || item.models.length === 0 || item.models.length > 256 || item.models.some(model => !text(model) && !(model === 'pengbao-default-chat' || model === 'pengbao-default-image')) || new Set(item.models).size !== item.models.length) {
     throw new Error('Invalid plugin configuration policy')
   }
   return { bindingId: item.bindingId, entryId: item.entryId, packageName: item.packageName, packageVersion: item.packageVersion,
-    capabilities: item.capabilities as ModelServiceCapability[], models: [...item.models] as string[] }
+    capabilities: item.capabilities as (ModelServiceCapability | 'video.generate')[], models: [...item.models] as string[] }
 }
 
 export function parsePrivatePluginConfigurationPacket(value: unknown): PrivatePluginConfigurationPacket {

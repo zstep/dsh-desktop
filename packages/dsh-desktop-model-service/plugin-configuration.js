@@ -39,11 +39,14 @@ function candidateConfig(current, writes) {
 }
 function catalogSnapshot(catalog) {
   return { defaults: catalog.defaults, imageDefaultModel: catalog.imageDefaultModel,
-    imageSelection: catalog.imageSelection, models: catalog.models.map(({ id, name, capabilities }) => ({ id, name, capabilities })) }
+    imageSelection: catalog.imageSelection,
+    models: catalog.models.map(({ id, name, capabilities }) => ({ id, name, capabilities })),
+    videoModels: catalog.videoModels?.map(({ id, name, provider, protocol }) => ({ id, name, provider, protocol })) ?? [] }
 }
 function hostValues(catalog, bindingId, current) {
   const chatModel = catalog.defaults?.['chat.completions']
   const imageModel = catalog.defaults?.['image.generate']
+  const videoModel = catalog.defaults?.['video.generate']
   if (!chatModel) fail('MODEL_UNAVAILABLE')
   const modelIds = (capability, preferred) => [...new Set([
     ...(preferred ? [preferred] : []),
@@ -52,6 +55,7 @@ function hostValues(catalog, bindingId, current) {
   const values = { bindingId, current, chatModel, label: 'Pengbao',
     chatModels: modelIds('chat.completions', chatModel),
     imageModels: modelIds('image.generate', imageModel),
+    videoModels: modelIds('video.generate', videoModel),
     endpoint: pluginConfigurationReference(bindingId, 'endpoint'),
     credential: pluginConfigurationReference(bindingId, 'credential') }
   // Materialization validates values as bounded JSON, where an undefined
@@ -59,6 +63,7 @@ function hostValues(catalog, bindingId, current) {
   // and an image proposal is already rejected above as MODEL_UNAVAILABLE, so
   // the key is simply absent instead of explicitly undefined.
   if (imageModel !== undefined) values.imageModel = imageModel
+  if (videoModel !== undefined) values.videoModel = videoModel
   return values
 }
 function publicValue(value, bindingId) {
@@ -79,6 +84,20 @@ export function createPluginConfigurationController(ctx, service) {
   let queue = Promise.resolve()
   const profileDir = ctx.profileContext.dir
   const runtime = () => getPluginConfigurationRuntime(ctx) ?? fail('UNAVAILABLE')
+  const withVideoCatalog = async (catalog, signal) => {
+    let rows = []
+    try { rows = await runtime().videoModels?.({ signal }) ?? [] }
+    catch (error) { if (signal?.aborted) throw error }
+    const videoModels = rows.filter(row => typeof row?.id === 'string' && typeof row?.name === 'string')
+    const models = catalog.models.map(model => ({ ...model, capabilities: [...model.capabilities] }))
+    for (const row of videoModels) {
+      const existing = models.find(model => model.id === row.id)
+      if (existing) existing.capabilities.push('video.generate')
+      else models.push({ id: row.id, name: row.name, capabilities: ['video.generate'] })
+    }
+    return { ...catalog, models, videoModels, defaults: { ...catalog.defaults,
+      ...(videoModels.length ? { 'video.generate': videoModels[0].id } : {}) } }
+  }
   const serial = work => { const task = queue.then(work); queue = task.catch(() => {}); return task }
   const prune = map => { for (const [id, item] of map) if (item.expiresAt < Date.now()) map.delete(id) }
   const take = (map, id) => { prune(map); const item = map.get(id); if (!item) fail('PLAN_EXPIRED'); return item }
@@ -108,7 +127,7 @@ export function createPluginConfigurationController(ctx, service) {
         const row = await rowFor(input.entryId)
         const raw = clone(row.entry.options.config ?? {})
         const evidence = await collectPluginEvidence(ctx, input.entryId)
-        const catalog = await service.catalog({ signal: controller.signal })
+        const catalog = await withVideoCatalog(await service.catalog({ signal: controller.signal }), controller.signal)
         current()
         const proposal = await analyzePluginConfiguration(ctx, evidence, { signal: controller.signal,
           selection: { provider: 'pengbao', model: catalog.defaults?.['chat.completions'] } })
@@ -116,12 +135,14 @@ export function createPluginConfigurationController(ctx, service) {
         const bindingId = randomUUID()
         const values = hostValues(catalog, bindingId, raw)
         if (proposal.capabilities.includes('image.generate') && (!values.imageModel || catalog.imageSelection !== 'request-local')) fail('MODEL_UNAVAILABLE')
+        if (proposal.capabilities.includes('video.generate') && !values.videoModel) fail('MODEL_UNAVAILABLE')
         const writes = materializeProposal(proposal, values)
         const candidate = candidateConfig(raw, writes)
         const planId = randomUUID()
         const identity = { bindingId, entryId: input.entryId, namespace: input.entryId, packageName: evidence.identity.packageName,
           packageVersion: evidence.identity.packageVersion, revision: evidence.revision, schemaDigest: evidence.identity.schemaDigest, evidenceDigest: evidence.identity.evidenceDigest }
         const configuredModels = materializedProposalModels(writes)
+        if (proposal.capabilities.includes('video.generate') && configuredModels['video.generate'].length === 0) fail('MODEL_UNAVAILABLE')
         const models = [...new Set(proposal.capabilities.flatMap(scope => configuredModels[scope]))]
         if (!models.length || models.length > 256) fail('MODEL_UNAVAILABLE')
         const policy = { bindingId, entryId: input.entryId, packageName: identity.packageName, packageVersion: identity.packageVersion,
@@ -149,7 +170,7 @@ export function createPluginConfigurationController(ctx, service) {
         plans.delete(input.planId)
         const row = await rowFor(plan.identity.entryId)
         const fresh = await collectPluginEvidence(ctx, plan.identity.entryId)
-        const catalog = await service.catalog()
+        const catalog = await withVideoCatalog(await service.catalog())
         if (row.entry !== plan.entry || !equal(configOf(row.entry), plan.raw) || fresh.revision !== plan.identity.revision
           || fresh.identity.schemaDigest !== plan.identity.schemaDigest || fresh.identity.evidenceDigest !== plan.identity.evidenceDigest
           || !equal(catalogSnapshot(catalog), plan.catalog)) fail('CONFLICT')

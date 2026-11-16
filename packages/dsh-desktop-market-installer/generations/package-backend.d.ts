@@ -21,6 +21,8 @@ export interface ProfileBundleInstallRequest {
 
 export interface ProfileBundlePackageBackend {
   readonly supportsVerifiedInstall: true
+  /** Immutable generation roots cannot be safely imported by the running process. */
+  readonly supportsImmutableReplacement: true
   /** Resolves undefined for a shared-tree package (the market); pnpm installs it. */
   install(request: ProfileBundleInstallRequest): Promise<{
     packageResult: PackageResult

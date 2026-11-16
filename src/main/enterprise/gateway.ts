@@ -4,6 +4,7 @@ import { once } from 'node:events'
 import { PENGBAO_PRODUCT } from './config'
 import { type ModelServiceCapability } from '../../shared/model-service'
 import { createImageGateway, IMAGE_GATEWAY_TIMEOUT_MS, type PengbaoImageLease, type PengbaoImageFailure } from './image-gateway'
+import { createNativeVideoGateway, type NativeVideoLease, type VideoCatalogRow } from './native-video-gateway'
 import { createPluginConfigurationGateway, type PluginConfigurationLease } from './plugin-configuration-gateway'
 export type { PluginConfigurationLease, PluginConfigurationPolicy } from './plugin-configuration-gateway'
 
@@ -85,6 +86,8 @@ export interface PengbaoGateway {
   createModelServiceGrant: (capabilities: readonly ModelServiceCapability[]) => PengbaoModelServiceGrant
   /** Issue a runtime-scoped image-generation lease. */
   createImageLease: () => PengbaoImageLease
+  createVideoLease: (models: readonly string[]) => NativeVideoLease
+  videoModels: (signal?: AbortSignal) => Promise<VideoCatalogRow[]>
   /** Bootstrap-only broker. Child tokens authorize only approved plugin routes/models. */
   createPluginConfigurationLease: () => PluginConfigurationLease
   stop: () => Promise<void>
@@ -226,7 +229,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
   const upstreamFetch = options.fetch ?? fetch
   const capabilityToken = randomBytes(32).toString('base64url')
   let credential = Buffer.from(`Bearer ${capabilityToken}`)
-  type ModelGrant = { credential: Buffer; capabilities: ReadonlySet<ModelServiceCapability>; models?: ReadonlySet<string>; active: Set<() => void>; revoked: boolean }
+  type ModelGrant = { credential: Buffer; capabilities: ReadonlySet<ModelServiceCapability | 'video.generate'>; models?: ReadonlySet<string>; active: Set<() => void>; revoked: boolean }
   const modelGrants = new Set<ModelGrant>()
   const defaultChatGrant: ModelGrant = {
     credential,
@@ -243,14 +246,17 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
 
   const images = createImageGateway({ getJwt: () => jwt, fetch: upstreamFetch, maxBodyBytes: maxBody,
     timeoutMs: Math.min(imageTimeout, IMAGE_GATEWAY_TIMEOUT_MS), maxConcurrent: imageMaxConcurrent, onFailure: options.onImageFailure })
-  const pluginConfiguration = createPluginConfigurationGateway({ getGatewayUrl: () => `http://${authority}`, issue: policy => {
+  const videos = createNativeVideoGateway({ getJwt: () => jwt, fetch: upstreamFetch })
+  const pluginConfiguration = createPluginConfigurationGateway({ videoModels: signal => videos.models(signal), getGatewayUrl: () => `http://${authority}`, issue: policy => {
     if (stopping) throw new Error('Gateway is stopped')
     const token = randomBytes(32).toString('base64url')
     const grant: ModelGrant = { credential: Buffer.from(`Bearer ${token}`), capabilities: new Set(policy.capabilities), models: new Set(policy.models), active: new Set(), revoked: false }
     modelGrants.add(grant)
     const image = policy.capabilities.includes('image.generate') ? images.createLease({ capabilityToken: token, models: policy.models,
       capabilities: policy.capabilities.filter((capability): capability is 'image.generate' => capability === 'image.generate'), compatibilityOnly: true }) : undefined
+    const video = policy.capabilities.includes('video.generate') ? videos.createLease({ capabilityToken: token, models: policy.models }) : undefined
     return { capabilityToken: token, revoke: () => {
+      video?.revoke()
       image?.revoke()
       if (grant.capabilities.has('chat.completions')) revokeModelGrant(grant)
       else { grant.revoked = true; grant.credential.fill(0); modelGrants.delete(grant); for (const abortOperation of grant.active) abortOperation() }
@@ -280,6 +286,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
       if (modelGrant?.models !== undefined && !modelGrant.revoked && !modelGrant.capabilities.has('image.generate')) return fail(res, 404)
       return images.handle(req, res)
     }
+    if (req.url?.startsWith('/v1/videos') || req.url?.startsWith('/v1/contents/generations/tasks')) return videos.handle(req, res)
     if (req.url?.startsWith('/v1/plugin-configuration/')) return pluginConfiguration.handle(req, res)
     const supplied = Buffer.from(req.headers.authorization ?? '')
     const grant = [...modelGrants].find(item => supplied.length === item.credential.length && timingSafeEqual(supplied, item.credential))
@@ -642,12 +649,15 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     capabilityToken,
     createModelServiceGrant,
     createImageLease: () => images.createLease(),
+    createVideoLease: models => videos.createLease({ models }),
+    videoModels: signal => videos.models(signal ?? AbortSignal.timeout(10000)),
     createPluginConfigurationLease: pluginConfiguration.createLease,
     stop: () => {
       if (stopPromise) return stopPromise
       stopping = true
       pluginConfiguration.stop()
       images.stop()
+      videos.stop()
       for (const grant of modelGrants) revokeModelGrant(grant)
       credential = Buffer.alloc(0)
       jwt = ''

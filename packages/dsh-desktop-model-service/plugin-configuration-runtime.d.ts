@@ -17,6 +17,7 @@ export interface ApprovedPluginConfiguration {
   readonly configDigest: string
 }
 export interface PluginConfigurationRuntime {
+  videoModels(options?: { signal?: AbortSignal }): Promise<readonly { id: string; name: string; provider: string; protocol: string }[]>
   activate(record: ApprovedPluginConfiguration, candidateDigest?: string): Promise<void>
   deactivate(bindingId: string): Promise<void>
   resolve(entryId: string, raw: unknown, resolved: unknown): unknown

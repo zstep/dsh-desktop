@@ -57,7 +57,8 @@ async function fixture({ image = false, collections = false } = {}) {
     ...(image ? { imageModel: z.string() } : {}),
     ...(collections ? { channels: z.array(z.object({
       id: z.string(), name: z.string(), apiUrl: z.string(), protocol: z.const('rig-chat-literal'),
-      models: z.array(z.object({ alias: z.string(), id: z.string() }))
+      models: z.array(z.object({ alias: z.string(), id: z.string() })),
+      videoModels: z.array(z.object({ alias: z.string(), id: z.string() })).default([])
     })).default([]) } : {})
   })
   const entry = {
@@ -130,6 +131,10 @@ async function gateway() {
   let url
   const server = createServer(async (request, response) => {
     const reply = value => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
+    if (request.url === '/v1/plugin-configuration/video-models') return reply({ data: [
+      { id: 'seedance-fixture', name: 'Seedance', provider: 'volcengine', protocol: 'ark' },
+      { id: 'wan-fixture', name: 'Wan', provider: 'alibaba', protocol: 'dashscope' }
+    ] })
     if (request.url === '/v1/plugin-configuration/issue') {
       issued++
       for await (const _chunk of request) { /* drain */ }
@@ -220,10 +225,11 @@ async function modelCollectionScenario() {
     { id: 'Pengbao', name: 'Label collision', capabilities: ['chat.completions'] }
   )
   service.catalog = async () => catalog
-  const mapping = { ...IMAGE_PROPOSAL, writes: [...IMAGE_PROPOSAL.writes, {
+  const mapping = { ...IMAGE_PROPOSAL, capabilities: [...IMAGE_PROPOSAL.capabilities, 'video.generate'], writes: [...IMAGE_PROPOSAL.writes, {
     path: ['channels', '$append'], value: {
       id: { $semantic: 'binding-id' }, name: { $semantic: 'label' }, apiUrl: { $semantic: 'endpoint' }, protocol: 'rig-chat-literal',
-      models: [{ alias: { $semantic: 'image-model' }, id: { $semantic: 'image-model' } }]
+      models: [{ alias: { $semantic: 'image-model' }, id: { $semantic: 'image-model' } }],
+      videoModels: [{ alias: { $semantic: 'video-model' }, id: { $semantic: 'video-model' } }]
     }, evidenceIds: ['e1']
   }] }
   ctx.llm.stream = () => (async function* () {
@@ -244,7 +250,8 @@ async function modelCollectionScenario() {
     const applied = await controller.apply({ planId: analysis.planId })
     assert.deepEqual(entry.options.config.channels[0].models, channel.models)
     const [binding] = await readPluginConfigurations(profileDir)
-    assert.deepEqual(binding.policy.models, ['rig-chat', 'rig-image', 'rig-image-fast'])
+    assert.deepEqual(binding.policy.models, ['rig-chat', 'rig-image', 'rig-image-fast', 'seedance-fixture', 'wan-fixture'])
+    assert.deepEqual(channel.videoModels, [{ alias: 'seedance-fixture', id: 'seedance-fixture' }, { alias: 'wan-fixture', id: 'wan-fixture' }])
     await controller.rollback({ receiptId: applied.receiptId })
     assert.equal(entry.options.config, undefined)
   } finally {

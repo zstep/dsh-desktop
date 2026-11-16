@@ -51,6 +51,24 @@ const generation = '/v1/images/generations'
 const countGenerations = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/images/generations')).length
 
 describe('private per-plugin configuration gateway', () => {
+  it('issues video access only through an approved broker policy and revokes it with the broker', async () => {
+    let submissions = 0
+    const gateway = await startPengbaoGateway({ jwt: 'fixture-jwt', fetch: async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/v1/videos/proxy/models') return json({ data: [{ id: 'seedance', name: 'Seedance', provider: 'volcengine', protocol: 'ark' }] })
+      if (path === '/api/v1/videos/proxy/submit/ark') { submissions++; return json({ id: 'a'.repeat(32), status: 'queued' }) }
+      throw new Error('unexpected fixture path')
+    } })
+    gateways.push(gateway)
+    const { broker, child } = await issue(gateway, { ...policy, capabilities: ['video.generate'], models: ['seedance'] })
+    const route = '/v1/contents/generations/tasks'
+    const input = { model: 'seedance', content: [{ type: 'text', text: 'fixture' }] }
+    expect((await post(gateway, child.capabilityToken, route, input)).status).toBe(200)
+    expect((await post(gateway, child.capabilityToken, route, { ...input, model: 'other' })).status).toBe(403)
+    broker.revoke()
+    expect((await post(gateway, child.capabilityToken, route, input)).status).toBe(401)
+    expect(submissions).toBe(1)
+  })
   it('keeps broker/chat/image credentials separate, validates exact routes/models and denies browser origins', async () => {
     const { gateway, fetcher } = await fixture()
     const { broker, child } = await issue(gateway)

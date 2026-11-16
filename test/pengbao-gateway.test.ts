@@ -52,6 +52,22 @@ function request(gateway: PengbaoGateway, options: { method?: string; path?: str
 const chat = (body: unknown) => ({ method: 'POST', path: '/v1/chat/completions', body: JSON.stringify(body) })
 
 describe('Pengbao gateway', () => {
+  it('mounts video routes with a separate revoked model-scoped lease', async () => {
+    let submissions = 0
+    const gateway = await gatewayFor((req, res) => {
+      if (req.url === '/api/v1/videos/proxy/models') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'seedance-2-0', name: 'Seedance', provider: 'volcengine', protocol: 'ark' }] })); return }
+      if (req.url === '/api/v1/videos/proxy/submit/ark') { submissions++; res.setHeader('content-type', 'application/json'); res.end('{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued"}'); return }
+      res.writeHead(404); res.end()
+    })
+    const send = (token: string, model = 'seedance-2-0') => request(gateway, { token, method: 'POST', path: '/v1/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, content: [{ type: 'text', text: 'fixture' }], duration: 5 }) })
+    expect((await send(gateway.capabilityToken)).status).toBe(401)
+    const lease = gateway.createVideoLease(['seedance-2-0'])
+    expect((await send(lease.capabilityToken)).status).toBe(200)
+    expect((await send(lease.capabilityToken, 'not-granted')).status).toBe(403)
+    lease.revoke()
+    expect((await send(lease.capabilityToken)).status).toBe(401)
+    expect(submissions).toBe(1)
+  })
   it.each(['http', 'transport', 'invalid-json'] as const)('reports safe defaults metadata %s failures without exposing upstream bodies', async mode => {
     const failures: unknown[] = []
     const gateway = await gatewayFor((req, res) => {

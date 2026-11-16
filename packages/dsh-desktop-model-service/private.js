@@ -44,8 +44,8 @@ export function createPluginConfigurationBroker({ fetch: fetchImpl = globalThis.
     if (disposed && route === '/v1/plugin-configuration/issue') fail('UNAVAILABLE')
     const operation = lifetime.operation(5_000, signal)
     try {
-      const response = await operation.wait(fetchImpl(`${packet.gatewayUrl}${route}`, { method: 'POST', redirect: 'error', signal: operation.signal,
-        headers: { Authorization: `Bearer ${packet.capabilityToken}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) }))
+      const response = await operation.wait(fetchImpl(`${packet.gatewayUrl}${route}`, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: operation.signal,
+        headers: { Authorization: `Bearer ${packet.capabilityToken}`, 'Content-Type': 'application/json', Accept: 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }))
       if (!response.ok) {
         const status = response.status
         let detail
@@ -71,12 +71,20 @@ export function createPluginConfigurationBroker({ fetch: fetchImpl = globalThis.
     finally { operation.finish() }
   }
   return Object.freeze({
+    async videoModels({ signal } = {}) {
+      const result = await post('/v1/plugin-configuration/video-models', undefined, signal)
+      if (!record(result) || !Array.isArray(result.data) || result.data.length > 256) fail('INVALID_RESPONSE')
+      return freeze(result.data.map(row => {
+        if (!record(row) || !identifier(row.id) || !identifier(row.name) || !['volcengine', 'alibaba', 'openai'].includes(row.provider) || !['ark', 'dashscope', 'openai', 'newapi'].includes(row.protocol)) fail('INVALID_RESPONSE')
+        return { id: row.id, name: row.name, provider: row.provider, protocol: row.protocol }
+      }))
+    },
     async issue(policy, { signal } = {}) {
       if (disposed) fail('UNAVAILABLE')
       if (!record(policy) || Object.keys(policy).sort().join(',') !== 'bindingId,capabilities,entryId,models,packageName,packageVersion' ||
         !identifier(policy.bindingId) || !identifier(policy.entryId) || !identifier(policy.packageName) || !semver(policy.packageVersion) ||
-        !Array.isArray(policy.capabilities) || policy.capabilities.length === 0 || policy.capabilities.length > 2 ||
-        policy.capabilities.some(item => !CONSUMER_CAPABILITIES.has(item)) || new Set(policy.capabilities).size !== policy.capabilities.length ||
+        !Array.isArray(policy.capabilities) || policy.capabilities.length === 0 || policy.capabilities.length > 3 ||
+        policy.capabilities.some(item => !['chat.completions', 'image.generate', 'video.generate'].includes(item)) || new Set(policy.capabilities).size !== policy.capabilities.length ||
         !Array.isArray(policy.models) || policy.models.length === 0 || policy.models.length > 256 ||
         policy.models.some(item => typeof item !== 'string' || !/^(?:pengbao-default-chat|pengbao-default-image)$/.test(item) && !identifier(item)) || new Set(policy.models).size !== policy.models.length) fail('INVALID_REQUEST')
       const result = await post('/v1/plugin-configuration/issue', policy, signal)

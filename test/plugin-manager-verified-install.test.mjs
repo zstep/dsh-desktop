@@ -12,7 +12,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
-async function fixture({ installed = false, backendSupported = true, target = 'demo-plugin', version = '2.0.0' } = {}) {
+async function fixture({ installed = false, backendSupported = true, target = 'demo-plugin', version = '2.0.0', mutationReplaced = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-manager-verified-'))
   roots.push(dir)
   const manifestPath = join(dir, 'package.json')
@@ -21,6 +21,7 @@ async function fixture({ installed = false, backendSupported = true, target = 'd
   const rollback = vi.fn(async () => { await writeFile(manifestPath, initial) })
   const backend = {
     supportsVerifiedInstall: backendSupported,
+    supportsImmutableReplacement: true,
     install: vi.fn(async () => {
       const plugin = join(dir, 'node_modules', target)
       await mkdir(plugin, { recursive: true })
@@ -29,7 +30,7 @@ async function fixture({ installed = false, backendSupported = true, target = 'd
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
       manifest.dependencies[target] = version
       await writeFile(manifestPath, JSON.stringify(manifest))
-      return { bundle: target, packageResult: { exitCode: 0, output: '' }, rollback }
+      return { bundle: target, replaced: mutationReplaced, packageResult: { exitCode: 0, output: '' }, rollback }
     })
   }
   const manager = Object.assign(Object.create(PluginManager.prototype), {
@@ -90,6 +91,28 @@ describe('Plugin Manager verified install boundary', () => {
     expect(backend.install).toHaveBeenCalledWith(expect.objectContaining({ expectedName: 'demo-plugin', expectedVersion: '2.0.0', npmIntegrity: 'sha512-example' }))
     expect(manager.publishAndReload).toHaveBeenCalledOnce()
     expect(manager.runPnpm).not.toHaveBeenCalled()
+  })
+
+  it('reports immutable replacement as restart-required without publishing the new root', async () => {
+    const { manager, backend } = await fixture({ installed: true, mutationReplaced: true })
+    expect(await manager.installBundle('https://example.test/demo.tgz', { ...verified, replace: true })).toMatchObject({ application: 'restart-required', restartReason: 'package-moved', version: '2.0.0' })
+    expect(manager.publishAndReload).not.toHaveBeenCalled()
+    expect(backend.install).toHaveBeenCalledOnce()
+  })
+
+  it('keeps immutable replacement on the direct install path without remove-first', async () => {
+    const { manager, backend } = await fixture({ installed: true, mutationReplaced: true })
+    manager.listBundles = vi.fn(async () => [{ name: 'demo-plugin', installed: '1.0.0', version: '1.0.0', source: 'demo-plugin@1.0.0', availability: 'profile', official: false, bundle: { enabled: true } }])
+    manager.registryFor = vi.fn(() => 'https://registry.example')
+    manager.registries = vi.fn(async () => ({ registry: 'https://registry.example', fallbackRegistries: [], resolved: 'https://registry.example' }))
+    manager.askRegistries = vi.fn(async () => ({ status: 'answered', registry: 'https://registry.example', answer: {
+      name: 'demo-plugin', version: '2.0.0', dsh: { bundle: { patch: 'cordis.patch.yml' } }, bundle: { enabled: true }
+    } }))
+    manager.removeBundle = vi.fn(async () => { throw new Error('remove-first is unsafe for immutable generations') })
+    const result = await manager.updateBundle('demo-plugin', '2.0.0')
+    expect(result.result).toMatchObject({ application: 'restart-required', restartReason: 'package-moved' })
+    expect(manager.removeBundle).not.toHaveBeenCalled()
+    expect(backend.install).toHaveBeenCalledOnce()
   })
 
   it('allows an explicit verified replacement with HMR', async () => {

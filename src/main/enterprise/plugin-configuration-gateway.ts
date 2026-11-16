@@ -17,6 +17,7 @@ function respond(res: ServerResponse, status: number, body: unknown): void {
 export function createPluginConfigurationGateway(options: {
   getGatewayUrl(): string
   issue(policy: PluginConfigurationPolicy): { capabilityToken: string; revoke(): void }
+  videoModels?: (signal: AbortSignal) => Promise<unknown>
 }) {
   type Broker = { credential: Buffer; children: Map<string, { revoke(): void }>; active: Set<AbortController>; revoked: boolean }
   const brokers = new Set<Broker>()
@@ -61,13 +62,14 @@ export function createPluginConfigurationGateway(options: {
       let denial: string | undefined
       const fail = (status: number) => respond(res, status, { error: { type: 'plugin_configuration_error', message: 'Plugin configuration request failed',
         ...(status === 403 && denial && REASON.test(denial) ? { reason: denial } : {}) } })
-      if (req.method !== 'POST' || (req.url !== '/v1/plugin-configuration/issue' && req.url !== '/v1/plugin-configuration/revoke')) return fail(404)
+      const catalog = req.method === 'GET' && req.url === '/v1/plugin-configuration/video-models'
+      if (!catalog && (req.method !== 'POST' || (req.url !== '/v1/plugin-configuration/issue' && req.url !== '/v1/plugin-configuration/revoke'))) return fail(404)
       const supplied = Buffer.from(req.headers.authorization ?? '')
       const broker = [...brokers].find(item => supplied.length === item.credential.length && timingSafeEqual(supplied, item.credential))
       if (!broker || broker.revoked || stopped) return fail(401)
       const issue = req.method === 'POST' && req.url === '/v1/plugin-configuration/issue'
       const remove = req.method === 'POST' && req.url === '/v1/plugin-configuration/revoke'
-      if (!issue && !remove) return fail(404)
+      if (!issue && !remove && !catalog) return fail(404)
       if (broker.active.size >= 4) return fail(429)
       const controller = new AbortController()
       broker.active.add(controller)
@@ -79,6 +81,7 @@ export function createPluginConfigurationGateway(options: {
       let abort = () => {}
       try {
         const work = async () => {
+          if (catalog) return { data: await options.videoModels?.(controller.signal) ?? [] }
           const input = await read(req, controller.signal)
           if (remove) {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).join(',') !== 'leaseId' ||

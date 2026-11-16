@@ -83,6 +83,7 @@ describe('Plugin Manager generation package backend', () => {
     })
 
     expect(first.packageResult.exitCode).toBe(0)
+    expect(backend.supportsImmutableReplacement).toBe(true)
     expect(first.bundle).toBe('demo-plugin')
     expect((await readDesired(home))).toHaveLength(1)
     const manifest = JSON.parse(await readFile(join(home, 'profiles', 'web', 'package.json'), 'utf8'))

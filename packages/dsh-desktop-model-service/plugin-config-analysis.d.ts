@@ -1,5 +1,5 @@
-export type Semantic = 'endpoint' | 'credential' | 'chat-model' | 'image-model' | 'binding-id' | 'label'
-export type Capability = 'chat.completions' | 'image.generate'
+export type Semantic = 'endpoint' | 'credential' | 'chat-model' | 'image-model' | 'video-model' | 'binding-id' | 'label'
+export type Capability = 'chat.completions' | 'image.generate' | 'video.generate'
 export interface ConfigurablePlugin { entryId: string; namespace: string; packageName: string; packageVersion: string; supported: boolean; reason: string }
 export interface EvidenceFile {
   id: string
@@ -28,7 +28,7 @@ export interface PluginEvidence {
 export type Template = null | string | number | boolean | { $semantic: Semantic } | Template[] | { [key: string]: Template }
 export interface ConfigurationWrite { path: string[]; value: Template; evidenceIds: string[] }
 export interface ConfigurationProposal { contractVersion: 1; protocol: 'openai'; capabilities: Capability[]; writes: ConfigurationWrite[] }
-export interface MaterializationValues { endpoint: string; credential: string; chatModel?: string; imageModel?: string; chatModels?: string[]; imageModels?: string[]; bindingId?: string; label?: string; current?: unknown }
+export interface MaterializationValues { endpoint: string; credential: string; chatModel?: string; imageModel?: string; chatModels?: string[]; imageModels?: string[]; videoModel?: string; videoModels?: string[]; bindingId?: string; label?: string; current?: unknown }
 export interface MaterializedWrite { path: string[]; value: unknown; append?: true }
 export function configurationSchemaDigest(schema: unknown): string
 export function listConfigurablePlugins(ctx: unknown): Promise<ConfigurablePlugin[]>

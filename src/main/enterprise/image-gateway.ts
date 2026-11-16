@@ -236,8 +236,8 @@ function imageBackendDiagnostic(value: unknown, requestId: string, code: ImageEr
   const row = record(value)
   if (!row || row.type !== 'image_generation_error' || row.contractVersion !== 1 || row.requestId !== requestId ||
     !['provider-request', 'provider-response', 'image-fetch', 'store'].includes(row.phase as string) || row.code !== code ||
-    !Number.isSafeInteger(row.elapsedMs) || row.elapsedMs < 0 || row.elapsedMs > 86_400_000 ||
-    (row.providerStatus !== undefined && (!Number.isSafeInteger(row.providerStatus) || row.providerStatus < 100 || row.providerStatus > 599))) return undefined
+    typeof row.elapsedMs !== 'number' || !Number.isSafeInteger(row.elapsedMs) || row.elapsedMs < 0 || row.elapsedMs > 86_400_000 ||
+    (row.providerStatus !== undefined && (typeof row.providerStatus !== 'number' || !Number.isSafeInteger(row.providerStatus) || row.providerStatus < 100 || row.providerStatus > 599))) return undefined
   return { phase: row.phase as PengbaoImageBackendDiagnostic['phase'], elapsedMs: row.elapsedMs as number,
     ...(row.providerStatus === undefined ? {} : { providerStatus: row.providerStatus as number }) }
 }

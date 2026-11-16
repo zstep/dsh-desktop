@@ -44,7 +44,7 @@ function validateRecord(record) {
   if (!plain(policy) || Object.keys(policy).sort().join(',') !== 'bindingId,capabilities,entryId,models,packageName,packageVersion' ||
     policy.bindingId !== identity.bindingId || policy.entryId !== identity.entryId || policy.packageName !== identity.packageName ||
     policy.packageVersion !== identity.packageVersion || !Array.isArray(policy.capabilities) || policy.capabilities.length === 0 ||
-    policy.capabilities.length > 2 || policy.capabilities.some(scope => scope !== 'chat.completions' && scope !== 'image.generate') ||
+    policy.capabilities.length > 3 || policy.capabilities.some(scope => scope !== 'chat.completions' && scope !== 'image.generate' && scope !== 'video.generate') ||
     new Set(policy.capabilities).size !== policy.capabilities.length || !Array.isArray(policy.models) || policy.models.length === 0 ||
     policy.models.length > 256 || policy.models.some(model => typeof model !== 'string' ||
       (!/^pengbao-default-(?:chat|image)$/.test(model) && !identifier(model))) || new Set(policy.models).size !== policy.models.length) fail('INVALID_CONFIGURATION')
@@ -118,6 +118,16 @@ export async function readPluginConfigurations(profileDir) {
     if (data?.contractVersion !== 1 || !Array.isArray(data.bindings) || data.bindings.length > 512) fail('BINDINGS_UNAVAILABLE')
     const seen = new Set()
     for (const row of data.bindings) {
+      // A previous DEV assistant persisted video model metadata alongside the
+      // chat/image policy. This runtime has no video capability: accept only
+      // this bounded legacy field and remove it from the in-memory policy,
+      // never granting it or rewriting the user's approval file on startup.
+      if (plain(row?.policy) && Object.hasOwn(row.policy, 'videoModels')) {
+        const { videoModels, ...policy } = row.policy
+        if (!Array.isArray(videoModels) || videoModels.length > 256 || videoModels.some(model => !identifier(model))
+          || new Set(videoModels).size !== videoModels.length) fail('BINDINGS_UNAVAILABLE')
+        row.policy = policy
+      }
       validateRecord(row)
       if (seen.has(row.identity.bindingId)) fail('BINDINGS_UNAVAILABLE')
       seen.add(row.identity.bindingId)
@@ -167,6 +177,7 @@ export async function installPluginConfigurationRuntime(ctx) {
   const active = new Map()
   let disposed = false
   const controller = Object.freeze({
+    async videoModels(options) { return broker.videoModels(options) },
     async activate(record, configDigest = record.configDigest) {
       if (disposed) fail('UNAVAILABLE')
       const recordInput = validateRecord(record)

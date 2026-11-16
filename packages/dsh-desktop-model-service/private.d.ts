@@ -20,7 +20,7 @@ export interface PluginConfigurationPolicy {
   readonly entryId: string
   readonly packageName: string
   readonly packageVersion: string
-  readonly capabilities: readonly ('chat.completions' | 'image.generate')[]
+  readonly capabilities: readonly ('chat.completions' | 'image.generate' | 'video.generate')[]
   readonly models: readonly string[]
 }
 export interface PluginConfigurationRegistration {
@@ -31,10 +31,11 @@ export interface PluginConfigurationRegistration {
 /** Host-only bootstrap; this broker is never put on a public service. */
 export declare function registerPrivatePluginConfiguration(packet: PluginConfigurationRegistration): void
 export declare function createPluginConfigurationBroker(options?: { fetch?: typeof fetch }): {
+  videoModels(options?: { signal?: AbortSignal }): Promise<readonly { id: string; name: string; provider: string; protocol: string }[]>
   issue(policy: PluginConfigurationPolicy, options?: { signal?: AbortSignal }): Promise<{
     readonly gatewayUrl: string
     readonly apiKey: string
-    readonly capabilities: readonly ('chat.completions' | 'image.generate')[]
+    readonly capabilities: readonly ('chat.completions' | 'image.generate' | 'video.generate')[]
     readonly models: readonly string[]
     release(): Promise<void>
   }>

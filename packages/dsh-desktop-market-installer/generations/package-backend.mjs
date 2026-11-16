@@ -96,6 +96,7 @@ export function createGenerationPackageBackend(options) {
 
   return Object.freeze({
     supportsVerifiedInstall: true,
+    supportsImmutableReplacement: true,
     async install(request) {
       const log = await createOperationLog(dshHome)
       let activeChild

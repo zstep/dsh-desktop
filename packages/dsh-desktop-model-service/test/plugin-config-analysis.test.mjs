@@ -647,7 +647,7 @@ test('bounds cumulative nested model expansion before returning oversized output
     { models: [{ models: ['m0', 'm1'] }, { models: ['m0', 'm1'] }] },
     { models: [{ models: ['m0', 'm1'] }, { models: ['m0', 'm1'] }] }
   ])
-  assert.deepEqual(materializedProposalModels(small), { 'chat.completions': ['m0', 'm1'], 'image.generate': [] })
+  assert.deepEqual(materializedProposalModels(small), { 'chat.completions': ['m0', 'm1'], 'image.generate': [], 'video.generate': [] })
   assert.equal(Object.isFrozen(materializedProposalModels(small)['chat.completions']), true)
   assert.deepEqual(Reflect.ownKeys(small), ['0', '1', '2', 'length'])
   assert.throws(() => materializedProposalModels(structuredClone(small)), { code: 'INVALID_HOST_VALUES' })
