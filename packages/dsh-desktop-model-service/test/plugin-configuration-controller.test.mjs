@@ -26,9 +26,18 @@ const IMAGE_PROPOSAL = {
   ]),
   capabilities: ['chat.completions', 'image.generate']
 }
+const VIDEO_PROPOSAL = {
+  ...proposal([
+    { path: ['baseUrl'], value: { $semantic: 'endpoint' }, evidenceIds: ['e1'] },
+    { path: ['apiKey'], value: { $semantic: 'credential' }, evidenceIds: ['e1'] },
+    { path: ['model'], value: { $semantic: 'chat-model' }, evidenceIds: ['e1'] },
+    { path: ['videoModel'], value: { $semantic: 'video-model' }, evidenceIds: ['e1'] }
+  ]),
+  capabilities: ['chat.completions', 'video.generate']
+}
 const token = seed => seed.repeat(32).slice(0, 32)
 
-async function fixture({ image = false, collections = false } = {}) {
+async function fixture({ image = false, collections = false, video = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-plugin-controller-'))
   const profileDir = join(root, 'profiles', 'web')
   const packageRoot = join(profileDir, 'node_modules', '@fixture', 'chatplugin')
@@ -39,8 +48,9 @@ async function fixture({ image = false, collections = false } = {}) {
   const fields = [
     "  baseUrl: z.string().description('Chat completion endpoint URL'),",
     "  apiKey: z.string().role('secret').description('API key'),",
-    `  model: z.string().description('Chat model')${image ? ',' : ''}`,
-    ...(image ? ["  imageModel: z.string().description('Image generation model')"] : [])
+    `  model: z.string().description('Chat model')${image || video ? ',' : ''}`,
+    ...(image ? ["  imageModel: z.string().description('Image generation model')"] : []),
+    ...(video ? ["  videoModel: z.string().description('Video generation model')"] : [])
   ]
   await writeFile(join(packageRoot, 'index.js'), [
     "import z from '@deepseek-ai/schemastery'",
@@ -56,6 +66,7 @@ async function fixture({ image = false, collections = false } = {}) {
     apiKey: z.string().role('secret'),
     model: z.string(),
     ...(image ? { imageModel: z.string() } : {}),
+    ...(video ? { videoModel: z.string() } : {}),
     ...(collections ? { channels: z.array(z.object({
       id: z.string(), name: z.string(), apiUrl: z.string(), protocol: z.const('rig-chat-literal'),
       models: z.array(z.object({ alias: z.string(), id: z.string() })),
@@ -95,7 +106,7 @@ async function fixture({ image = false, collections = false } = {}) {
       stream() {
         return (async function* () {
           yield { type: 'block-start', blockType: 'text' }
-          yield { type: 'text-delta', text: JSON.stringify(image ? IMAGE_PROPOSAL : CHAT_PROPOSAL) }
+          yield { type: 'text-delta', text: JSON.stringify(video ? VIDEO_PROPOSAL : image ? IMAGE_PROPOSAL : CHAT_PROPOSAL) }
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()
       }
@@ -130,12 +141,13 @@ async function gateway() {
   let issued = 0
   let revoked = 0
   let url
+  let videoRows = [
+    { id: 'seedance-fixture', name: 'Seedance', provider: 'volcengine', protocol: 'ark' },
+    { id: 'wan-fixture', name: 'Wan', provider: 'alibaba', protocol: 'dashscope' }
+  ]
   const server = createServer(async (request, response) => {
     const reply = value => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
-    if (request.url === '/v1/plugin-configuration/video-models') return reply({ data: [
-      { id: 'seedance-fixture', name: 'Seedance', provider: 'volcengine', protocol: 'ark' },
-      { id: 'wan-fixture', name: 'Wan', provider: 'alibaba', protocol: 'dashscope' }
-    ] })
+    if (request.url === '/v1/plugin-configuration/video-models') return reply({ data: videoRows })
     if (request.url === '/v1/plugin-configuration/issue') {
       issued++
       for await (const _chunk of request) { /* drain */ }
@@ -153,6 +165,7 @@ async function gateway() {
   return {
     registration: { contractVersion: 1, gatewayUrl: url, capabilityToken: brokerToken },
     counts: () => ({ issued, revoked }),
+    setVideoRows: rows => { videoRows = rows },
     close: async () => {
       server.closeAllConnections?.()
       await new Promise(resolve => server.close(resolve))
@@ -171,8 +184,8 @@ async function expectedConfig(profileDir, model, imageModel) {
   }
 }
 
-async function scenario({ image = false, apply }) {
-  const { root, profileDir, entry, ctx, service, effects } = await fixture({ image })
+async function scenario({ image = false, video = false, apply }) {
+  const { root, profileDir, entry, ctx, service, effects } = await fixture({ image, video })
   const controller = createPluginConfigurationController(ctx, service)
   try {
     await installPluginConfigurationRuntime(ctx)
@@ -306,6 +319,28 @@ test('analyze, apply, and rollback keep markers in the profile layer and compare
         overview.dispose()
         for (const cleanup of f.effects) await cleanup()
         await rm(f.root, { recursive: true, force: true })
+      }
+    })
+    await t.test('missing video models degrade to chat/image configuration instead of failing the plan', async () => {
+      broker.setVideoRows([])
+      try {
+        await scenario({ video: true, apply: async (controller, entry, profileDir) => {
+          const analysis = await controller.analyze({ entryId: 'fixture-chat' })
+          assert.deepEqual(analysis.capabilities, ['chat.completions'])
+          assert.equal(analysis.writes.some(write => write.path[0] === 'videoModel'), false)
+          const applied = await controller.apply({ planId: analysis.planId })
+          assert.equal(applied.status, 'saved-active')
+          assert.deepEqual(entry.options.config, await expectedConfig(profileDir, 'rig-chat'))
+          const [binding] = await readPluginConfigurations(profileDir)
+          assert.deepEqual(binding.policy.capabilities, ['chat.completions'])
+          await controller.rollback({ receiptId: applied.receiptId })
+          assert.equal(entry.options.config, undefined)
+        } })
+      } finally {
+        broker.setVideoRows([
+          { id: 'seedance-fixture', name: 'Seedance', provider: 'volcengine', protocol: 'ark' },
+          { id: 'wan-fixture', name: 'Wan', provider: 'alibaba', protocol: 'dashscope' }
+        ])
       }
     })
     await t.test('model collections expose every authorized image model while scalar fields retain defaults', modelCollectionScenario)

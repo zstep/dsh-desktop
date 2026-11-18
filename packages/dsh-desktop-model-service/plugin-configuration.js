@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { collectPluginEvidence, listConfigurablePlugins, analyzePluginConfiguration, materializeProposal, materializedProposalModels } from './plugin-config-analysis.js'
+import { collectPluginEvidence, listConfigurablePlugins, analyzePluginConfiguration, materializeProposal, materializedProposalModels, validateConfigurationProposal } from './plugin-config-analysis.js'
 import { configurationDigest, getPluginConfigurationRuntime, pluginConfigurationReference,
   readPluginConfigurations, writePluginConfigurations } from './plugin-configuration-runtime.js'
 
@@ -74,6 +74,14 @@ function publicValue(value, bindingId) {
   return value
 }
 
+function hasSemantic(template, semantic, depth = 0) {
+  if (depth > 64) return false
+  if (!template || typeof template !== 'object') return false
+  if (Array.isArray(template)) return template.some(child => hasSemantic(child, semantic, depth + 1))
+  if (template.$semantic === semantic) return true
+  return Object.values(template).some(child => hasSemantic(child, semantic, depth + 1))
+}
+
 /** Full ConfigEditor transactions. No live configuration is returned over the wire. */
 export function createPluginConfigurationController(ctx, service) {
   const plans = new Map()
@@ -139,23 +147,33 @@ export function createPluginConfigurationController(ctx, service) {
         const bindingId = randomUUID()
         const values = hostValues(catalog, bindingId, raw)
         if (proposal.capabilities.includes('image.generate') && (!values.imageModel || catalog.imageSelection !== 'request-local')) fail('MODEL_UNAVAILABLE')
-        if (proposal.capabilities.includes('video.generate') && !values.videoModel) fail('MODEL_UNAVAILABLE')
-        const writes = materializeProposal(proposal, values)
+        // A missing provider video catalog must not block the chat/image mapping
+        // the assistant can still apply. Drop only the video capability and its
+        // model-semantic writes; the strict validator rechecks the remainder.
+        let accepted = proposal
+        if (proposal.capabilities.includes('video.generate') && !values.videoModel) {
+          const capabilities = proposal.capabilities.filter(capability => capability !== 'video.generate')
+          if (!capabilities.length) fail('MODEL_UNAVAILABLE')
+          const writes = proposal.writes.filter(write => !hasSemantic(write.value, 'video-model'))
+          accepted = validateConfigurationProposal({ contractVersion: proposal.contractVersion,
+            protocol: proposal.protocol, capabilities, writes }, evidence.schema, evidence.files.map(file => file.id))
+        }
+        const writes = materializeProposal(accepted, values)
         const candidate = candidateConfig(raw, writes)
         const planId = randomUUID()
         const identity = { bindingId, entryId: input.entryId, namespace: input.entryId, packageName: evidence.identity.packageName,
           packageVersion: evidence.identity.packageVersion, revision: evidence.revision, schemaDigest: evidence.identity.schemaDigest, evidenceDigest: evidence.identity.evidenceDigest }
         const configuredModels = materializedProposalModels(writes)
-        if (proposal.capabilities.includes('video.generate') && configuredModels['video.generate'].length === 0) fail('MODEL_UNAVAILABLE')
-        const models = [...new Set(proposal.capabilities.flatMap(scope => configuredModels[scope]))]
+        if (accepted.capabilities.includes('video.generate') && configuredModels['video.generate'].length === 0) fail('MODEL_UNAVAILABLE')
+        const models = [...new Set(accepted.capabilities.flatMap(scope => configuredModels[scope]))]
         if (!models.length || models.length > 256) fail('MODEL_UNAVAILABLE')
         const policy = { bindingId, entryId: input.entryId, packageName: identity.packageName, packageVersion: identity.packageVersion,
-          capabilities: [...proposal.capabilities], models }
+          capabilities: [...accepted.capabilities], models }
         const plan = { planId, entry: row.entry, identity, policy, evidence, raw, candidate,
           catalog: catalogSnapshot(catalog), expiresAt: Date.now() + TTL }
         plans.set(planId, plan)
         return { planId, entryId: input.entryId, packageName: identity.packageName, packageVersion: identity.packageVersion,
-          expiresAt: plan.expiresAt, capabilities: [...proposal.capabilities],
+          expiresAt: plan.expiresAt, capabilities: [...accepted.capabilities],
           writes: writes.map(write => ({ path: [...write.path], value: publicValue(write.value, bindingId) })) }
       } finally { signal?.removeEventListener('abort', onAbort); if (analysis === controller) analysis = undefined }
     },
