@@ -661,7 +661,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     url: `http://${authority}`,
     capabilityToken,
     createModelServiceGrant,
-    createImageLease: () => images.createLease({ models: [], capabilities: ['image.generate', 'image.edit'], compatibilityOnly: false }),
+    createImageLease: () => images.createLease(),
     createVideoLease: models => videos.createLease({ models }),
     videoModels: signal => videos.models(signal ?? AbortSignal.timeout(10000)),
     createPluginConfigurationLease: pluginConfiguration.createLease,
