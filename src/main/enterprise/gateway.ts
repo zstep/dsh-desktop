@@ -291,8 +291,13 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     const supplied = Buffer.from(req.headers.authorization ?? '')
     const grant = [...modelGrants].find(item => supplied.length === item.credential.length && timingSafeEqual(supplied, item.credential))
     if (!grant || grant.revoked) return fail(res, 401)
+    const modelUrl = req.method === 'GET' && typeof req.url === 'string' && req.url.startsWith('/v1/models?')
+      ? new URL(req.url, 'http://gateway.local') : undefined
+    const imageModelsOnly = modelUrl?.pathname === '/v1/models' && modelUrl.searchParams.get('kind') === 'image'
     const isModels = req.method === 'GET' && req.url === '/v1/models' && grant.models === undefined
-    const isPluginModels = req.method === 'GET' && req.url === '/v1/models' && grant.models !== undefined && grant.capabilities.has('chat.completions')
+    const isPluginModels = req.method === 'GET' && grant.models !== undefined &&
+      ((req.url === '/v1/models' && grant.capabilities.has('chat.completions')) ||
+       (imageModelsOnly && grant.capabilities.has('image.generate')))
     const isPluginChat = req.method === 'POST' && req.url === '/v1/chat/completions' && grant.models !== undefined && grant.capabilities.has('chat.completions')
     const isChat = req.method === 'POST' && req.url === '/v1/chat/completions' && grant.capabilities.has('chat.completions')
     const isDefaults = req.method === 'GET' && req.url === '/v1/model-service/defaults' && grant.capabilities.has('chat.completions') && grant.models === undefined
@@ -488,6 +493,14 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
       }
       if (isPluginModels) {
         const allowed = [...(grant.models ?? [])]
+        if (imageModelsOnly) {
+          // Image plugins ask for their own catalog; returning chat or video
+          // models here pollutes the image-model picker.
+          const imageIds = await imageModelIds()
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ object: 'list', data: allowed.filter(model => imageIds.has(model)).map(id => ({ id, object: 'model', name: id })) }))
+          return
+        }
         const chatCatalog = await metadata('/api/v1/models')
         const catalog = catalogModels(chatCatalog.data)
         const imageIds = await imageModelIds()
@@ -648,7 +661,7 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
     url: `http://${authority}`,
     capabilityToken,
     createModelServiceGrant,
-    createImageLease: () => images.createLease(),
+    createImageLease: () => images.createLease({ models: [], capabilities: ['image.generate', 'image.edit'], compatibilityOnly: false }),
     createVideoLease: models => videos.createLease({ models }),
     videoModels: signal => videos.models(signal ?? AbortSignal.timeout(10000)),
     createPluginConfigurationLease: pluginConfiguration.createLease,

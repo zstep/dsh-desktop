@@ -69,6 +69,15 @@ describe('private per-plugin configuration gateway', () => {
     expect((await post(gateway, child.capabilityToken, route, input)).status).toBe(401)
     expect(submissions).toBe(1)
   })
+  it('returns only image models to an image plugin asking for its own catalog', async () => {
+    const { gateway } = await fixture()
+    const { child } = await issue(gateway, { ...policy, capabilities: ['image.generate', 'chat.completions'], models: ['chosen', 'chat-one'] })
+    const response = await fetch(`${gateway.url}/v1/models?kind=image`, { headers: { authorization: `Bearer ${child.capabilityToken}` } })
+    expect(response.status).toBe(200)
+    const body = await response.json() as { data: { id: string }[] }
+    expect(body.data.map(row => row.id)).toEqual(['chosen'])
+  })
+
   it('keeps broker/chat/image credentials separate, validates exact routes/models and denies browser origins', async () => {
     const { gateway, fetcher } = await fixture()
     const { broker, child } = await issue(gateway)
