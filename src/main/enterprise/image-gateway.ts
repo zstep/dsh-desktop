@@ -5,7 +5,8 @@ import { parseImageParameters, validateImageParameters, IMAGE_BATCH_BYTES, type 
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_JSON_BYTES = 1024 * 1024
-export const IMAGE_GATEWAY_TIMEOUT_MS = 230_000
+// 4K image generation regularly needs more than three minutes upstream.
+export const IMAGE_GATEWAY_TIMEOUT_MS = 320_000
 
 export interface PengbaoImageLease {
   capabilityToken: string
