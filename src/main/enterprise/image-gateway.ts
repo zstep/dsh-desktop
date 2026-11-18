@@ -16,7 +16,7 @@ export interface PengbaoImageLease {
 type ImageReason = 'available' | 'disabled' | 'forbidden' | 'unauthenticated' | 'unavailable'
 type ImageErrorCode = 'IMAGE_DISABLED' | 'IMAGE_FORBIDDEN' | 'IMAGE_AUTH' | 'IMAGE_NETWORK' | 'IMAGE_TIMEOUT' | 'IMAGE_UPSTREAM_TIMEOUT' |
   'IMAGE_RESPONSE' | 'IMAGE_TOO_LARGE' | 'IMAGE_INVALID_REQUEST' | 'IMAGE_BUSY' | 'IMAGE_REVOKED' |
-  'IMAGE_MODEL_UNSUPPORTED' | 'IMAGE_MODEL_UNAVAILABLE' | 'IMAGE_PARAMETERS_UNSUPPORTED' | 'IMAGE_PROVIDER_AUTH' | 'IMAGE_PROVIDER_REJECTED' | 'IMAGE_FETCH' | 'IMAGE_STORE'
+  'IMAGE_MODEL_UNSUPPORTED' | 'IMAGE_MODEL_UNAVAILABLE' | 'IMAGE_PARAMETERS_UNSUPPORTED' | 'IMAGE_PROVIDER_AUTH' | 'IMAGE_PROVIDER_REJECTED' | 'IMAGE_FILTERED' | 'IMAGE_FETCH' | 'IMAGE_STORE'
 
 export interface PengbaoImageBackendDiagnostic {
   phase: 'provider-request' | 'provider-response' | 'image-fetch' | 'store'
@@ -44,6 +44,7 @@ type ImageInput = { prompt: string; size?: string; model?: string; n?: number; q
 
 class ImageFailure extends Error {
   backend?: PengbaoImageBackendDiagnostic
+  reason?: string
   constructor(readonly status: number, readonly code: ImageErrorCode, readonly upstreamStatus?: number) { super(code) }
 }
 
@@ -63,7 +64,8 @@ const MESSAGES: Record<ImageErrorCode, string> = {
   IMAGE_MODEL_UNAVAILABLE: 'The selected image model is no longer available. Refresh the model list and try again.',
   IMAGE_PARAMETERS_UNSUPPORTED: 'The selected image parameters are unsupported or have changed. Refresh model capabilities.',
   IMAGE_PROVIDER_AUTH: 'The image provider rejected authentication; this is an administrator configuration issue.',
-  IMAGE_PROVIDER_REJECTED: 'The image generation service rejected the request; the underlying cause is unavailable.',
+  IMAGE_PROVIDER_REJECTED: 'The image generation service rejected the request.',
+  IMAGE_FILTERED: 'The provider blocked this result with its safety policy. Adjust the prompt (avoid violent or well-known character imagery) and try again.',
   IMAGE_FETCH: 'The image was generated but could not be retrieved. The request may still have been charged.',
   IMAGE_STORE: 'The image was generated but could not be saved. The request may still have been charged.',
 }
@@ -72,7 +74,8 @@ function fail(res: ServerResponse, failure: ImageFailure, diagnostic?: PengbaoIm
   if (res.destroyed) return
   if (res.headersSent) { res.destroy(); return }
   res.writeHead(failure.status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'connection': 'close' })
-  res.end(JSON.stringify({ error: { message: MESSAGES[failure.code], type: 'image_gateway_error', code: failure.code, ...(diagnostic ? { diagnostic } : {}) } }))
+  const reason = failure.reason && failure.code !== 'IMAGE_AUTH' && failure.code !== 'IMAGE_PROVIDER_AUTH' ? failure.reason : undefined
+  res.end(JSON.stringify({ error: { message: reason ? `${MESSAGES[failure.code]} Provider said: ${reason}` : MESSAGES[failure.code], type: 'image_gateway_error', code: failure.code, ...(diagnostic ? { diagnostic } : {}) } }))
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -312,13 +315,16 @@ export function createImageGateway(options: {
           const payload = record(await json(response, signal, 16 * 1024))
           const detail = record(payload?.error) ?? record(payload?.detail)
           const code = detail?.code
-          const allowed = ['IMAGE_PROVIDER_AUTH', 'IMAGE_PROVIDER_REJECTED', 'IMAGE_BUSY', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_NETWORK', 'IMAGE_FETCH', 'IMAGE_STORE', 'IMAGE_RESPONSE']
+          const allowed = ['IMAGE_PROVIDER_AUTH', 'IMAGE_PROVIDER_REJECTED', 'IMAGE_FILTERED', 'IMAGE_BUSY', 'IMAGE_UPSTREAM_TIMEOUT', 'IMAGE_NETWORK', 'IMAGE_FETCH', 'IMAGE_STORE', 'IMAGE_RESPONSE']
           if (typeof code === 'string' && allowed.includes(code)) {
+            // The code comes from a fixed vocabulary; the backend diagnostic is
+            // only attached when it belongs to this exact request.
+            structured = new ImageFailure(response.status === 429 ? 429 : response.status === 504 ? 504 : response.status === 422 ? 422 : 502, code as ImageErrorCode, response.status)
+            const shown = detail?.reason
+            const UNSAFE = new RegExp('[\\u0000-\\u001f\\u007f]|://')
+            if (typeof shown === 'string' && shown.length > 0 && shown.length <= 300 && !UNSAFE.test(shown)) structured.reason = shown
             const backend = imageBackendDiagnostic(detail, correlation.get(signal) ?? '', code as ImageErrorCode)
-            if (backend) {
-              structured = new ImageFailure(response.status === 429 ? 429 : response.status === 504 ? 504 : 502, code as ImageErrorCode, response.status)
-              structured.backend = backend
-            }
+            if (backend) structured.backend = backend
           }
           const contractCode = record(payload?.detail)?.code
           if (body.parameterContractVersion === 1 && [400, 409].includes(response.status)) {

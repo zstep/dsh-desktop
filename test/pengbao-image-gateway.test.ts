@@ -163,6 +163,47 @@ describe('Pengbao image gateway parameter batches', () => {
     await expectError(await request(gateway, lease.capabilityToken), 502, 'IMAGE_PROVIDER_REJECTED')
     expect(seen.filter(row => row.path === GENERATE)).toHaveLength(1)
   })
+  it('surfaces a provider safety filter with its reason instead of a generic rejection', async () => {
+    const requestId = `pb-${'e'.repeat(32)}`
+    const { gateway, lease } = await fixture((req, res) => {
+      if (req.url === GENERATE) {
+        res.writeHead(422, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: {
+          type: 'image_generation_error', contractVersion: 1, requestId,
+          code: 'IMAGE_FILTERED', phase: 'provider-response', elapsedMs: 51, providerStatus: 451,
+          reason: 'The generated image was filtered by the safety policy.'
+        } }))
+        return
+      }
+      defaults(req, res)
+    })
+    const response = await request(gateway, lease.capabilityToken)
+    expect(response.status).toBe(422)
+    const error = (await response.json()).error
+    expect(error.code).toBe('IMAGE_FILTERED')
+    expect(error.message).toContain('safety policy')
+    expect(error.message).toContain('The generated image was filtered by the safety policy.')
+  })
+  it('never echoes a provider reason for authentication failures', async () => {
+    const requestId = `pb-${'f'.repeat(32)}`
+    const { gateway, lease } = await fixture((req, res) => {
+      if (req.url === GENERATE) {
+        res.writeHead(502, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: {
+          type: 'image_generation_error', contractVersion: 1, requestId,
+          code: 'IMAGE_PROVIDER_AUTH', phase: 'provider-response', elapsedMs: 12, providerStatus: 401,
+          reason: 'Invalid key sk-secret-provider-value'
+        } }))
+        return
+      }
+      defaults(req, res)
+    })
+    const response = await request(gateway, lease.capabilityToken)
+    expect(response.status).toBe(502)
+    const error = (await response.json()).error
+    expect(error.code).toBe('IMAGE_PROVIDER_AUTH')
+    expect(error.message).not.toContain('sk-secret-provider-value')
+  })
   it('maps an untyped generation 400 to a neutral provider rejection', async () => {
     const { gateway, lease } = await fixture((req, res) => {
       if (req.url === GENERATE) { res.writeHead(400, { 'content-type': 'text/plain' }); res.end('secret provider body'); return }
