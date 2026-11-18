@@ -19,6 +19,22 @@ async function temporary() { const root = await realpath(await mkdtemp(join(tmpd
 const resources = resolve('.build/office-runtime/templates')
 const library = await createTemplateLibrary(resources)
 
+// The LibreOffice Kit converter occasionally fails to start right after a
+// previous instance exits on hosted runners; a transient startup failure is
+// not a workbook regression, so retry the conversion once before failing.
+async function recalculate(input, output) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await promisify(execFile)(electronExecutable(resolve('.')), [resolve('build/office-cli.mjs'), 'recalculate', '--input', input, '--output', output], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000
+      })
+    } catch (error) {
+      if (attempt >= 2) throw error
+      await new Promise(done => setTimeout(done, 2_000))
+    }
+  }
+}
+
 it('produces the same workbook semantics across repeated official Kit recalculations', async () => {
   const directory = await temporary()
   const python = resolve('.build/office-runtime/primary-runtime/dependencies/python', process.platform === 'win32' ? 'python.exe' : 'bin/python3')
@@ -26,9 +42,7 @@ it('produces the same workbook semantics across repeated official Kit recalculat
   for (const filename of ['first.xlsx', 'second.xlsx']) {
     const output = join(directory, filename)
     outputs.push(output)
-    await promisify(execFile)(electronExecutable(resolve('.')), [resolve('build/office-cli.mjs'), 'recalculate', '--input', join(resources, 'annual-business/example.xlsx'), '--output', output], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000
-    })
+    await recalculate(join(resources, 'annual-business/example.xlsx'), output)
     await promisify(execFile)(python, ['-I', '-B', resolve('scripts/office-runtime/normalize-package.py'), output])
   }
   await promisify(execFile)(python, ['-I', '-B', '-c', `
