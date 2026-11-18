@@ -15,8 +15,13 @@ const MAX_ANCHOR_OCCURRENCES = 2
 const MAX_DIRECTORY_ENTRIES = 512
 const EXTRACTION_VERSION = 2
 const MAX_OUTPUT = 64 * 1024
-const MAX_EVENTS = 4096
-const TIMEOUT_MS = 45_000
+// Stream accounting includes reasoning and repeated block-end snapshots; it is
+// distinct from the 64 KiB configuration answer and 256 KiB evidence limits.
+const MAX_EVENTS = 32_768
+const MAX_STREAM_BYTES = 4 * 1024 * 1024
+const TIMEOUT_MS = 120_000
+const IDLE_TIMEOUT_MS = 45_000
+const FIRST_EVENT_TIMEOUT_MS = 90_000
 const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor', '__jsExpr'])
 const SEMANTICS = new Set(['endpoint', 'credential', 'chat-model', 'image-model', 'video-model', 'binding-id', 'label'])
 const CAPABILITIES = new Set(['chat.completions', 'image.generate', 'video.generate'])
@@ -812,17 +817,25 @@ export async function analyzePluginConfiguration(ctx, evidence, { signal, select
   // Verify serialized bytes before catalog/model calls, including JSON escaping and metadata.
   const { payload, ids } = modelEvidencePayload(evidence)
   const controller = new AbortController()
-  let timer
+  let timer, idleTimer
+  const startedAt = Date.now()
+  const diagnostic = { attempt: 0, phase: 'catalog', payloadBytes: Buffer.byteLength(payload), events: 0, reasoningEvents: 0, textEvents: 0, outputBytes: 0, firstEventMs: null, firstTextMs: null, lastEventMs: null, streamBytes: 0, limit: null }
+  let timeout
   let aborted
   let rejectAbort
-  const abort = code => { aborted = code; controller.abort(); rejectAbort(Object.assign(new Error(code), { code })) }
+  const abort = code => { if (aborted) return; aborted = code; controller.abort(); rejectAbort(Object.assign(new Error(code), { code })) }
+  const armIdle = (first = false) => {
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => { timeout = first ? 'first-event' : 'idle'; abort('ANALYSIS_TIMEOUT') }, first ? FIRST_EVENT_TIMEOUT_MS : IDLE_TIMEOUT_MS)
+    idleTimer.unref?.()
+  }
   const abortedPromise = new Promise((_, reject) => { rejectAbort = reject })
   // Avoid an unhandled rejection when caller supplied an already-aborted signal.
   abortedPromise.catch(() => {})
   const onAbort = () => abort('ANALYSIS_CANCELLED')
   if (signal?.aborted) fail('ANALYSIS_CANCELLED')
   signal?.addEventListener('abort', onAbort, { once: true })
-  timer = setTimeout(() => abort('ANALYSIS_TIMEOUT'), TIMEOUT_MS)
+  timer = setTimeout(() => { timeout = 'total'; abort('ANALYSIS_TIMEOUT') }, TIMEOUT_MS)
   timer.unref?.()
   const deadlineAt = Date.now() + TIMEOUT_MS
   const wait = task => Promise.race([Promise.resolve(task), abortedPromise])
@@ -834,6 +847,9 @@ export async function analyzePluginConfiguration(ctx, evidence, { signal, select
     if (selection?.provider !== 'pengbao' || typeof selection.model !== 'string' || !selection.model.length || selection.model.length > 256) fail('ANALYSIS_UNAVAILABLE')
     // identity.root, revision, settings values and host runtime stay local.
     const stream = async messages => {
+      diagnostic.attempt++
+      diagnostic.phase = 'waiting-first-event'
+      armIdle(true)
       const source = ctx.llm.stream({ provider: 'pengbao', model: selection.model, signal: controller.signal,
         system: SYSTEM, messages, maxTokens: 16384, temperature: 0, tools: [] })
       if (!source || typeof source[Symbol.asyncIterator] !== 'function') fail('ANALYSIS_FAILED', 'stream is not async iterable')
@@ -847,24 +863,44 @@ export async function analyzePluginConfiguration(ctx, evidence, { signal, select
           const next = await wait(iterator.next())
           if (next.done) break
           const chunk = next.value
-          if (++events > MAX_EVENTS || !plain(chunk)) fail('ANALYSIS_LIMIT')
+          if (++events > MAX_EVENTS) { diagnostic.limit = 'stream-events'; fail('ANALYSIS_LIMIT') }
+          if (!plain(chunk)) fail('ANALYSIS_FAILED', 'non-object event')
+          diagnostic.events++
+          diagnostic.firstEventMs ??= Date.now() - startedAt
+          diagnostic.lastEventMs = Date.now() - startedAt
+          if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.length) {
+            diagnostic.textEvents++
+            diagnostic.outputBytes += Buffer.byteLength(chunk.text)
+            diagnostic.firstTextMs ??= Date.now() - startedAt
+            diagnostic.phase = 'answer'
+            armIdle()
+          } else if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string' && chunk.text.length) {
+            diagnostic.reasoningEvents++
+            if (diagnostic.textEvents === 0) diagnostic.phase = 'reasoning'
+            armIdle()
+          }
           // Count every event, including reasoning and duplicate block-end data, before ignoring it.
-          bytes += Buffer.byteLength(JSON.stringify(chunk))
-          if (bytes > MAX_BYTES) fail('ANALYSIS_LIMIT')
+          const chunkBytes = Buffer.byteLength(JSON.stringify(chunk))
+          bytes += chunkBytes
+          diagnostic.streamBytes += chunkBytes
+          if (bytes > MAX_STREAM_BYTES) { diagnostic.limit = 'stream-bytes'; fail('ANALYSIS_LIMIT') }
           if (finished) fail('ANALYSIS_FAILED', 'chunk after finish')
           if (chunk.type === 'text-delta') {
             if (typeof chunk.text !== 'string') fail('ANALYSIS_FAILED', 'non-string text delta')
             output += chunk.text
-            if (Buffer.byteLength(output) > MAX_OUTPUT) fail('ANALYSIS_LIMIT')
+            if (Buffer.byteLength(output) > MAX_OUTPUT) { diagnostic.limit = 'answer-bytes'; fail('ANALYSIS_LIMIT') }
           } else if (chunk.type === 'finish') {
             if (chunk.reason?.kind !== 'stop') fail('ANALYSIS_FAILED', `finish ${chunk.reason?.kind ?? 'missing'}`)
             finished = true
+            diagnostic.phase = 'finishing'
           } else if (chunk.type === 'tool-call-delta' || (chunk.type === 'block-start' && chunk.blockType === 'tool-call')) fail('ANALYSIS_FAILED', 'tool call emitted')
           else if (!['block-start', 'block-end', 'reasoning-delta', 'usage'].includes(chunk.type)) fail('ANALYSIS_FAILED', `unexpected chunk ${String(chunk.type).slice(0, 64)}`)
         }
         if (!finished) fail('ANALYSIS_FAILED', 'stream ended without finish')
+        diagnostic.phase = 'validation'
         return output
       } finally {
+        clearTimeout(idleTimer)
         // A hostile/stalled iterator cannot hold the host beyond the deadline.
         if (iterator.return) { try { Promise.resolve(iterator.return()).catch(() => {}) } catch { /* Best-effort cancellation only. */ } }
       }
@@ -915,10 +951,14 @@ export async function analyzePluginConfiguration(ctx, evidence, { signal, select
     const code = aborted ?? (safe.has(error?.code) ? error.code : 'ANALYSIS_FAILED')
     // Diagnostics only: fixed codes and host-written classifications; never evidence,
     // prompts or model output.
-    if (code !== 'ANALYSIS_CANCELLED') console.warn(`[model-service] analysis failed: ${code}${error?.detail ? ` (${error.detail})` : ''}${error?.code && error.code !== code ? ` [${error.code}]` : ''}`)
+    if (code !== 'ANALYSIS_CANCELLED') {
+      console.warn(`[model-service] analysis diagnostic: ${JSON.stringify({ ...diagnostic, elapsedMs: Date.now() - startedAt, code, ...(timeout ? { timeout } : {}) })}`)
+      console.warn(`[model-service] analysis failed: ${code}${error?.detail ? ` (${error.detail})` : ''}${error?.code && error.code !== code ? ` [${error.code}]` : ''}`)
+    }
     fail(code)
   } finally {
     clearTimeout(timer)
+    clearTimeout(idleTimer)
     signal?.removeEventListener('abort', onAbort)
     controller.abort()
   }

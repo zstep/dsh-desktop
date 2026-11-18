@@ -37,6 +37,10 @@ it('loads the image studio in a temporary Harness and follows server image / cur
     if (url.pathname === '/api/v1/models') return Response.json({ data: [{ id: 'chat-a', name: 'Fixture Chat Alpha' }, { id: 'chat-b', name: 'Fixture Chat Beta' }] })
     if (url.pathname === '/api/config') return Response.json({ features: { enable_image_generation: true }, default_models: 'chat-a' })
     if (url.pathname === '/api/v1/auths/') return Response.json({ role: 'user', permissions: { features: { image_generation: true } }, token: jwt })
+    if (url.pathname === '/api/v1/videos/proxy/models') return Response.json({ data: [
+      { id: 'doubao-seedance-2-5-260628', name: 'Seedance 2.5', provider: 'volcengine', protocol: 'ark' },
+      { id: 'doubao-seedance-2-5-flash-261115', name: 'Seedance Flash', provider: 'volcengine', protocol: 'ark' }
+    ] })
     if (url.pathname === '/api/v1/images/metadata') return Response.json({
       defaultModel: { id: 'gpt-image-1', name: 'GPT Image 1' }, selection: 'request-local', catalogStatus: 'available',
       models: imageModels(), generationParameters
@@ -61,7 +65,8 @@ it('loads the image studio in a temporary Harness and follows server image / cur
           { path: ['model'], value: { $semantic: 'chat-model' }, evidenceIds: ['e2'] }
         ] }
         expect(JSON.stringify(body.messages)).toContain('fixture-source-evidence')
-        return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(proposal) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } })
+        const reasoning = Array.from({ length: 6000 }, () => `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'fixture reasoning' } }] })}\n\n`).join('')
+        return new Response(reasoning + `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(proposal) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } })
       }
       return new Response('data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n\ndata: {"choices":[{"delta":{"content":"A blue flower in soft light"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
     }
@@ -171,7 +176,10 @@ export function apply(){};
     }
     const initialOverview = await overview()
     expect(initialOverview.consumers).toContainEqual(expect.objectContaining({ id: consumerId, state: 'not-connected', adapter: 'facade' }))
-    expect(initialOverview.video).toEqual({ available: false, reason: 'unverified' })
+    expect(initialOverview.video).toEqual({ available: true, reason: 'available', models: [
+      { id: 'doubao-seedance-2-5-260628', name: 'Seedance 2.5', provider: 'volcengine', protocol: 'ark' },
+      { id: 'doubao-seedance-2-5-flash-261115', name: 'Seedance Flash', provider: 'volcengine', protocol: 'ark' }
+    ] })
     expect(initialOverview.editable).toEqual({ chat: false, image: false })
     expect(initialOverview.consumers).toContainEqual(expect.objectContaining({ id: 'dsh-desktop-imagegen', state: 'already-connected' }))
     expect(initialOverview.consumers.map((consumer: { id: string }) => consumer.id)).not.toEqual(expect.arrayContaining(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']))
@@ -337,6 +345,8 @@ app.whenReady().then(async()=>{
     assert.equal(await js('[...document.querySelectorAll("[role=dialog] nav button")].some(e=>["Pengbao model foundation","鹏宝模型底座"].includes(e.innerText.trim()))'),false,'No duplicate primary model foundation');
     await wait(()=>click(['Pengbao model foundation','鹏宝模型底座']),'Open nested model foundation');
     await wait(()=>js('!!document.querySelector("[data-testid=desktop-model-service-settings]")'),'Read nested model catalog');
+    await js('document.querySelector("[data-testid=model-service-video-models-toggle]").click()');
+    await wait(()=>js('(()=>{const e=document.querySelector("[data-testid=model-service-video-models]");return e&&e.innerText.includes("doubao-seedance-2-5-260628")&&e.innerText.includes("doubao-seedance-2-5-flash-261115")&&/火山引擎|Volcengine/.test(e.innerText)})()'),'Video catalog through private broker');
   };
   await window.loadURL(${JSON.stringify(url)});
   await js('(()=>{const original=window.fetch;window.fetch=async(...args)=>{const response=await original(...args);if(!response.ok&&String(args[0]).includes("model-service"))console.log("MODEL-API-ERROR "+response.status+" "+await response.clone().text());return response}})()');

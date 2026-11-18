@@ -12,7 +12,7 @@ export interface PluginConfigurationPublicPlan {
 }
 export interface PluginConfigurationController {
   inventory(): Promise<{ readonly plugins: readonly unknown[]; readonly available: boolean }>
-  analyze(input: { readonly entryId: string }): Promise<PluginConfigurationPublicPlan>
+  analyze(input: { readonly entryId: string }, options?: { signal?: AbortSignal }): Promise<PluginConfigurationPublicPlan>
   cancel(input: Record<string, never>): { readonly status: 'cancelled' }
   apply(input: { readonly planId: string }): Promise<{ readonly status: 'saved-active'; readonly receiptId: string }>
   rollback(input: { readonly receiptId: string }): Promise<{ readonly status: 'rolled-back' | 'verification-failed' }>

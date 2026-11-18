@@ -9,6 +9,7 @@ import { registerPrivatePluginConfiguration } from '../private.js'
 import { installPluginConfigurationRuntime, readPluginConfigurations } from '../plugin-configuration-runtime.js'
 import { createPluginConfigurationController } from '../plugin-configuration.js'
 import { collectPluginEvidence } from '../plugin-config-analysis.js'
+import { createModelServiceConnections } from '../connections.js'
 
 const proposal = writes => ({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes })
 const CHAT_PROPOSAL = proposal([
@@ -265,6 +266,48 @@ test('analyze, apply, and rollback keep markers in the profile layer and compare
   const broker = await gateway()
   registerPrivatePluginConfiguration(broker.registration)
   try {
+    await t.test('request cancellation aborts analysis during model streaming without saving or retry', async () => {
+      const f = await fixture()
+      const controller = createPluginConfigurationController(f.ctx, f.service)
+      let started
+      const entered = new Promise(resolve => { started = resolve })
+      let modelSignal, calls = 0
+      f.ctx.llm.stream = options => { modelSignal = options.signal; calls++; started(); return { [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}), return: async () => ({ done: true }) }) } }
+      const abort = new AbortController()
+      try {
+        await installPluginConfigurationRuntime(f.ctx)
+        const pending = controller.analyze({ entryId: 'fixture-chat' }, { signal: abort.signal })
+        const rejected = assert.rejects(pending, { code: 'ANALYSIS_CANCELLED' })
+        await entered
+        abort.abort()
+        await Promise.race([rejected, new Promise((_, reject) => setTimeout(() => reject(new Error('Request cancellation did not stop analysis')), 300))])
+        assert.equal(modelSignal.aborted, true)
+        assert.equal(calls, 1)
+        assert.equal(f.entry.options.config, undefined)
+      } finally {
+        controller.dispose()
+        for (const cleanup of f.effects) await cleanup()
+        await rm(f.root, { recursive: true, force: true })
+      }
+    })
+    await t.test('overview reads the same private video broker as plugin configuration', async () => {
+      const f = await fixture()
+      const overview = createModelServiceConnections(f.ctx, f.service)
+      try {
+        await installPluginConfigurationRuntime(f.ctx)
+        const view = await overview.overview()
+        assert.deepEqual(view.video.models, [
+          { id: 'seedance-fixture', name: 'Seedance', provider: 'volcengine', protocol: 'ark' },
+          { id: 'wan-fixture', name: 'Wan', provider: 'alibaba', protocol: 'dashscope' }
+        ])
+        assert.equal(view.video.available, true)
+        assert.equal(JSON.stringify(view).includes(token('b')), false)
+      } finally {
+        overview.dispose()
+        for (const cleanup of f.effects) await cleanup()
+        await rm(f.root, { recursive: true, force: true })
+      }
+    })
     await t.test('model collections expose every authorized image model while scalar fields retain defaults', modelCollectionScenario)
     await t.test('large bundle changes inside or outside snippets invalidate approval without config writes', async t => {
       await staleApprovalTests(t, broker)

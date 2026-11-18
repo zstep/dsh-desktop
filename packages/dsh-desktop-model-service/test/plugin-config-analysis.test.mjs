@@ -722,6 +722,127 @@ test('analyzes with server default and rejects tool or malformed output', async 
   await assert.rejects(() => analyzePluginConfiguration({ ...ctx, llm: { stream: () => (async function * () { yield { type: 'tool-call-delta', id: 'x', argumentsDelta: '{}' } })() } }, evidence, { selection: { provider: 'pengbao', model: 'explicit' } }), { code: 'ANALYSIS_FAILED' })
 })
 
+test('progressing analysis survives the old total deadline and returns a validated mapping', async t => {
+  const { ctx } = await fixture()
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  const valid = JSON.stringify({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes: [
+    { path: ['endpoint'], value: { $semantic: 'endpoint' }, evidenceIds: ['e1'] },
+    { path: ['credential', '$binding-id'], value: { token: { $semantic: 'credential' } }, evidenceIds: ['e1'] },
+    { path: ['chatModel'], value: { $semantic: 'chat-model' }, evidenceIds: ['e1'] }
+  ] })
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  let result, error
+  const pending = analyzePluginConfiguration({ ...ctx, llm: { stream: () => (async function * () {
+    yield { type: 'reasoning-delta', text: 'fixture' }
+    await new Promise(resolve => setTimeout(resolve, 30_000))
+    yield { type: 'reasoning-delta', text: 'fixture' }
+    await gate
+    yield { type: 'text-delta', text: valid }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })() } }, evidence, { selection: { provider: 'pengbao', model: 'explicit' } }).then(value => { result = value }, failure => { error = failure })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(30_000); await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(20_000); await new Promise(resolve => setImmediate(resolve))
+  assert.equal(error, undefined, 'active analysis must not be cut off at the old 45-second total limit')
+  release(); await pending
+  assert.equal(result.protocol, 'openai')
+})
+
+test('silent analysis times out without retry and emits only bounded phase diagnostics', async t => {
+  const { ctx } = await fixture()
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const warnings = [], original = console.warn
+  console.warn = value => warnings.push(value)
+  let calls = 0, signal, returned = false
+  try {
+    const pending = analyzePluginConfiguration({ ...ctx, llm: { stream: options => {
+      calls++; signal = options.signal
+      return { [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}), return: () => { returned = true; return new Promise(() => {}) } }) }
+    } } }, evidence, { selection: { provider: 'pengbao', model: 'explicit' } })
+    const rejected = assert.rejects(pending, { code: 'ANALYSIS_TIMEOUT' })
+    await new Promise(resolve => setImmediate(resolve))
+    t.mock.timers.tick(89_999)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(signal.aborted, false, 'first-event prefill may exceed the old 45-second deadline')
+    t.mock.timers.tick(1)
+    await rejected
+    assert.equal(calls, 1); assert.equal(signal.aborted, true); assert.equal(returned, true)
+    const summary = warnings.find(line => line.startsWith('[model-service] analysis diagnostic: '))
+    assert.ok(summary)
+    const diagnostic = JSON.parse(summary.split('analysis diagnostic: ')[1])
+    assert.equal(diagnostic.phase, 'waiting-first-event')
+    assert.equal(diagnostic.timeout, 'first-event')
+    assert.equal(diagnostic.elapsedMs, 90_000)
+    assert.equal(diagnostic.attempt, 1)
+    assert.equal(diagnostic.events, 0)
+    assert.equal(JSON.stringify(diagnostic).includes('fixture-provider'), false)
+    assert.equal(Object.values(diagnostic).some(value => value !== null && typeof value === 'object'), false)
+  } finally { console.warn = original }
+})
+
+test('continuous reasoning cannot renew the analysis total deadline indefinitely', async t => {
+  const { ctx } = await fixture()
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  let signal, calls = 0
+  const pending = analyzePluginConfiguration({ ...ctx, llm: { stream: options => {
+    signal = options.signal; calls++
+    return (async function * () {
+      while (!signal.aborted) {
+        yield { type: 'reasoning-delta', text: 'synthetic progress' }
+        await new Promise(resolve => setTimeout(resolve, 30_000))
+      }
+    })()
+  } } }, evidence, { selection: { provider: 'pengbao', model: 'explicit' } })
+  const rejected = assert.rejects(pending, { code: 'ANALYSIS_TIMEOUT' })
+  await new Promise(resolve => setImmediate(resolve))
+  for (let turn = 0; turn < 3; turn++) { t.mock.timers.tick(30_000); await new Promise(resolve => setImmediate(resolve)); assert.equal(signal.aborted, false) }
+  t.mock.timers.tick(30_000); await rejected
+  assert.equal(signal.aborted, true); assert.equal(calls, 1)
+})
+
+test('reasoning-heavy analysis stays within bounded serialized event budget when final answer is small', async t => {
+  const { ctx } = await fixture()
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  const valid = JSON.stringify({ contractVersion: 1, protocol: 'openai', capabilities: ['chat.completions'], writes: [
+    { path: ['endpoint'], value: { $semantic: 'endpoint' }, evidenceIds: ['e1'] },
+    { path: ['credential', '$binding-id'], value: { token: { $semantic: 'credential' } }, evidenceIds: ['e1'] },
+    { path: ['chatModel'], value: { $semantic: 'chat-model' }, evidenceIds: ['e1'] }
+  ] })
+  const result = await analyzePluginConfiguration({ ...ctx, llm: { stream: () => (async function * () {
+    for (let i = 0; i < 6000; i++) yield { type: 'reasoning-delta', text: 'reasoning' }
+    yield { type: 'text-delta', text: valid }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })() } }, evidence, { selection: { provider: 'pengbao', model: 'explicit' } })
+  assert.equal(result.protocol, 'openai')
+})
+
+test('oversized answer and unbounded reasoning remain denied with distinct bounded limit reasons', async () => {
+  const { ctx } = await fixture()
+  const evidence = await collectPluginEvidence(ctx, 'fixture-provider')
+  for (const [kind, chunk, count, limit] of [
+    ['answer', { type: 'text-delta', text: 'x'.repeat(65537) }, 1, 'answer-bytes'],
+    ['bytes', { type: 'reasoning-delta', text: 'x'.repeat(65536) }, 65, 'stream-bytes'],
+    ['events', { type: 'usage' }, 32769, 'stream-events']
+  ]) {
+    const warnings = [], original = console.warn
+    console.warn = value => warnings.push(value)
+    let calls = 0
+    try {
+      await assert.rejects(analyzePluginConfiguration({ ...ctx, llm: { stream: () => {
+        calls++
+        return (async function * () { for (let i = 0; i < count; i++) yield chunk })()
+      } } }, evidence, { selection: { provider: 'pengbao', model: 'explicit' } }), { code: 'ANALYSIS_LIMIT' }, kind)
+      const diagnostic = JSON.parse(warnings.find(line => line.startsWith('[model-service] analysis diagnostic: ')).split('analysis diagnostic: ')[1])
+      assert.equal(diagnostic.limit, limit)
+      assert.equal(calls, 1)
+    } finally { console.warn = original }
+  }
+})
+
 test('retries one dropped upstream stream before failing the analysis', async () => {
   const { ctx } = await fixture()
   const evidence = await collectPluginEvidence(ctx, 'fixture-provider')

@@ -113,17 +113,21 @@ export function createPluginConfigurationController(ctx, service) {
       const plugins = await listConfigurablePlugins(ctx)
       return { plugins, available: !!getPluginConfigurationRuntime(ctx) }
     },
-    async analyze(input) {
+    async analyze(input, { signal } = {}) {
       assertLive()
       if (!exact(input, ['entryId']) || typeof input.entryId !== 'string' || input.entryId.length > 128) fail('INVALID_REQUEST')
       runtime()
       analysis?.abort()
       const controller = new AbortController()
       analysis = controller
+      const onAbort = () => controller.abort()
+      if (signal?.aborted) onAbort()
+      else signal?.addEventListener('abort', onAbort, { once: true })
       const epoch = ++generation
       plans.clear()
       const current = () => { assertLive(); controller.signal.throwIfAborted(); if (generation !== epoch) fail('ANALYSIS_CANCELLED') }
       try {
+        current()
         const row = await rowFor(input.entryId)
         const raw = clone(row.entry.options.config ?? {})
         const evidence = await collectPluginEvidence(ctx, input.entryId)
@@ -153,7 +157,7 @@ export function createPluginConfigurationController(ctx, service) {
         return { planId, entryId: input.entryId, packageName: identity.packageName, packageVersion: identity.packageVersion,
           expiresAt: plan.expiresAt, capabilities: [...proposal.capabilities],
           writes: writes.map(write => ({ path: [...write.path], value: publicValue(write.value, bindingId) })) }
-      } finally { if (analysis === controller) analysis = undefined }
+      } finally { signal?.removeEventListener('abort', onAbort); if (analysis === controller) analysis = undefined }
     },
     cancel(input) {
       if (!exact(input, [])) fail('INVALID_REQUEST')
@@ -308,7 +312,8 @@ export function setupPluginConfiguration(ctx, service) {
         try {
           const origin = ctx.webServer.getOrigin()
           if (request.headers.get('origin') && request.headers.get('origin') !== origin) fail('FORBIDDEN')
-          const result = await controller[action](action === 'inventory' ? undefined : await readInput(request, origin))
+          const result = await controller[action](action === 'inventory' ? undefined : await readInput(request, origin),
+            action === 'analyze' ? { signal: request.signal } : undefined)
           return Response.json(result, { headers: { 'Cache-Control': 'no-store' } })
         } catch (error) {
           const allowed = ['INVALID_REQUEST', 'FORBIDDEN', 'CONFLICT', 'UNAVAILABLE', 'PLAN_EXPIRED', 'PLUGIN_UNAVAILABLE', 'MODEL_UNAVAILABLE',

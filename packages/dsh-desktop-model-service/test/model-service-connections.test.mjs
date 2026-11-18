@@ -51,9 +51,35 @@ function fixture(options = {}) {
   }
   const service = { consumers: () => copy(records), catalog: async () => copy(catalog) }
   const ctx = { settings }
-  const controller = createModelServiceConnections(ctx, service)
+  const controller = createModelServiceConnections(ctx, service, { videoModels: options.videoModels })
   return { controller, ctx, rows, writes, records, catalog, service }
 }
+
+test('overview exposes only bounded public video metadata without expanding facade model authority', async () => {
+  const f = fixture({ videoModels: async () => [
+    { id: 'doubao-seedance-2-5-260628', name: 'Seedance', provider: 'volcengine', protocol: 'ark', apiKey: 'must-not-expose', endpoint: 'https://private.invalid' },
+    { id: 'sora-2', name: 'Sora', provider: 'openai', protocol: 'openai' }
+  ] })
+  const result = await f.controller.overview()
+  assert.deepEqual(result.video, { available: true, reason: 'available', models: [
+    { id: 'doubao-seedance-2-5-260628', name: 'Seedance', provider: 'volcengine', protocol: 'ark' },
+    { id: 'sora-2', name: 'Sora', provider: 'openai', protocol: 'openai' }
+  ] })
+  assert.equal(result.models.some(model => model.id.startsWith('doubao-')), false)
+  assert.equal(JSON.stringify(result).includes('must-not-expose'), false)
+  assert.equal(JSON.stringify(result).includes('private.invalid'), false)
+})
+
+test('unavailable or malformed video catalog leaves ordinary overview available', async () => {
+  for (const videoModels of [async () => { throw new Error('fixture secret') }, async () => [{ id: 'sora-2', name: 'Sora', provider: 'unknown', protocol: 'openai' }]]) {
+    const result = await fixture({ videoModels }).controller.overview()
+    assert.deepEqual(result.video, { available: false, reason: 'unavailable', models: [] })
+    assert.equal(result.availability.chat.available, true)
+    assert.equal(result.availability.image.available, true)
+  }
+  assert.deepEqual((await fixture({ videoModels: async () => [] }).controller.overview()).video,
+    { available: false, reason: 'no-models', models: [] })
+})
 
 test('connect-all previews only declared facade consumers, skips conflicts and preserves selections', async () => {
   const f = fixture({ bindings: {
@@ -85,7 +111,7 @@ test('connect-all previews only declared facade consumers, skips conflicts and p
   ])
   assert.deepEqual(f.rows[0].user.bindings.connected, { enabled: true, chatModel: 'chat-model' })
   assert.deepEqual(f.rows[0].user.bindings.disabled, { enabled: false })
-  assert.equal((await f.controller.overview()).video.reason, 'unverified')
+  assert.equal((await f.controller.overview()).video.reason, 'unavailable')
 })
 
 test('skip, reinclude and skip-all plans replace previews without writing until apply', async () => {

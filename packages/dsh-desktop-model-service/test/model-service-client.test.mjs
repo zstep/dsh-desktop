@@ -162,7 +162,7 @@ for (const language of ['en', 'zh']) {
 
     assert.ok(html.includes('&lt;Chat &amp; model&gt;'))
     assert.equal(html.includes('Server selected') || html.includes('由服务器选择'), false)
-    assert.ok(html.includes(app.t('unverified')))
+    assert.ok(html.includes(app.t('videoModels')))
     await app.button('connectAll').props.onClick()
     await app.settle()
     html = app.html()
@@ -176,6 +176,47 @@ for (const language of ['en', 'zh']) {
     app.dispose()
   })
 }
+
+for (const language of ['en', 'zh']) {
+  test(`video catalog renders exact models and provider names without treating the first row as a server default (${language})`, async () => {
+    const initial = overview()
+    initial.video = { available: true, reason: 'available', models: [
+      { id: 'doubao-seedance-2-5-260628', name: 'Seedance <2.5>', provider: 'volcengine', protocol: 'ark' },
+      { id: 'wan3.0-video-prime', name: 'Wan 3', provider: 'alibaba', protocol: 'dashscope' }
+    ] }
+    const app = mount({ language, initial })
+    await app.settle()
+    assert.equal(app.elements(node => node.props['data-testid'] === 'model-service-video-card').length, 1)
+    const toggle = app.elements(node => node.props['data-testid'] === 'model-service-video-models-toggle')[0]
+    assert.equal(toggle.props['aria-expanded'], false)
+    toggle.props.onClick(); app.render()
+    const list = app.elements(node => node.props['data-testid'] === 'model-service-video-models')[0]
+    assert.ok(app.text(list).includes('doubao-seedance-2-5-260628'))
+    assert.ok(app.text(list).includes(language === 'zh' ? '火山' : 'Volcengine'))
+    assert.ok(app.text(list).includes('wan3.0-video-prime'))
+    assert.ok(app.html().includes('Seedance &lt;2.5&gt;'))
+    assert.equal(app.html().includes(app.t('videoHint')), false)
+    assert.equal(app.calls.some(call => call.endpoint === 'plan'), false)
+    app.dispose()
+  })
+}
+
+test('failed video catalog does not hide chat/image cards and can be refreshed', async () => {
+  const initial = overview()
+  initial.video = { available: false, reason: 'unavailable', models: [] }
+  const app = mount({ initial })
+  await app.settle()
+  assert.equal(app.elements(node => node.props['data-testid'] === 'model-service-chat-card').length, 1)
+  assert.equal(app.elements(node => node.props['data-testid'] === 'model-service-image-card').length, 1)
+  const toggle = app.elements(node => node.props['data-testid'] === 'model-service-video-models-toggle')[0]
+  assert.ok(toggle)
+  toggle.props.onClick(); app.render()
+  assert.equal(app.elements(node => node.props['data-testid'] === 'model-service-video-models-empty').length, 1)
+  initial.video = { available: true, reason: 'available', models: [{ id: 'sora-2', name: 'Sora', provider: 'openai', protocol: 'openai' }] }
+  await app.button('refresh').props.onClick(); await app.settle()
+  assert.match(app.text(app.elements(node => node.props['data-testid'] === 'model-service-video-models')[0]), /sora-2/)
+  app.dispose()
+})
 
 test('connect-all UI supports skip/reinclude, disabled conflicts, apply and rollback receipts', async () => {
   const app = mount()
@@ -334,7 +375,7 @@ test('default display prefers aliases, falls back to names or IDs and never offe
       assert.equal(app.html().includes('图片参数'), false)
       const order = app.elements(node => ['model-service-chat-card', 'model-service-image-card', 'plugin-configuration-assistant'].includes(node.props['data-testid'])).map(node => node.props['data-testid'])
       assert.deepEqual(order, ['model-service-chat-card', 'model-service-image-card', 'plugin-configuration-assistant'])
-      assert.deepEqual(app.elements(node => node.type === 'button').map(app.text), [app.t('refresh'), app.t('viewAllModels'), app.t('hideModels'), app.t('assistantRefresh'), app.t('assistantAnalyze')])
+      assert.deepEqual(app.elements(node => node.type === 'button').map(app.text), [app.t('refresh'), app.t('viewAllModels'), app.t('hideModels'), app.t('viewAllModels'), app.t('assistantRefresh'), app.t('assistantAnalyze')])
       assert.equal(/Server selected|由服务器选择|Preview changes|预览变更/.test(app.html()), false)
       assert.deepEqual(app.calls.filter(call => !call.endpoint.startsWith('configuration.')).map(call => call.endpoint), ['overview'])
       app.dispose()

@@ -352,7 +352,7 @@ describe('packaged Harness shell', () => {
   })
 
   it.each([
-    ['api/model-service.configuration.analyze', 'POST', 75_000],
+    ['api/model-service.configuration.analyze', 'POST', 150_000],
     ['api/model-service.configuration.analyze', 'GET', 30_000],
     ['api/model-service.configuration.analyze/other', 'POST', 30_000],
     ['api/model-service.configuration.analyze-extra', 'POST', 30_000],

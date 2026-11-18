@@ -1,4 +1,5 @@
 import { parseImageParameters } from './image-contract.js'
+import { getPluginConfigurationRuntime } from './plugin-configuration-runtime.js'
 import { randomUUID } from 'node:crypto'
 import { imageSettingsConflict as imageConflict } from './image-settings.js'
 
@@ -99,7 +100,11 @@ function strictInput(input) {
  * rollback receipts are process-local, short-lived and contain only whitelisted
  * nonsecret fields; profile credentials are never read, copied or rewritten.
  */
-export function createModelServiceConnections(ctx, service) {
+export function createModelServiceConnections(ctx, service, { videoModels = options => {
+  const runtime = getPluginConfigurationRuntime(ctx)
+  if (!runtime) fail('UNAVAILABLE')
+  return runtime.videoModels(options)
+} } = {}) {
   const plans = new Map()
   const receipts = new Map()
   let latestReceiptId = null
@@ -129,6 +134,23 @@ export function createModelServiceConnections(ctx, service) {
     return catalogView({ ...raw, availability: {
       chat: raw?.availability?.chat ?? raw?.availability?.[CHAT], image
     } })
+  }
+  const videoCatalog = async () => {
+    const signal = AbortSignal.timeout(6_000)
+    let onAbort
+    try {
+      const rows = await Promise.race([Promise.resolve().then(() => videoModels({ signal })), new Promise((_, reject) => {
+        onAbort = () => reject(new Error('Video catalog unavailable'))
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+      })])
+      if (!Array.isArray(rows) || rows.length > 256 || rows.some(row => !object(row) || !identifier(row.id) || !identifier(row.name) ||
+        !['volcengine', 'alibaba', 'openai'].includes(row.provider) || !['ark', 'dashscope', 'openai', 'newapi'].includes(row.protocol)) ||
+        new Set(rows.map(row => row.id)).size !== rows.length) throw new Error('Invalid video catalog')
+      return { available: rows.length > 0, reason: rows.length ? 'available' : 'no-models',
+        models: rows.map(({ id, name, provider, protocol }) => ({ id, name, provider, protocol })) }
+    } catch { return { available: false, reason: 'unavailable', models: [] } }
+    finally { if (onAbort) signal.removeEventListener('abort', onAbort) }
   }
   const remember = (map, record) => {
     for (const [id, item] of map) if (item.expires <= Date.now()) map.delete(id)
@@ -235,7 +257,7 @@ export function createModelServiceConnections(ctx, service) {
   return {
     async overview() {
       const all = describe()
-      const view = await catalog()
+      const [view, video] = await Promise.all([catalog(), videoCatalog()])
       const bindingConfig = descriptor(all, SERVICE_NS)?.value?.bindings
       const image = imageDescriptor(all, consumers())
       const records = consumers().map(item => {
@@ -248,7 +270,7 @@ export function createModelServiceConnections(ctx, service) {
         if (adapter === 'facade') state = binding === undefined ? 'not-connected' : !validBinding(binding) || binding.enabled === false ? 'conflict' : 'connected'
         return { ...record, state, ...(validBinding(binding) ? { selection: { ...(binding.chatModel ? { chatModel: binding.chatModel } : {}), ...(binding.imageModel ? { imageModel: binding.imageModel } : {}) } } : {}) }
       }).filter(Boolean)
-      return { ...view, writable: writable(), consumers: records,
+      return { ...view, video, writable: writable(), consumers: records,
         editable: { chat: false, image: false },
         ...(latestReceiptId && receipts.get(latestReceiptId)?.expires > Date.now() ? { rollbackAvailable: true, receiptId: latestReceiptId } : {}) }
     },

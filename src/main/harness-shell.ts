@@ -5,7 +5,8 @@ import { isHarnessShellUrl, type HarnessBootPayload } from '../shared/harness-bo
 export { HARNESS_SHELL_URL, isHarnessShellUrl } from '../shared/harness-boot'
 const SHELL_ORIGIN = 'dsh-desktop://harness'
 const TIMEOUT_MS = 30_000
-const ANALYSIS_TIMEOUT_MS = 75_000
+// Includes evidence/catalog preflight plus the analyzer's bounded 120-second work.
+const ANALYSIS_TIMEOUT_MS = 150_000
 // Painting returns its JSON only after generation/editing and image storage finish.
 const IMAGE_PAINT_TIMEOUT_MS = 240_000
 // Market search waits for the index's bounded 90-second download and parsing.
