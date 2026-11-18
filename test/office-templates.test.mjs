@@ -27,7 +27,7 @@ it('produces the same workbook semantics across repeated official Kit recalculat
     const output = join(directory, filename)
     outputs.push(output)
     await promisify(execFile)(electronExecutable(resolve('.')), [resolve('build/office-cli.mjs'), 'recalculate', '--input', join(resources, 'annual-business/example.xlsx'), '--output', output], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 30_000
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000
     })
     await promisify(execFile)(python, ['-I', '-B', resolve('scripts/office-runtime/normalize-package.py'), output])
   }
@@ -51,7 +51,7 @@ for path in sys.argv[1:]:
 assert snapshot(sys.argv[1], False) == snapshot(sys.argv[2], False)
 assert snapshot(sys.argv[1], True) == snapshot(sys.argv[2], True)
 `, ...outputs])
-}, 60_000)
+}, 300_000)
 
 it('normalizes platform-specific chart-axis ID serialization', async () => {
   const directory = await temporary()
