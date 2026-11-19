@@ -165,6 +165,24 @@ export async function readBounded(response, limit, operation) {
     return Buffer.concat(chunks, total)
   } finally { void reader.cancel().catch(() => {}); reader.releaseLock() }
 }
+/** Narrow server model rows by the model manager's client surface tags. */
+export function clientVisibleRows(rows, surface) {
+  if (!Array.isArray(rows)) fail('INVALID_RESPONSE')
+  const clientOf = row => {
+    if (!record(row) || !record(row.info) || !record(row.info.meta)) return undefined
+    return row.info.meta.client
+  }
+  const configured = rows.some(row => {
+    const client = clientOf(row)
+    return client !== undefined && client !== null
+  })
+  if (!configured) return rows
+  return rows.filter(row => {
+    const client = clientOf(row)
+    return record(client) && client.enabled === true && Array.isArray(client.types) && client.types.includes(surface)
+  })
+}
+
 export function parseModels(models) {
   if (!Array.isArray(models) || models.length > LIMITS.models) fail('INVALID_RESPONSE')
   const seen = new Set()

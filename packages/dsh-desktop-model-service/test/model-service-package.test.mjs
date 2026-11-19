@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createModelService } from '../service.js'
-import { parseModels } from '../common.js'
+import { clientVisibleRows, parseModels } from '../common.js'
 import { registerModelService, registerModelServiceConsumers, registerModelServiceImage, hasChatRegistration } from '../private.js'
 
 const records = [
@@ -45,6 +45,18 @@ test('model metadata normalizes aliases ahead of names while preserving validate
     assert.throws(() => parseModels([{ id: 'valid-id', name: 'Valid name', alias }]), { code: 'INVALID_RESPONSE' })
   }
   assert.throws(() => parseModels([{ id: 'same', alias: 'First' }, { id: 'same', alias: 'Second' }]), { code: 'INVALID_RESPONSE' })
+})
+
+test('client tags narrow chat metadata and keep the legacy catalog before configuration', () => {
+  const rows = [
+    { id: 'text-on', info: { meta: { client: { enabled: true, types: ['text'] } } } },
+    { id: 'image-on', info: { meta: { client: { enabled: true, types: ['image'] } } } },
+    { id: 'off', info: { meta: { client: { enabled: false, types: ['text'] } } } },
+    { id: 'legacy' },
+    { id: 'null-client', info: { meta: { client: null } } }
+  ]
+  assert.deepEqual(clientVisibleRows(rows, 'text').map(row => row.id), ['text-on'])
+  assert.deepEqual(clientVisibleRows([{ id: 'a' }, { id: 'b' }], 'text').map(row => row.id), ['a', 'b'])
 })
 
 test('service remains published without a usable chat provider', async () => {

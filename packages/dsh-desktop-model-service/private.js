@@ -1,5 +1,5 @@
 import { LIMITS, SUPPORTED, ModelServiceError, fail, safeError, record, identifier, optionsSignal,
-  boundedJson, createLifetime, readBounded, parseModels, freeze } from './common.js'
+  boundedJson, createLifetime, readBounded, parseModels, clientVisibleRows, freeze } from './common.js'
 
 let registration
 let imageOperations
@@ -198,7 +198,7 @@ export function createChatService({ signal, fetch: fetchImpl = globalThis.fetch 
     },
     async models(options = {}) {
       const value = await json('/v1/models', undefined, options, LIMITS.metadataBytes, LIMITS.metadataMs)
-      return freeze(parseModels(value?.data).map(model => ({ ...model, capabilities: ['chat.completions'] })))
+      return freeze(parseModels(clientVisibleRows(value?.data, 'text')).map(model => ({ ...model, capabilities: ['chat.completions'] })))
     },
     async complete(input, options = {}) {
       // Snapshot before I/O so caller mutation cannot alter a pending request.
