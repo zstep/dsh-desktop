@@ -11,7 +11,8 @@ import { workspacePolicy, templateTool } from '../packages/dsh-desktop-office/li
 import { registerOfficeContext, registerOfficeRoutes } from '../packages/dsh-desktop-office/lib/modes.js'
 import { registerBusinessSkills } from '../packages/dsh-desktop-office/lib/business-skills.js'
 import { apply as applyPpt } from 'dsh-ppt'
-import { electronExecutable } from '../scripts/electron-node-loader.mjs'
+import { electronExecutable } from '../scripts/verify/electron-node-loader.mjs'
+import { officeCliCommand, runOfficeCli } from '../scripts/office-runtime/prepare-templates.mjs'
 
 const scratch = []
 afterEach(async () => { for (const directory of scratch.splice(0)) await rm(directory, { recursive: true, force: true }) })
@@ -19,30 +20,23 @@ async function temporary() { const root = await realpath(await mkdtemp(join(tmpd
 const resources = resolve('.build/office-runtime/templates')
 const library = await createTemplateLibrary(resources)
 
-// The LibreOffice Kit converter occasionally fails to start right after a
-// previous instance exits on hosted runners; a transient startup failure is
-// not a workbook regression, so retry the conversion once before failing.
-async function recalculate(input, output) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await promisify(execFile)(electronExecutable(resolve('.')), [resolve('build/office-cli.mjs'), 'recalculate', '--input', input, '--output', output], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000
-      })
-    } catch (error) {
-      if (attempt >= 2) throw error
-      await new Promise(done => setTimeout(done, 2_000))
-    }
-  }
-}
-
 it('produces the same workbook semantics across repeated official Kit recalculations', async () => {
   const directory = await temporary()
   const python = resolve('.build/office-runtime/primary-runtime/dependencies/python', process.platform === 'win32' ? 'python.exe' : 'bin/python3')
+  const input = join(resources, 'annual-business/example.xlsx')
   const outputs = []
   for (const filename of ['first.xlsx', 'second.xlsx']) {
     const output = join(directory, filename)
     outputs.push(output)
-    await recalculate(join(resources, 'annual-business/example.xlsx'), output)
+    // Electron starts before the Kit timer. macOS CI sometimes blocks inside LibreOffice;
+    // packaging retries that hang in a fresh process instead of failing the workbook.
+    await runOfficeCli('recalculate', async () => {
+      await rm(output, { force: true })
+      const command = officeCliCommand(electronExecutable(resolve('.')), resolve('build/office-cli.mjs'), ['recalculate', '--input', input, '--output', output])
+      await promisify(execFile)(command.file, command.args, {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: command.timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true
+      })
+    })
     await promisify(execFile)(python, ['-I', '-B', resolve('scripts/office-runtime/normalize-package.py'), output])
   }
   await promisify(execFile)(python, ['-I', '-B', '-c', `

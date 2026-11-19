@@ -1,4 +1,5 @@
 import { desktopVersion } from '../../shared/desktop-version'
+import type { DesktopLocale } from '../../shared/desktop-locale'
 import { encodePopupNotesMetadata } from '../../shared/update-release-notes'
 import { join } from 'node:path'
 import { ApplicationRollback, type ApplicationRollbackStatus } from './application-rollback'
@@ -7,7 +8,7 @@ import { isPrereleaseVersion, isVersion } from '../desktop-service/service'
 import { app, BrowserWindow, ipcMain, net, powerMonitor, shell } from 'electron'
 import { checkWebsiteUpdate, PENGBAO_DOWNLOAD_URL } from './website-update'
 import electronUpdater from 'electron-updater'
-import type { UpdateStatus } from '../../shared/contracts'
+import type { AvailableRelease, UpdateStatus } from '../../shared/contracts'
 import {
   AUTO_INSTALL_ON_APP_QUIT,
   shouldCheckAfterResume,
@@ -32,10 +33,18 @@ import {
   archiveFeedUrl,
   compareVersions,
   fetchAvailableReleases,
-  STABLE_FEED_URL
+  STABLE_FEED_URL,
+  type VersionIndexRequest
 } from './version-catalog'
 
 const { autoUpdater } = electronUpdater
+
+// Default-session Chromium fetch follows that session's proxy configuration.
+const requestVersionIndex: VersionIndexRequest = (url, init) => net.fetch(url, init)
+
+function fetchDesktopReleases(): Promise<AvailableRelease[]> {
+  return fetchAvailableReleases(app.getVersion(), requestVersionIndex)
+}
 
 let status = initialUpdateStatus(desktopVersion(app.getVersion()))
 let prepareToInstall: (() => Promise<void>) | undefined
@@ -49,7 +58,7 @@ let installing = false
 let downloading = false
 let started = false
 let handlersRegistered = false
-let updateLocale: (() => 'en' | 'zh') | undefined
+let updateLocale: (() => DesktopLocale) | undefined
 let skippedVersion: string | undefined
 let skipLoaded = false
 let manualCheck = false
@@ -78,7 +87,7 @@ export async function getApplicationRollbackStatus(): Promise<ApplicationRollbac
     if (!rollbackCompatibility) return { ...result, available: false, reason: 'data-compatibility-unverified' }
     const compatibility = await rollbackCompatibility(result.targetVersion)
     if (!compatibility.compatible) return { ...result, available: false, reason: compatibility.reason ?? 'data-compatibility-unverified' }
-    const releases = await fetchAvailableReleases(app.getVersion())
+    const releases = await fetchDesktopReleases()
     if (!releases.some(release => release.version === result.targetVersion)) {
       return { ...result, available: false, reason: 'previous-version-archive-unavailable' }
     }
@@ -126,7 +135,7 @@ export function getUpdateStatus(): UpdateStatus {
   return { ...status, locale: updateLocale?.() }
 }
 
-export function registerUpdateHandlers(options: { locale?: () => 'en' | 'zh' } = {}): void {
+export function registerUpdateHandlers(options: { locale?: () => DesktopLocale } = {}): void {
   updateLocale = options.locale ?? updateLocale
   if (handlersRegistered) return
   handlersRegistered = true
@@ -135,7 +144,7 @@ export function registerUpdateHandlers(options: { locale?: () => 'en' | 'zh' } =
   ipcMain.handle('updates:install', () => installDownloadedUpdate())
   ipcMain.handle('updates:skip', (_event, version: unknown) => skipUpdate(version))
   ipcMain.handle('updates:download', () => downloadAvailableUpdate())
-  ipcMain.handle('updates:list-versions', () => supportsUpdates() ? fetchAvailableReleases(app.getVersion()) : [])
+ipcMain.handle('updates:list-versions', () => supportsUpdates() ? fetchDesktopReleases() : [])
   ipcMain.handle('updates:install-version', (_event, version: unknown) =>
     installSpecificVersion(version)
   )
@@ -364,7 +373,7 @@ async function installSpecificVersionOwned(version: unknown, owner?: symbol): Pr
   lastCheckedAt = Date.now()
   checkPromise = (async () => {
     try {
-      const releases = await fetchAvailableReleases(app.getVersion())
+      const releases = await fetchDesktopReleases()
       if (!releases.some(release => release.version === version)) {
         throw new Error('Selected version is not in the release history')
       }

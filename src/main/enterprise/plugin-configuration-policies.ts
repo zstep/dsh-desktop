@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { composeEntries, evaluatePluginCompatibility, resolveBundleDir } from '@deepseek-ai/dsh-app-boot'
 import { isAlias, isMap, isScalar, isSeq, parseDocument } from 'yaml'
 import { parsePluginConfigurationPolicy, type PluginConfigurationPolicy } from '../../shared/private-plugin-configuration'
-import { SAFE_MODE_PROFILE } from '../state/safe-mode-profile'
+import { SAFE_MODE_PROFILE } from '../recovery/safe-mode-profile'
 
 const MAX_BYTES = 262_144
 const MAX_BINDINGS = 512

@@ -44,7 +44,8 @@ describe('Windows caption menus', () => {
     const { run, actions } = record()
     clickAll(windowsMenuTemplate('application', 'zh', 1, actions))
     const editing = new Set<DesktopMenuCommand>(['undo', 'redo', 'cut', 'copy', 'paste', 'select-all'])
-    expect(new Set(run)).toEqual(new Set(desktopMenuCommands.filter((command) => !editing.has(command))))
+    const omitted = new Set<DesktopMenuCommand>([...editing, 'explore-enterprise'])
+    expect(new Set(run)).toEqual(new Set(desktopMenuCommands.filter((command) => !omitted.has(command))))
   })
 
   it('sends editing shortcuts as key events so editor-owned history receives them', () => {
@@ -66,7 +67,11 @@ describe('Windows caption menus', () => {
     const { actions } = record()
     expect(labels(windowsMenuTemplate('application', 'zh', 1.25, actions))).toContain('实际大小（当前 125%）')
     expect(labels(windowsMenuTemplate('application', 'en', 0.9, actions))).toContain('Actual Size (now 90%)')
-    expect(labels(windowsMenuTemplate('application', 'zh', 1, actions))).not.toContain('导出 Session 日志…')
+    const chinese = labels(windowsMenuTemplate('application', 'zh', 1, actions))
+    const english = labels(windowsMenuTemplate('application', 'en', 1, actions))
+    expect(chinese.indexOf('切换账号…')).toBe(chinese.indexOf('关于鹏宝 AI') + 1)
+    expect(english.indexOf('Switch Account…')).toBe(english.indexOf('About Pengbao AI') + 1)
+    expect(chinese).not.toContain('导出 Session 日志…')
     expect(labels(windowsMenuTemplate('application', 'en', 1, actions))).not.toContain('Export Session Log…')
     expect(labels(windowsMenuTemplate('edit', 'zh', 1, actions))).toEqual(
       ['撤销', '重做', '剪切', '复制', '粘贴', '删除', '全选']

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { afterEach, describe, expect, it } from 'vitest'
-import { withNpmCompatibility } from '../src/main/runtime/npm-prefix'
+import { withNpmCompatibility } from '../src/main/profile/npm-prefix'
 
 const roots: string[] = []
 

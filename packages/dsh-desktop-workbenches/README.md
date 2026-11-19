@@ -6,8 +6,20 @@ Market metadata comes exclusively from the published Awesome protocol v2 index. 
 
 The host does not bundle a separate catalog or third-party workbench packages. It installs, updates and uninstalls catalog entries on the user's request through Desktop's isolated-generation boundary (`desktopPnpm.installWorkbenchGeneration`) and records them in `market-installs.json`; see `docs/workbenches.md`.
 
-## 桌面内置文档
+## 两份文档与官网链接
 
-桌面客户端通过本地 `/api/desktop-workbenches/` 路由提供中英文开发规范、市场验收规范及六步速览。打包副本里的交叉链接也指向本地路由；本地读取失败时应报告错误，不回退原厂网站。`docs/workbench-*.md` 仍是独立网站文档的来源，`--site` 生成的网站页面及 URL 不因桌面副本改变。市场目录未配置时，不请求默认原厂目录，也不能在桌面端执行市场投稿查询或安装；用户主动安装本地工作台仍按既有插件权限流程进行。
+开发和上架分成两份文档，内容不重复。**官网是唯一的公开链接**：页面和 README 链接到官网阅读页，给 Agent 的指令链接到同一文档的 Markdown 原文。Agent 必须实际获取在线 Markdown 并记录地址与文档版本。Desktop 内附随应用版本打包的快照，不保证最新，仅在在线获取失败时备用；使用时报告失败原因、离线来源及版本，不得静默替代官网规范。若在线规范与运行版本不一致，说明能力差异和受阻步骤，不以旧副本覆盖在线规范。
 
-修改文档来源后运行 `node scripts/build-workbench-guide.mjs` 更新桌面副本，或使用 `--check` 核对；网站生成另用 `--site <目录>`，两者不可混同。
+| 文档 | 官网阅读页（给人看） / Markdown（给 Agent） | 来源 | Desktop 离线副本 | 何时需要 |
+|---|---|---|---|---|
+| 工作台开发规范 | https://dshdesktop.com/workbench/docs/development/ ／ `development.md` | `docs/workbench-standard.zh.md` | `development-guide.zh.md`，`/api/desktop-workbenches/author-guide`（兼容别名 `/development-guide`） | 开发并在本机自测；只自己用时只需要这一份 |
+| 工作台市场验收规范 | https://dshdesktop.com/workbench/docs/market-acceptance/ ／ `market-acceptance.md` | `docs/workbench-market-acceptance.zh.md` | `market-acceptance.zh.md`，`/api/desktop-workbenches/market-acceptance` | 想上架到工作台市场时 |
+
+修改来源后：
+
+```bash
+node scripts/verify/build-workbench-guide.mjs                          # 更新 Desktop 离线副本
+node scripts/verify/build-workbench-guide.mjs --site <官网仓库>/workbench  # 更新官网的两份文档和阅读页
+```
+
+两个命令都支持 `--check` / `--site-check` 检查是否一致。官网文档随官网部署发布；生成副本勿单独修改。收录 YAML 的字段以 GitHub 工作台市场仓库为准。

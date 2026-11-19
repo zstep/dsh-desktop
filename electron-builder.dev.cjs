@@ -13,7 +13,12 @@ module.exports = {
     productName: 'Pengbao AI Dev',
     dshDesktopChannel: 'development'
   },
-  artifactName: 'pengbao-ai-dev-${os}-${arch}.${ext}',
+artifactName: 'pengbao-ai-dev-${os}-${arch}.${ext}',
+  linux: {
+    ...packageJson.build.linux,
+    executableName: 'pengbao-ai-dev',
+    artifactName: 'pengbao-ai-dev-linux-${arch}-${version}.${ext}'
+  },
   nsis: {
     ...packageJson.build.nsis,
     artifactName: 'pengbao-ai-dev-windows-${arch}-setup.${ext}'

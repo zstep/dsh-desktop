@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { generateAppIcons } from '../scripts/generate-app-icons.mjs'
+import { generateAppIcons } from '../scripts/release/generate-app-icons.mjs'
 
 const require = createRequire(import.meta.url)
 const sharp = require('sharp')

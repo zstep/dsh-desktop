@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parse as parseYaml } from 'yaml'
 import { readInstallEvidence } from '../packages/dsh-desktop-workbenches/install-evidence.mjs'
 import { apply } from '../packages/dsh-desktop-workbenches/index.js'
 import {
@@ -126,7 +125,7 @@ describe('workbench market install routes', () => {
     setBundleEnabled: vi.fn(async () => outcome()), ...patch
   })
   const KEY = 'o/project-helper'
-  async function host(pluginManager, catalog = index, fetchCatalog) {
+  async function host(pluginManager, catalog = index, fetchCatalog, generationBackend) {
     const home = await tempRoot()
     vi.stubEnv('DSH_HOME', home)
     const root = join(home, 'desktop-workbenches')
@@ -134,7 +133,11 @@ describe('workbench market install routes', () => {
     const connection = { fetch: { register(route) { routes.push(route) } } }
     // The catalog reader captures fetch when the plugin applies.
     vi.stubGlobal('fetch', fetchCatalog || vi.fn(async url => Response.json(String(url).endsWith('/package.json') ? { name: 'project-helper', version: '1.2.0' } : catalog)))
-    apply({ effect: fn => fn(), reflect: { provide() {} }, connection, inject(deps, callback) { if (pluginManager && !deps.includes('tools')) callback({ connection, pluginManager, effect: fn => fn() }) } }, { root, catalogUrl: 'https://market.example.test/index.json' })
+    apply({ effect: fn => fn(), reflect: { provide() {} }, connection, inject(deps, callback) {
+      if (deps.includes('profileBundlePackageBackend')) {
+        if (generationBackend) callback({ profileBundlePackageBackend: generationBackend, effect: fn => fn() })
+      } else if (pluginManager && !deps.includes('tools')) callback({ connection, pluginManager, effect: fn => fn() })
+    } }, { root, catalogUrl: 'https://market.example.test/index.json' })
     const call = async (path, body) => {
       const route = routes.find(value => value.path === path)
       if (!route) return undefined
@@ -144,62 +147,14 @@ describe('workbench market install routes', () => {
     return { root, home, call }
   }
 
-  it('loads the original public catalog through the shipped Desktop configuration without installing anything', async () => {
-    const patch = parseYaml(await readFile(new URL('../build/dsh-desktop.patch.yml', import.meta.url), 'utf8'), {
-      customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: value => value }]
-    })
-    const workbenches = patch.flatMap(row => row.insert ?? []).find(row => row.name === 'dsh-desktop-workbenches')
-    expect(workbenches.config.catalogUrl).toBe('https://market.dshdesktop.com/index.json')
-    const root = await tempRoot()
-    const routes = new Map()
-    const fetchCatalog = vi.fn(async () => Response.json(index))
-    vi.stubGlobal('fetch', fetchCatalog)
-    const installBundle = vi.fn()
-    const connection = { fetch: { register(route) { routes.set(route.path, route) } } }
-    apply({ effect: fn => fn(), reflect: { provide() {} }, connection,
-      inject(deps, callback) { if (!deps.includes('tools')) callback({ connection, pluginManager: manager({ installBundle }), effect: fn => fn() }) }
-    }, { ...workbenches.config, root })
-    const readCatalog = query => routes.get('/api/desktop-workbenches/catalog').fetch(new Request(`http://localhost/api/desktop-workbenches/catalog?${query}`))
-    expect(await (await readCatalog('cache=1')).json()).toEqual({ catalog: null, stale: false })
-    expect(fetchCatalog).not.toHaveBeenCalled()
-    const response = await readCatalog('force=1')
-    expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ catalog: index, stale: false })
-    expect(fetchCatalog).toHaveBeenCalledTimes(1)
-    expect(fetchCatalog).toHaveBeenCalledWith('https://market.dshdesktop.com/index.json', expect.any(Object))
-    expect(installBundle).not.toHaveBeenCalled()
-  })
-
-  it('uses an explicitly configured catalog instead of the public default', async () => {
-    const fetchCatalog = vi.fn(async () => Response.json(index))
-    const { call } = await host(undefined, index, fetchCatalog)
-    expect((await call('/api/desktop-workbenches/catalog')).body.catalog).toEqual(index)
-    expect(fetchCatalog).toHaveBeenCalledTimes(1)
-    expect(fetchCatalog).toHaveBeenCalledWith('https://market.example.test/index.json', expect.any(Object))
-  })
-
-  it('keeps local routes available without a configured market and never fetches the vendor catalog', async () => {
-    const root = await tempRoot()
-    const routes = new Map()
-    const fetchCatalog = vi.fn()
-    vi.stubGlobal('fetch', fetchCatalog)
-    const installBundle = vi.fn()
-    const connection = { fetch: { register(route) { routes.set(route.path, route) } } }
-    apply({ effect: fn => fn(), reflect: { provide() {} }, connection,
-      inject(deps, callback) { if (!deps.includes('tools')) callback({ connection, pluginManager: manager({ installBundle }), effect: fn => fn() }) }
-    }, { root })
-    const request = async (path, options) => {
-      const response = await routes.get(path).fetch(new Request(`http://localhost${path}`, options))
-      return { status: response.status, body: await response.json() }
-    }
-    expect(await request('/api/desktop-workbenches/catalog')).toMatchObject({ status: 200, body: { catalog: null, stale: false } })
-    expect((await request('/api/desktop-workbenches/state')).status).toBe(200)
-    expect((await request('/api/desktop-workbenches/market-installs')).status).toBe(200)
-    expect((await request('/api/desktop-workbenches/submission-status')).status).toBe(503)
-    expect((await request('/api/desktop-workbenches/state/migrate', { method: 'POST', body: JSON.stringify({ migrations: { old: 'new' } }) })).status).toBe(503)
-    expect((await request('/api/desktop-workbenches/market-install', { method: 'POST', body: JSON.stringify({ id: KEY }) })).status).toBe(503)
-    expect(fetchCatalog).not.toHaveBeenCalled()
-    expect(installBundle).not.toHaveBeenCalled()
+  it('exposes pending ordinary/npm generations on startup and preserves failed operation recovery fields', async () => {
+    const backend = { readRestartStatus: vi.fn(async () => ({ restartRequired: true, packages: ['billion-context'] })) }
+    const result = outcome('failed', { error: { code: 'package-failed', diagnostic: 'Pending generation update for billion-context.' } })
+    const { call } = await host(manager({ installBundle: vi.fn(async () => result) }), index, undefined, backend)
+    expect(await call('/api/desktop-workbenches/restart-status')).toMatchObject({ status: 200, body: { restartRequired: true, packages: ['billion-context'] } })
+    expect(await call('/api/desktop-workbenches/market-install', { id: KEY })).toMatchObject({ status: 409, body: {
+      application: 'failed', result, restartRequired: true, actionRequired: 'restart', restartPackages: ['billion-context'], code: 'package-failed'
+    } })
   })
 
   it('stays browse-only when Desktop has no package service', async () => {
@@ -333,6 +288,16 @@ describe('workbench market install routes', () => {
     await writeFile(join(directory, 'package.json'), '{invalid')
     expect((await call('/api/desktop-workbenches/market-install', { id: KEY })).status).toBe(200)
     expect(installBundle).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the plugin manager diagnostic instead of the operation code', async () => {
+    const diagnostic = 'pnpm add failed\nERR_PNPM_GIT_NOT_FOUND: git is not installed'
+    const result = outcome('failed', { error: { code: 'operation-error', diagnostic }, changed: false })
+    const { call } = await host(manager({ installBundle: vi.fn(async () => result) }))
+    expect(await call('/api/desktop-workbenches/market-install', { id: KEY })).toMatchObject({
+      status: 409,
+      body: { error: 'ERR_PNPM_GIT_NOT_FOUND: git is not installed', code: 'operation-error', result }
+    })
   })
 
   it.each(['applied', 'restart-required', 'overridden', 'failed', 'cancelled'])('exposes actual %s outcome instead of package heuristics', async application => {

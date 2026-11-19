@@ -11,6 +11,10 @@ const ANALYSIS_TIMEOUT_MS = 150_000
 const IMAGE_PAINT_TIMEOUT_MS = 240_000
 // Market search waits for the index's bounded 90-second download and parsing.
 const MARKET_SEARCH_TIMEOUT_MS = 100_000
+// The verified market install waits for download, pnpm and activation. pnpm
+// alone allows ten minutes without output, so the regular API limit is too short.
+const WORKBENCH_INSTALL_TIMEOUT_MS = 15 * 60_000
+const WORKBENCH_INSTALL_PATH = '/api/desktop-workbenches/market-install'
 const RESPONSE_PRIVATE_HEADERS = ['set-cookie', 'content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'te', 'trailer', 'upgrade', 'proxy-authenticate', 'proxy-authorization']
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -121,13 +125,13 @@ export class HarnessShell {
     return { injections: payload.injections, streamBaseUrl: backend.origin }
   }
 
-  private operation(signal?: AbortSignal, timeoutMs = TIMEOUT_MS): { signal: AbortSignal, finish: () => void, headersReceived: () => void, timedOut: () => boolean } {
+private operation(signal?: AbortSignal, timeoutMs = TIMEOUT_MS): { signal: AbortSignal, finish: () => void, headersReceived: () => void, timedOut: () => boolean } {
     const controller = new AbortController()
     this.active.add(controller)
     const abort = (): void => controller.abort(signal?.reason)
     if (signal?.aborted) abort()
     else signal?.addEventListener('abort', abort, { once: true })
-    let timedOut = false
+let timedOut = false
     const timer = setTimeout(() => {
       if (!controller.signal.aborted) {
         timedOut = true
@@ -231,10 +235,11 @@ export class HarnessShell {
     if (url.pathname.startsWith('/assets') || /%(?:2f|5c|25)/i.test(url.pathname) || url.pathname.includes('\\')) return new Response('Not found', { status: 404 })
     const backend = this.backend
     if (!backend) return new Response('Harness unavailable', { status: 503, headers: { 'cache-control': 'no-store' } })
-    const painting = request.method === 'POST' && url.pathname === '/plugins/copylee-image-gen/paint'
+const painting = request.method === 'POST' && url.pathname === '/plugins/copylee-image-gen/paint'
     const marketSearch = request.method === 'POST' && url.pathname === '/api/pluginMarket/search'
     const configurationAnalysis = request.method === 'POST' && url.pathname === '/api/model-service.configuration.analyze'
-    const timeoutMs = painting ? IMAGE_PAINT_TIMEOUT_MS : marketSearch ? MARKET_SEARCH_TIMEOUT_MS : configurationAnalysis ? ANALYSIS_TIMEOUT_MS : TIMEOUT_MS
+    const isWorkbenchInstall = request.method === 'POST' && url.pathname === WORKBENCH_INSTALL_PATH
+    const timeoutMs = isWorkbenchInstall ? WORKBENCH_INSTALL_TIMEOUT_MS : painting ? IMAGE_PAINT_TIMEOUT_MS : marketSearch ? MARKET_SEARCH_TIMEOUT_MS : configurationAnalysis ? ANALYSIS_TIMEOUT_MS : TIMEOUT_MS
     const operation = this.operation(request.signal, timeoutMs)
     try {
       const headers = new Headers(request.headers)

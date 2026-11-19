@@ -4,8 +4,8 @@ import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { composeEntries, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import { parse } from 'yaml'
-import { DEFAULT_PLUGIN_MARKET_INDEX, ensurePluginMarketDefaults, PLUGIN_MARKET_BUNDLE } from '../src/main/state/plugin-market-defaults'
-import { ensureSafeModeProfile, SAFE_MODE_PROFILE } from '../src/main/state/safe-mode-profile'
+import { DEFAULT_PLUGIN_MARKET_INDEX, ensurePluginMarketDefaults, PLUGIN_MARKET_BUNDLE } from '../src/main/profile/plugin-market-defaults'
+import { ensureSafeModeProfile, SAFE_MODE_PROFILE } from '../src/main/recovery/safe-mode-profile'
 
 const homes: string[] = []
 afterEach(async () => {

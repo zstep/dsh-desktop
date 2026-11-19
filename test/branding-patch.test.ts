@@ -35,7 +35,8 @@ describe('DSH Desktop sidebar branding', () => {
     )
 
     expect(client).toContain('document.documentElement.dataset.platform === "darwin"')
-    expect(client).toContain('document.documentElement.hasAttribute("data-windows-titlebar") ? 0 : 56')
+    expect(client).toContain('document.documentElement.hasAttribute("data-windows-titlebar")')
+    expect(client).toContain('const collapsedWidth = drawer || darwin || windowsTitlebar ? 0 : 56')
     expect(client).toContain('sidebar === 0 ? collapsedWidth')
   })
 
@@ -44,7 +45,7 @@ describe('DSH Desktop sidebar branding', () => {
       await readFile(path.join(projectRoot, 'package.json'), 'utf8')
     ) as { scripts: { postinstall: string } }
 
-    expect(packageJson.scripts.postinstall).toContain('node scripts/install-brand-assets.mjs')
+    expect(packageJson.scripts.postinstall).toContain('node scripts/release/install-brand-assets.mjs')
   })
 
   it('generates alpha-aware Teal on Black assets from the tracked source image', async () => {
@@ -55,7 +56,7 @@ describe('DSH Desktop sidebar branding', () => {
     const icon = await sharp(path.join(projectRoot, 'build/app-icon.png')).metadata()
     const light = await sharp(path.join(projectRoot, 'build/logo-light.png')).metadata()
     const dark = await sharp(path.join(projectRoot, 'build/logo-dark.png')).metadata()
-    const manifestInstaller = await readFile(path.join(projectRoot, 'scripts/install-brand-assets.mjs'), 'utf8')
+    const manifestInstaller = await readFile(path.join(projectRoot, 'scripts/release/install-brand-assets.mjs'), 'utf8')
     const splash = await readFile(path.join(projectRoot, 'build/splash.html'), 'utf8')
 
     expect(packageJson.scripts['brand:generate']).toContain('scripts/generate-brand-assets.mjs')
