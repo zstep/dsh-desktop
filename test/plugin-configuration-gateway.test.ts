@@ -117,9 +117,12 @@ describe('private per-plugin configuration gateway', () => {
     for (const token of [broker.capabilityToken, gateway.capabilityToken]) expect((await post(gateway, token, generation, { prompt: 'bird', model: 'chosen' })).status).toBe(401)
     expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'chosen', messages: [] })).status).toBe(404)
     expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'chosen', messages: [] })).status).toBe(404)
-    for (const route of ['/v1/images/edits', `${generation}?x=1`, `${generation}/`, '/v1/image-generation/generate']) {
+    for (const route of [`${generation}?x=1`, `${generation}/`, '/v1/image-generation/generate']) {
       expect((await post(gateway, child.capabilityToken, route, { prompt: 'bird', model: 'chosen' })).status).toBe(404)
     }
+    // The compatibility lease may reach image edits; malformed JSON input is
+    // rejected by the edit body validator rather than the route admission.
+    expect((await post(gateway, child.capabilityToken, '/v1/images/edits', { prompt: 'bird', model: 'chosen' })).status).toBe(400)
     expect((await post(gateway, child.capabilityToken, generation, { prompt: 'bird', model: 'other' })).status).toBe(403)
     expect((await post(gateway, child.capabilityToken, '/v1/plugin-configuration/issue', policy)).status).toBe(401)
     const browser = await new Promise<number>((resolve, reject) => {
