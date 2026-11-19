@@ -569,13 +569,16 @@ export function createImageGateway(options: {
       const isGenerate = req.method === 'POST' && req.url === '/v1/image-generation/generate'
       const isCompatibility = req.method === 'POST' && req.url === '/v1/images/generations'
       const isEditCompatibility = req.method === 'POST' && req.url === '/v1/images/edits'
-      const imageCapability = lease.capabilities === undefined || lease.capabilities.has('image.generate')
+      const imageCapability = lease.capabilities === undefined || lease.capabilities.has('image.generate') || lease.capabilities.has('image.edit')
       const isEdit = req.method === 'POST' && req.url === '/v1/image-generation/edit'
       // The built-in image lease has no explicit scopes; scoped model-service
       // leases must opt into image.edit instead of inheriting it from generate.
       const editCapability = lease.capabilities === undefined || lease.capabilities.has('image.edit')
-      if (isEdit || isEditCompatibility ? (!editCapability || lease.compatibilityOnly) : !imageCapability) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
-      if (lease.compatibilityOnly ? !isCompatibility : isCompatibility || (!isStatus && !isModels && !isGenerate && !isBatch && !isEdit && !isEditCompatibility)) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
+      if (isEdit ? (!editCapability || lease.compatibilityOnly) : !imageCapability) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
+      // Image plugins configured by the private broker use a compatibility
+      // lease scoped to image.generate. The compatibility edit endpoint is the
+      // same image capability, so it must stay reachable for image-to-image.
+      if (lease.compatibilityOnly ? !(isCompatibility || isEditCompatibility) : isCompatibility || (!isStatus && !isModels && !isGenerate && !isBatch && !isEdit && !isEditCompatibility)) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
       if (activeCount >= options.maxConcurrent) return fail(res, new ImageFailure(429, 'IMAGE_BUSY'))
       const started = Date.now()
       const requestId = `pb-${randomBytes(16).toString('hex')}`

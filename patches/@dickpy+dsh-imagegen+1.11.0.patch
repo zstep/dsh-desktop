@@ -1,7 +1,43 @@
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/client.js b/node_modules/@dickpy/dsh-imagegen/lib/client.js
-index 54f01f1..960c051 100644
+index 54f01f1..9de4bb0 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/client.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/client.js
+@@ -357,7 +357,7 @@ window.__ModuleLoader__.load({
+ 			"poster.addLogo": "上传 Logo",
+ 			"poster.undo": "撤销",
+ 			"poster.redo": "重做",
+-			"poster.logoLimit": "请上传不超过 10MB、4000 万像素的 PNG / JPG / WebP 图片。",
++			"poster.logoLimit": "请上传不超过 20MB、4000 万像素的 PNG / JPG / WebP 图片。",
+ 			"poster.logoFailed": "无法读取 Logo 图片",
+ 			"poster.exportFailed": "导出失败，请重试",
+ 			"poster.preview": "海报预览",
+@@ -696,7 +696,7 @@ window.__ModuleLoader__.load({
+ 			"generate": "开始生成",
+ 			"generating": "生成中…",
+ 			"edit.upload": "点击或拖拽上传参考图片",
+-			"edit.uploadHint": "PNG / JPG / WEBP，不超过 10MB",
++			"edit.uploadHint": "PNG / JPG / WEBP，不超过 20MB",
+ 			"edit.change": "更换图片",
+ 			"edit.remove": "移除",
+ 			"edit.required": "请先上传参考图片",
+@@ -709,14 +709,14 @@ window.__ModuleLoader__.load({
+ 			"edit.previewReference": "预览图{index}：{name}",
+ 			"edit.removeReference": "删除图{index}：{name}",
+ 			"edit.multiHint": "支持多选、拖拽或粘贴图片",
+-			"edit.limits": "最多 {count} 张 · 单张≤10MB · 合计≤16MB",
++			"edit.limits": "最多 {count} 张 · 单张≤20MB · 合计≤24MB",
+ 			"edit.reading": "正在读取参考图片…",
+ 			"edit.referencePreview": "参考图片预览",
+ 			"edit.previousReference": "上一张参考图",
+ 			"edit.nextReference": "下一张参考图",
+-			"edit.invalidFiles": "部分图片未添加：仅支持非空 PNG / JPG / WEBP / GIF，单张不超过10MB。",
++			"edit.invalidFiles": "部分图片未添加：仅支持非空 PNG / JPG / WEBP / GIF，单张不超过20MB。",
+ 			"edit.limitReached": "最多添加 {count} 张参考图，多余图片未添加。",
+-			"edit.totalTooLarge": "图片合计大小不能超过16MB，超出部分未添加。",
++			"edit.totalTooLarge": "图片合计大小不能超过24MB，超出部分未添加。",
+ 			"edit.readFailed": "部分图片读取失败，请重新上传。",
+ 			"edit.modelLimit": "当前选中的模型适配最多支持 {count} 张参考图，请切换模型或移除多余图片。",
+ 			"canvas.emptyTitle": "开始你的创作",
 @@ -915,6 +915,17 @@ window.__ModuleLoader__.load({
  			"settings.promptApiUrlHint": "OpenAI 兼容基址；留空则复用图像 API 地址。",
  			"settings.promptApiKey": "对话 API 密钥（可选）",
@@ -20,6 +56,33 @@ index 54f01f1..960c051 100644
  			"settings.promptModel": "对话模型",
  			"settings.promptModelHint": "选择或填写支持 /chat/completions 的模型。",
  			"settings.promptModelDetectionHint": "默认复用生图 API；检测后点选一个模型即可。",
+@@ -1757,7 +1768,7 @@ window.__ModuleLoader__.load({
+ 			"generate": "Generate",
+ 			"generating": "Generating…",
+ 			"edit.upload": "Click or drag to upload a reference image",
+-			"edit.uploadHint": "PNG / JPG / WEBP, up to 10MB",
++			"edit.uploadHint": "PNG / JPG / WEBP, up to 20MB",
+ 			"edit.change": "Change image",
+ 			"edit.remove": "Remove",
+ 			"edit.required": "Upload a reference image first",
+@@ -1770,14 +1781,14 @@ window.__ModuleLoader__.load({
+ 			"edit.previewReference": "Preview image {index}: {name}",
+ 			"edit.removeReference": "Remove image {index}: {name}",
+ 			"edit.multiHint": "Select multiple, drop or paste images",
+-			"edit.limits": "Up to {count} images · 10MB each · 16MB total",
++			"edit.limits": "Up to {count} images · 20MB each · 24MB total",
+ 			"edit.reading": "Reading reference images…",
+ 			"edit.referencePreview": "Reference image preview",
+ 			"edit.previousReference": "Previous reference",
+ 			"edit.nextReference": "Next reference",
+-			"edit.invalidFiles": "Some files were skipped: use non-empty PNG / JPG / WEBP / GIF images up to 10MB each.",
++			"edit.invalidFiles": "Some files were skipped: use non-empty PNG / JPG / WEBP / GIF images up to 20MB each.",
+ 			"edit.limitReached": "Up to {count} references; extra images were skipped.",
+-			"edit.totalTooLarge": "References cannot exceed 16MB in total; excess images were skipped.",
++			"edit.totalTooLarge": "References cannot exceed 24MB in total; excess images were skipped.",
+ 			"edit.readFailed": "Some images could not be read. Please upload them again.",
+ 			"edit.modelLimit": "The selected model adapters support up to {count} reference image(s). Switch models or remove extra images.",
+ 			"canvas.emptyTitle": "Start creating",
 @@ -1976,6 +1987,17 @@ window.__ModuleLoader__.load({
  			"settings.promptApiUrlHint": "OpenAI-compatible base URL. Leave blank to reuse the image API URL.",
  			"settings.promptApiKey": "Chat API key (optional)",
@@ -47,6 +110,33 @@ index 54f01f1..960c051 100644
  				return (await readEnvelope(await fetch(TASK_API.retry, {
  					method: "POST",
  					headers: { "content-type": "application/json" },
+@@ -40710,7 +40734,7 @@ window.__ModuleLoader__.load({
+ 					if (version !== epoch.current) return;
+ 					const warnings = /* @__PURE__ */ new Set();
+ 					const valid = incoming.filter((file) => {
+-						if (!IMAGE_TYPES.has(file.type) || file.size > 10485760 || file.size === 0) {
++						if (!IMAGE_TYPES.has(file.type) || file.size > 20971520 || file.size === 0) {
+ 							warnings.add(tt("edit.invalidFiles"));
+ 							return false;
+ 						}
+@@ -40720,7 +40744,7 @@ window.__ModuleLoader__.load({
+ 					if (valid.length > slots) warnings.add(tt("edit.limitReached", { count: 5 }));
+ 					let bytes = current.current.reduce((sum, image) => sum + image.bytes, 0);
+ 					const candidates = valid.slice(0, slots).filter((file) => {
+-						if (bytes + file.size > 16777216) {
++						if (bytes + file.size > 25165824) {
+ 							warnings.add(tt("edit.totalTooLarge"));
+ 							return false;
+ 						}
+@@ -40753,7 +40777,7 @@ window.__ModuleLoader__.load({
+ 				});
+ 			};
+ 			const replace = (image) => {
+-				if (image.bytes > 10485760) {
++				if (image.bytes > 20971520) {
+ 					report.current(tt("edit.invalidFiles"));
+ 					return;
+ 				}
 @@ -44695,13 +44719,19 @@ window.__ModuleLoader__.load({
  		*/
  		/** Resolve a selection against the current groups, keeping the preferred channel when possible. */
@@ -117,6 +207,15 @@ index 54f01f1..960c051 100644
  					models
  				}];
  			});
+@@ -54899,7 +54933,7 @@ window.__ModuleLoader__.load({
+ 			"standard",
+ 			"high"
+ 		];
+-		const REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
++		const REF_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+ 		const CONVERSATION_IMAGE_MAX_DIMENSION = 2e3;
+ 		const CONVERSATION_IMAGE_JPEG_QUALITY = .9;
+ 		const PREVIEW_SCALE_MIN = .5;
 @@ -55028,11 +55062,65 @@ window.__ModuleLoader__.load({
  			return CONFIG_WIDTH_DEFAULT;
  		}
@@ -847,9 +946,45 @@ index 0000000..ebf6907
 +  return prompt.trim()
 +}
 diff --git a/node_modules/@dickpy/dsh-imagegen/lib/index.js b/node_modules/@dickpy/dsh-imagegen/lib/index.js
-index 225cfb4..04e6602 100644
+index 225cfb4..091c97b 100644
 --- a/node_modules/@dickpy/dsh-imagegen/lib/index.js
 +++ b/node_modules/@dickpy/dsh-imagegen/lib/index.js
+@@ -1119,7 +1119,7 @@ const UPSTREAM_TIMEOUT_MS = 24e4;
+ /** Budget for downloading one result image URL. */
+ const IMAGE_FETCH_TIMEOUT_MS = 6e4;
+ /** Cap on the reference image payload (edit mode), in bytes. */
+-const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024;
++const MAX_EDIT_IMAGE_BYTES = 20 * 1024 * 1024;
+ /** Sizes dall-e-3 accepts; anything else falls back to its square default. */
+ const DALLE3_SIZES = /* @__PURE__ */ new Set([
+ 	"1024x1024",
+@@ -1817,7 +1817,7 @@ async function requestOneImage(baseUrl, upstream, request, params, signal) {
+ 			} catch {
+ 				throw new ImageGenError("参考图片数据无法解码", "edit-image-invalid");
+ 			}
+-			if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError("参考图片超过 10MB 上限", "edit-image-too-large");
++			if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError("参考图片超过 20MB 上限", "edit-image-too-large");
+ 			return {
+ 				bytes,
+ 				mime: parsed.mime,
+@@ -1949,7 +1949,7 @@ async function generateQwenImage(baseUrl, upstream, request, options) {
+ 		if (typeof request.image !== "string" || request.image === "") throw new ImageGenError("图生图需要上传参考图片", "edit-image-missing");
+ 		const parsed = parseDataUrl(request.image);
+ 		if (parsed === void 0) throw new ImageGenError("参考图片格式无效", "edit-image-invalid");
+-		if (Buffer.from(parsed.base64, "base64").byteLength > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError("参考图片超过 10MB 上限", "edit-image-too-large");
++		if (Buffer.from(parsed.base64, "base64").byteLength > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError("参考图片超过 20MB 上限", "edit-image-too-large");
+ 		content.push({ image: request.image });
+ 	}
+ 	content.push({ text: request.prompt });
+@@ -2057,7 +2057,7 @@ async function generateMiniMaxImage(baseUrl, upstream, request, options) {
+ 		if (typeof request.image !== "string" || request.image === "") throw new ImageGenError("图生图需要上传参考图片", "edit-image-missing");
+ 		const parsed = parseDataUrl(request.image);
+ 		if (parsed === void 0) throw new ImageGenError("参考图片格式无效", "edit-image-invalid");
+-		if (Buffer.from(parsed.base64, "base64").byteLength > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError("参考图片超过 10MB 上限", "edit-image-too-large");
++		if (Buffer.from(parsed.base64, "base64").byteLength > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError("参考图片超过 20MB 上限", "edit-image-too-large");
+ 		body.subject_reference = [{
+ 			type: "character",
+ 			image_file: request.image
 @@ -4089,6 +4089,7 @@ var GenerationTaskQueue = class {
  	}
  };

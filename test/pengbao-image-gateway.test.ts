@@ -132,17 +132,28 @@ describe('Pengbao image gateway parameter batches', () => {
     expect(seen.some(row => row.path === GENERATE)).toBe(false)
   })
 
-  it('rejects compatibility edits for a generate-only scoped lease', async () => {
-    const imageGateway = createImageGateway({ getJwt: () => 'fixture', fetch, maxBodyBytes: 1048576, timeoutMs: 1000, maxConcurrent: 2 })
-    const lease = imageGateway.createLease({ capabilityToken: 'generate-only-token-123456789012345678', models: [], capabilities: ['image.generate'] })
+  it('lets the broker compatibility lease edit through the OpenAI-compatible route', async () => {
+    const imageGateway = createImageGateway({ getJwt: () => 'fixture', fetch: async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/config') return Response.json({ features: { enable_image_generation: true, enable_image_edit: true } })
+      if (path === '/api/v1/auths/') return Response.json({ role: 'user', permissions: { features: { image_generation: true } } })
+      if (path === UPSTREAM_EDIT) return Response.json([{ id: 'edited', url: '/api/v1/files/edited/content' }])
+      if (path === '/api/v1/files/edited/content') return new Response(PNG, { headers: { 'content-type': 'image/png' } })
+      return new Response('{}', { status: 404 })
+    }, maxBodyBytes: 1048576, timeoutMs: 1000, maxConcurrent: 2 })
+    const lease = imageGateway.createLease({ capabilityToken: 'compat-edit-token-123456789012345678', models: [], capabilities: ['image.generate'], compatibilityOnly: true })
     const host = createServer((req, res) => { void imageGateway.handle(req, res) })
     servers.push(host)
     await new Promise<void>(resolve => host.listen(0, '127.0.0.1', resolve))
     const address = host.address()
     if (!address || typeof address === 'string') throw new Error('No fixture port')
     try {
-      const response = await fetch(`http://127.0.0.1:${address.port}${EDIT_COMPAT}`, { method: 'POST', headers: { Authorization: `Bearer ${lease.capabilityToken}` }, body: JSON.stringify({ prompt: 'edit' }) })
-      expect(response.status).toBe(404)
+      const form = new FormData()
+      form.append('image', new Blob([PNG], { type: 'image/png' }), 'reference.png')
+      form.append('prompt', 'edit')
+      const response = await fetch(`http://127.0.0.1:${address.port}${EDIT_COMPAT}`, { method: 'POST', headers: { Authorization: `Bearer ${lease.capabilityToken}` }, body: form })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ data: [{ b64_json: PNG.toString('base64') }] })
     } finally { imageGateway.stop() }
   })
 
