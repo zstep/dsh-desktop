@@ -4,6 +4,23 @@ import { basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ENGINE_PACKAGE = /^@deepseek-ai\/libreoffice-kit-(?:(?:darwin|win32|linux)-|wasm(?:\/|$))/u
+const CONVERSION_COMMANDS = new Set(['render', 'convert', 'recalculate'])
+
+/** Long enough for a large deck or long Word document; the Kit defaults to 120 s. */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 600_000
+
+/**
+ * Give a conversion command a realistic Kit timeout unless the caller chose
+ * one. The Kit's 120 s default cut a 40-page deck render off twice, and agent
+ * shells call this CLI directly, so they cannot know to pass --timeout-ms.
+ * @param argv - CLI arguments after the node executable and script path.
+ * @returns the same or an extended argument list.
+ */
+export function withDefaultCommandTimeout(argv) {
+  if (!CONVERSION_COMMANDS.has(argv[0])) return argv
+  if (argv.some(argument => argument === '--timeout-ms' || argument.startsWith('--timeout-ms='))) return argv
+  return [...argv, '--timeout-ms', String(DEFAULT_COMMAND_TIMEOUT_MS)]
+}
 
 /**
  * The application root that owns `dshEntryPath`

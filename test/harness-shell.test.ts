@@ -154,6 +154,31 @@ describe('packaged Harness shell', () => {
     expect((await shell.handle(request('api/echo'))).status).toBe(503)
   })
 
+  it.each(['?path=%2Fworkspace%2Fimage.png&v=fixture', 'file?path=%2Fworkspace%2Fimage.png&v=fixture'])(
+    'keeps the file endpoint when resolving relative image redirect %s', async location => {
+      const png = Buffer.from('89504e470d0a1a0a', 'hex')
+      const origin = await server((req, res) => {
+        if (req.url === '/?token=secret') return void res.writeHead(303, { location: '/', 'set-cookie': 'session=owned; Path=/' }).end()
+        if (req.headers.cookie !== 'session=owned') return void res.writeHead(401).end()
+        if (req.url === '/api/desktop/boot') {
+          res.setHeader('content-type', 'application/json')
+          res.end('{"injections":[]}')
+        } else if (req.url?.startsWith('/api/file?') && !req.url.includes('v=fixture')) {
+          res.writeHead(302, { location }).end()
+        } else if (req.url === '/api/file?path=%2Fworkspace%2Fimage.png&v=fixture') {
+          res.writeHead(200, { 'content-type': 'image/png' }).end(png)
+        } else res.writeHead(404).end()
+      })
+      await shell.connect(origin, 'secret')
+      const redirect = await shell.handle(request('api/file?path=%2Fworkspace%2Fimage.png&load=1'))
+      expect(redirect.status).toBe(302)
+      expect(redirect.headers.get('location')).toBe('dsh-desktop://harness/api/file?path=%2Fworkspace%2Fimage.png&v=fixture')
+      const image = await shell.handle(new Request(redirect.headers.get('location')!))
+      expect(image.headers.get('content-type')).toBe('image/png')
+      expect(Buffer.from(await image.arrayBuffer())).toEqual(png)
+    }
+  )
+
   it('translates only a trusted Origin and never upgrades absent or foreign origins', async () => {
     const { origin, seen } = await backend()
     await shell.connect(origin, 'secret')

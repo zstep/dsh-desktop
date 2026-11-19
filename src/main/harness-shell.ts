@@ -266,7 +266,7 @@ const painting = request.method === 'POST' && url.pathname === '/plugins/copylee
       responseHeaders.set('cache-control', 'no-store')
       const location = responseHeaders.get('location')
       if (location) {
-        const target = new URL(location, backend.origin)
+        const target = new URL(location, targetUrl)
         if (target.origin !== backend.origin) {
           await response.body?.cancel()
           operation.finish()

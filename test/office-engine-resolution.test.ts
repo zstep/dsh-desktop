@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { packagedArchiveRoot, registerOfficeEngineResolution } from '../build/office-engine-resolution.mjs'
+import {
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  packagedArchiveRoot,
+  registerOfficeEngineResolution,
+  withDefaultCommandTimeout
+} from '../build/office-engine-resolution.mjs'
 
 const ENGINE = '@deepseek-ai/libreoffice-kit-darwin-arm64'
 const hookModule = join(process.cwd(), 'build', 'office-engine-resolution.mjs')
@@ -42,6 +47,23 @@ describe('Office engine resolution', () => {
     const kits = Object.keys(lock.packages).filter(path => path.endsWith('node_modules/@deepseek-ai/libreoffice-kit'))
     expect(kits).toEqual(['node_modules/@deepseek-ai/libreoffice-kit'])
     expect(lock.packages['node_modules/@deepseek-ai/libreoffice-kit'].version).toBe('0.1.5')
+  })
+
+  it('gives conversion commands a timeout long enough for large documents', () => {
+    expect(DEFAULT_COMMAND_TIMEOUT_MS).toBeGreaterThanOrEqual(300_000)
+    expect(withDefaultCommandTimeout(['render', '--input', 'deck.pptx']))
+      .toEqual(['render', '--input', 'deck.pptx', '--timeout-ms', String(DEFAULT_COMMAND_TIMEOUT_MS)])
+    expect(withDefaultCommandTimeout(['convert', '--input', 'a.docx', '--output', 'a.pdf']))
+      .toEqual(['convert', '--input', 'a.docx', '--output', 'a.pdf', '--timeout-ms', String(DEFAULT_COMMAND_TIMEOUT_MS)])
+    expect(withDefaultCommandTimeout(['recalculate', '--input', 'a.xlsx', '--output', 'b.xlsx']))
+      .toEqual(['recalculate', '--input', 'a.xlsx', '--output', 'b.xlsx', '--timeout-ms', String(DEFAULT_COMMAND_TIMEOUT_MS)])
+  })
+
+  it('keeps an explicit timeout and leaves non-conversion commands alone', () => {
+    expect(withDefaultCommandTimeout(['render', '--timeout-ms', '30000'])).toEqual(['render', '--timeout-ms', '30000'])
+    expect(withDefaultCommandTimeout(['render', '--timeout-ms=30000'])).toEqual(['render', '--timeout-ms=30000'])
+    expect(withDefaultCommandTimeout(['capabilities', '--json'])).toEqual(['capabilities', '--json'])
+    expect(withDefaultCommandTimeout([])).toEqual([])
   })
 
   it('finds the archive root only for an app.asar installation', () => {

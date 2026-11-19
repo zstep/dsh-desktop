@@ -126,7 +126,8 @@ describe('desktop boot payload route', () => {
     let rejectPreset
     const pending = new Promise((_resolve, reject) => { rejectPreset = reject })
     h.ctx.agentPresets = { register: vi.fn(() => pending) }
-    expect(inject).toEqual(['agentPresets'])
+    h.ctx.systemPrompt = { section: vi.fn(), getSectionOrder: () => -1000 }
+    expect(inject).toEqual(['agentPresets', 'systemPrompt'])
     const applying = apply(h.ctx)
     expect(h.webServer.match(DESKTOP_BOOT_PATH)).toBeDefined()
     expect(h.ctx.agentPresets.register).toHaveBeenCalledOnce()

@@ -2,6 +2,7 @@ node_modules/
 out/
 out-shell/
 dist*/
+/dist*
 dist-dev/
 dist-shell/
 .DS_Store
@@ -25,6 +26,7 @@ __pycache__/
 
 # Local test artifacts, diagnostics and smoke-test output
 /artifacts/
+/projects/
 
 # Local-only design docs
 docs/plugin-management.zh.md

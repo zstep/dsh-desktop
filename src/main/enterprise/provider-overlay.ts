@@ -18,12 +18,24 @@ export interface PengbaoProviderRoute {
   models: readonly PengbaoModel[]
 }
 
+/**
+ * Vision workflows (Word/PPT page renders) append images to the conversation and
+ * every later step re-sends all of them; the locked adapter's 20 MiB default let
+ * a single contract task reach ~7 MiB per request, and provider time-to-first-byte
+ * grew from ~3 s to ~28 s as the payload grew. Bounding request images makes the
+ * mounted `dsh-compaction-image-offload` plugin replace the oldest occurrences
+ * with their readable paths and retry, so a long visual task keeps its recent
+ * pages inline without re-uploading every earlier render on each step.
+ */
+export const MAX_REQUEST_IMAGE_BYTES = 3 * 1024 * 1024
+
 function providerProfile(route: PengbaoProviderRoute): Record<string, unknown> {
   return {
     api: 'openai-completions',
     displayName: 'Pengbao',
     baseURL: `${route.gatewayUrl.replace(/\/$/, '')}/v1`,
     defaultInput: ['text'],
+    maxRequestImageBytes: MAX_REQUEST_IMAGE_BYTES,
     models: clientVisibleModels(route.models, 'text').map((model) => ({
       id: model.id,
       ...(model.name === undefined ? {} : { name: model.name }),

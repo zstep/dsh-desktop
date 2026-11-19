@@ -11,7 +11,7 @@ import { previewImage } from './lib/preview.js'
 import { managedPrompt } from './lib/managed-provider.js'
 
 export const name = 'dsh-image-generation'
-export const inject = ['credentials', 'connection', 'tools', 'skills', 'systemPrompt', 'sandboxPolicy', 'sandbox', 'subprocess', 'sessionController']
+export const inject = ['credentials', 'connection', 'tools', 'skills', 'systemPrompt', 'sandboxPolicy', 'sandbox', 'subprocess', 'sessionQuery']
 export const Config = z.object({})
 export const IMAGE_PROMPT_SECTION = 'tool:image-generation'
 export const UNCONFIGURED_IMAGE_PROMPT = 'Do not call image_generate while unavailable. Check Settings > Plugins > Image generation: Pengbao may require sign-in, administrator enablement, permission or a connection retry; custom providers need saved configuration. Never ask for an API key in conversation.'

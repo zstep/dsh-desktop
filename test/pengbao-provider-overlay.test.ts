@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { PengbaoClient } from '../src/main/enterprise/client'
 import {
   assertServableModels,
+  MAX_REQUEST_IMAGE_BYTES,
   pengbaoProviderOverlayText,
   preparePengbaoProviderOverlay,
   removePengbaoProviderOverlay
@@ -25,9 +26,21 @@ describe('Pengbao provider overlay', () => {
     expect(row.config.providers.other).toEqual({ api: 'openai-completions' })
     expect(row.config.providers.pengbao).toEqual({
       api: 'openai-completions', displayName: 'Pengbao', baseURL: 'http://127.0.0.1:43129/v1',
-      defaultInput: ['text'], models: [{ id: 'model-a', name: 'Model A', input: ['text'] }, { id: 'model-b', input: ['text'] }]
+      defaultInput: ['text'], maxRequestImageBytes: MAX_REQUEST_IMAGE_BYTES,
+      models: [{ id: 'model-a', name: 'Model A', input: ['text'] }, { id: 'model-b', input: ['text'] }]
     })
     expect(row.config.providers.pengbao).not.toHaveProperty('apiKeyEnv')
+  })
+
+  it('bounds request images so long visual workflows offload old renders', () => {
+    const text = pengbaoProviderOverlayText({
+      gatewayUrl: 'http://127.0.0.1:43129',
+      models: [{ id: 'vision', input: ['text', 'image'] }]
+    }, undefined)
+    const provider = parse(text)[0].config.providers.pengbao
+    // The adapter's 20 MiB default let one Word task grow to ~7 MiB per step.
+    expect(MAX_REQUEST_IMAGE_BYTES).toBeLessThan(5 * 1024 * 1024)
+    expect(provider.maxRequestImageBytes).toBe(MAX_REQUEST_IMAGE_BYTES)
   })
 
   it('pins explicit per-model input without copying upstream route settings', () => {

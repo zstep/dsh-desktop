@@ -552,9 +552,10 @@ describe('session-authorized generated image previews', () => {
     const events = [{ type: 'tool/call', data: { callId: 'image-call', name: 'image_generate' } },
       { type: 'tool/result', surfaceOp: 'append', data: { message: { role: 'tool', source: { kind: 'tool', callId: 'image-call' }, content, isError: false } } }]
     const log = vi.fn()
-    const ctx = { sessionController: { inspect: vi.fn(async session => ({ meta: { cwd: workspace }, events: session === id ? events : [] })) }, logger: { info: log } }
+    const dispose = vi.fn()
+    const ctx = { sessionQuery: { observeSession: vi.fn(async session => ({ header: { id: session, cwd: workspace }, cursor: events.length - 1, events: session === id ? events : [], [Symbol.dispose]: dispose })) }, logger: { info: log } }
     const request = (session = id, sha = image.sha256) => new Request(`http://localhost/api/image-generation.preview?${new URLSearchParams({ session, asset: sha })}`)
-    return { workspace, png, image, id, content, events, ctx, request, target: path.join(workspace, image.workspace_path) }
+    return { workspace, png, image, id, content, events, ctx, dispose, request, target: path.join(workspace, image.workspace_path) }
   }
   it('serves historical successful PNGs with integrity, cache, content-type and audit checks', async () => {
     const f = await previewFixture()
@@ -571,7 +572,7 @@ describe('session-authorized generated image previews', () => {
     const result = await previewImage(f.ctx, f.request())
     expect(result.status).toBe(200)
     expect(Buffer.from(await result.arrayBuffer())).toEqual(f.png)
-    expect(f.ctx.sessionController.inspect).toHaveBeenCalledWith(id, expect.any(AbortSignal))
+    expect(f.ctx.sessionQuery.observeSession).toHaveBeenCalledWith(id, expect.objectContaining({ signal: expect.any(AbortSignal), projectionMode: 'none' }))
   })
   it('requires a successful image tool result in the requested session', async () => {
     const f = await previewFixture()
@@ -595,13 +596,42 @@ describe('session-authorized generated image previews', () => {
       expect((await previewImage(f.ctx, f.request(id))).status).toBe(400)
     }
     expect((await previewImage(f.ctx, f.request(f.id, '../secret'))).status).toBe(400)
-    expect(f.ctx.sessionController.inspect).not.toHaveBeenCalled()
+    expect(f.ctx.sessionQuery.observeSession).not.toHaveBeenCalled()
     expect((await previewImage(f.ctx, f.request('../outside'))).status).toBe(404)
-    expect(f.ctx.sessionController.inspect).toHaveBeenCalledWith('../outside', expect.any(AbortSignal))
+    expect(f.ctx.sessionQuery.observeSession).toHaveBeenCalledWith('../outside', expect.objectContaining({ signal: expect.any(AbortSignal), projectionMode: 'none' }))
     expect(imageResult([null, { type: 'text', text: 'broken' }])).toBeUndefined()
     for (const change of [{ bytes: -1 }, { bytes: 1000000000 }, { workspace_path: '/etc/passwd' }, { media_type: 'text/html' }, { asset_id: 'wrong' }]) {
       expect(imageResult([{ type: 'text', text: JSON.stringify({ ...f.image, ...change }) }])).toBeUndefined()
     }
+  })
+  it('releases observations on success and integrity failure', async () => {
+    const f = await previewFixture()
+    expect((await previewImage(f.ctx, f.request())).status).toBe(200)
+    expect(f.dispose).toHaveBeenCalledTimes(1)
+    await writeFile(f.target, Buffer.alloc(f.png.length))
+    expect((await previewImage(f.ctx, f.request())).status).toBe(404)
+    expect(f.dispose).toHaveBeenCalledTimes(2)
+  })
+  it('refuses excessive history before reading its lazy event snapshot', async () => {
+    const f = await previewFixture()
+    const events = vi.fn(() => { throw new Error('must not materialize') })
+    f.ctx.sessionQuery.observeSession.mockResolvedValue({ header: { cwd: f.workspace }, cursor: 20000, get events() { return events() }, [Symbol.dispose]: f.dispose })
+    expect((await previewImage(f.ctx, f.request())).status).toBe(413)
+    expect(events).not.toHaveBeenCalled()
+    expect(f.dispose).toHaveBeenCalledOnce()
+  })
+  it('does not observe a session after caller cancellation', async () => {
+    const f = await previewFixture()
+    const controller = new AbortController()
+    controller.abort()
+    expect((await previewImage(f.ctx, new Request(f.request(), { signal: controller.signal }))).status).toBe(404)
+    expect(f.ctx.sessionQuery.observeSession).not.toHaveBeenCalled()
+  })
+  it('serves a successful edited image using the same canonical authorization', async () => {
+    const f = await previewFixture()
+    f.events[0].data.name = 'image_edit'
+    expect((await previewImage(f.ctx, f.request())).status).toBe(200)
+    expect(f.dispose).toHaveBeenCalledOnce()
   })
   it('refuses changed files, target symlinks and linked parent directories', async () => {
     const f = await previewFixture()
