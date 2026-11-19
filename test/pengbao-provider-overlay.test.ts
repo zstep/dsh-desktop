@@ -51,6 +51,25 @@ describe('Pengbao provider overlay', () => {
     expect(provider).not.toHaveProperty('apiKeyEnv')
   })
 
+  it('pins only client-enabled text models once the catalog is tagged', () => {
+    const text = pengbaoProviderOverlayText({
+      gatewayUrl: 'http://127.0.0.1:43129',
+      models: [
+        { id: 'chat', client: { enabled: true, types: ['text'] } },
+        { id: 'vision', client: { enabled: true, types: ['text', 'image'] } },
+        { id: 'image', client: { enabled: true, types: ['image'] } },
+        { id: 'off', client: { enabled: false, types: ['text'] } },
+        { id: 'legacy' }
+      ]
+    }, undefined)
+    const provider = parse(text)[0].config.providers.pengbao
+    expect(provider.models.map((model: { id: string }) => model.id)).toEqual(['chat', 'vision'])
+    expect(() => assertServableModels([
+      { id: 'image', client: { enabled: true, types: ['image'] } },
+      { id: 'legacy' }
+    ])).toThrow('serves no models')
+  })
+
   it('uses the later home patch config and removes its managed overlay', async () => {
     const home = await mkdtemp(join(tmpdir(), 'pengbao-overlay-'))
     dirs.push(home)

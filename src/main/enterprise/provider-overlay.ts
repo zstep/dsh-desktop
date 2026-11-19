@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse, stringify } from 'yaml'
-import type { PengbaoModel } from './client'
+import { clientVisibleModels, type PengbaoModel } from './client'
 
 const OVERLAY_NAME = 'pengbao-provider.patch.yml'
 
@@ -24,7 +24,7 @@ function providerProfile(route: PengbaoProviderRoute): Record<string, unknown> {
     displayName: 'Pengbao',
     baseURL: `${route.gatewayUrl.replace(/\/$/, '')}/v1`,
     defaultInput: ['text'],
-    models: route.models.map((model) => ({
+    models: clientVisibleModels(route.models, 'text').map((model) => ({
       id: model.id,
       ...(model.name === undefined ? {} : { name: model.name }),
       input: model.input?.includes('image') ? ['text', 'image'] : ['text']
@@ -134,5 +134,5 @@ export async function removePengbaoProviderOverlay(dshHome: string): Promise<voi
  * them: a route must serve at least one model.
  */
 export function assertServableModels(models: readonly PengbaoModel[]): void {
-  if (models.length === 0) throw new Error('The Pengbao account serves no models')
+  if (clientVisibleModels(models, 'text').length === 0) throw new Error('The Pengbao account serves no models')
 }

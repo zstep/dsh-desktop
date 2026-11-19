@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startPengbaoGateway, type PengbaoGateway, type PengbaoGatewayOptions } from '../src/main/enterprise/gateway'
+import { createImageGateway } from '../src/main/enterprise/image-gateway'
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=', 'base64')
 const ORIGIN = 'https://pengbao.ecombus.net'
@@ -9,6 +10,9 @@ const GENERATE = '/api/v1/images/generations'
 const STATUS = '/v1/image-generation/status'
 const BATCH = '/v1/image-generation/generate-many'
 const IMAGE = '/v1/image-generation/generate'
+const EDIT = '/v1/image-generation/edit'
+const EDIT_COMPAT = '/v1/images/edits'
+const UPSTREAM_EDIT = '/api/v1/images/edit'
 const MODELS = '/v1/image-generation/models'
 const UPSTREAM_MODELS = '/api/v1/images/models'
 const METADATA = '/api/v1/images/metadata'
@@ -62,9 +66,9 @@ async function fixture(handler: (req: IncomingMessage, res: ServerResponse) => v
 }
 async function request(gateway: PengbaoGateway, token: string, path = IMAGE, body: unknown = { prompt: 'A red bird' }) {
   return fetch(`${gateway.url}${path}`, {
-    method: path === IMAGE || path === BATCH ? 'POST' : 'GET',
+    method: [IMAGE, BATCH, EDIT].includes(path) ? 'POST' : 'GET',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Cookie: 'local-secret=never-forwarded' },
-    ...(path === IMAGE || path === BATCH ? { body: JSON.stringify(body) } : {})
+    ...([IMAGE, BATCH, EDIT].includes(path) ? { body: JSON.stringify(body) } : {})
   })
 }
 async function expectError(response: Response, status: number, code: string) {
@@ -80,6 +84,81 @@ async function expectError(response: Response, status: number, code: string) {
 }
 
 describe('Pengbao image gateway parameter batches', () => {
+  it('edits a generated PNG exactly once through the private gateway', async () => {
+    const editInput = { prompt: 'Replace the book', image: PNG.toString('base64') }
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === '/api/config') return sendJson(res, { features: { enable_image_generation: false, enable_image_edit: true } })
+      if (req.url === UPSTREAM_EDIT) return sendJson(res, [{ id: 'edited', url: '/api/v1/files/edited/content' }])
+      if (req.url === '/api/v1/files/edited/content') { res.writeHead(200, { 'content-type': 'image/png' }); res.end(PNG); return }
+      defaults(req, res)
+    })
+    const response = await request(gateway, lease.capabilityToken, EDIT, editInput)
+    expect(response.status).toBe(200)
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG)
+    const calls = seen.filter(row => row.path === UPSTREAM_EDIT)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0]!.body)).toEqual({ prompt: editInput.prompt, image: `data:image/png;base64,${PNG.toString('base64')}`, n: 1 })
+    expect(seen.some(row => row.path === GENERATE)).toBe(false)
+  })
+
+  it('edits a PNG through the OpenAI-compatible multipart route', async () => {
+    const { gateway, lease, seen } = await fixture((req, res) => {
+      if (req.url === '/api/config') return sendJson(res, { features: { enable_image_generation: true, enable_image_edit: true } })
+      if (req.url === UPSTREAM_EDIT) return sendJson(res, [{ id: 'edited', url: '/api/v1/files/edited/content' }])
+      if (req.url === '/api/v1/files/edited/content') { res.writeHead(200, { 'content-type': 'image/png' }); res.end(PNG); return }
+      defaults(req, res)
+    })
+    const form = new FormData()
+    form.append('image', new Blob([PNG], { type: 'image/png' }), 'reference.png')
+    form.append('prompt', 'Make the book blue')
+    form.append('model', 'gpt-image-2.5-sunburst')
+    form.append('size', '1024x1024')
+    const response = await fetch(`${gateway.url}${EDIT_COMPAT}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${lease.capabilityToken}` },
+      body: form
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ data: [{ b64_json: PNG.toString('base64') }] })
+    const calls = seen.filter(row => row.path === UPSTREAM_EDIT)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      prompt: 'Make the book blue',
+      image: `data:image/png;base64,${PNG.toString('base64')}`,
+      model: 'gpt-image-2.5-sunburst',
+      size: '1024x1024',
+      n: 1
+    })
+    expect(seen.some(row => row.path === GENERATE)).toBe(false)
+  })
+
+  it('rejects compatibility edits for a generate-only scoped lease', async () => {
+    const imageGateway = createImageGateway({ getJwt: () => 'fixture', fetch, maxBodyBytes: 1048576, timeoutMs: 1000, maxConcurrent: 2 })
+    const lease = imageGateway.createLease({ capabilityToken: 'generate-only-token-123456789012345678', models: [], capabilities: ['image.generate'] })
+    const host = createServer((req, res) => { void imageGateway.handle(req, res) })
+    servers.push(host)
+    await new Promise<void>(resolve => host.listen(0, '127.0.0.1', resolve))
+    const address = host.address()
+    if (!address || typeof address === 'string') throw new Error('No fixture port')
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}${EDIT_COMPAT}`, { method: 'POST', headers: { Authorization: `Bearer ${lease.capabilityToken}` }, body: JSON.stringify({ prompt: 'edit' }) })
+      expect(response.status).toBe(404)
+    } finally { imageGateway.stop() }
+  })
+
+  it('rejects edit access for a compatibility-only lease', async () => {
+    const imageGateway = createImageGateway({ getJwt: () => 'fixture', fetch, maxBodyBytes: 1048576, timeoutMs: 1000, maxConcurrent: 2 })
+    const lease = imageGateway.createLease({ capabilityToken: 'compat-token-123456789012345678901234567890', models: [], capabilities: ['image.generate'], compatibilityOnly: true })
+    const host = createServer((req, res) => { void imageGateway.handle(req, res) })
+    servers.push(host)
+    await new Promise<void>(resolve => host.listen(0, '127.0.0.1', resolve))
+    const address = host.address()
+    if (!address || typeof address === 'string') throw new Error('No fixture port')
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}${EDIT}`, { method: 'POST', headers: { Authorization: `Bearer ${lease.capabilityToken}` }, body: JSON.stringify({ prompt: 'edit', image: PNG.toString('base64') }) })
+      expect(response.status).toBe(404)
+    } finally { imageGateway.stop() }
+  })
   const revision = 'a'.repeat(64)
   const parameters = { contractVersion: 1, revision, models: [{ id: 'chosen', maxImages: 4, qualities: ['auto', 'high'], details: [''] }] }
   const input = { prompt: 'PRIVATE_PROMPT', model: 'chosen', n: 2, quality: 'high', parameterContractVersion: 1, parameterRevision: revision }

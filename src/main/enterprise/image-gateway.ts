@@ -40,7 +40,7 @@ type ImageCatalog = {
   catalogStatus?: 'available' | 'default-only'
   generationParameters?: ImageParameterContract
 }
-type ImageInput = { prompt: string; size?: string; model?: string; n?: number; quality?: string; detail?: string; response_format?: string; parameterContractVersion?: number; parameterRevision?: string }
+type ImageInput = { prompt: string; image?: string | string[]; size?: string; model?: string; n?: number; quality?: string; detail?: string; response_format?: string; parameterContractVersion?: number; parameterRevision?: string }
 
 class ImageFailure extends Error {
   backend?: PengbaoImageBackendDiagnostic
@@ -162,9 +162,9 @@ function normalizeModels(value: unknown): { id: string; name: string }[] {
   return models
 }
 
-interface ImageLeaseScope { capabilityToken: string; models: readonly string[]; capabilities: readonly ('image.generate')[]; compatibilityOnly: true }
+interface ImageLeaseScope { capabilityToken?: string; models: readonly string[]; capabilities: readonly ('image.generate' | 'image.edit')[]; compatibilityOnly?: boolean }
 
-async function promptBody(req: IncomingMessage, limit: number, signal: AbortSignal, batch = false, compatibility = false): Promise<ImageInput> {
+async function promptBody(req: IncomingMessage, limit: number, signal: AbortSignal, batch = false, compatibility = false, edit = false): Promise<ImageInput> {
   if (req.headers['content-encoding']) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
   if (Number(req.headers['content-length'] ?? 0) > limit) throw new ImageFailure(413, 'IMAGE_TOO_LARGE')
   return new Promise((resolve, reject) => {
@@ -187,7 +187,7 @@ async function promptBody(req: IncomingMessage, limit: number, signal: AbortSign
       cleanup()
       try {
         const input = record(JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown)
-        const allowed = compatibility ? ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'response_format'] : batch ? ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'parameterContractVersion', 'parameterRevision'] : ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'response_format']
+        const allowed = edit ? ['prompt', 'image', 'size'] : compatibility ? ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'response_format'] : batch ? ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'parameterContractVersion', 'parameterRevision'] : ['prompt', 'size', 'model', 'n', 'quality', 'detail', 'response_format']
         if (!input || Object.keys(input).some(key => !allowed.includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 8000) {
           throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
         }
@@ -209,12 +209,20 @@ async function promptBody(req: IncomingMessage, limit: number, signal: AbortSign
             if (width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
           }
         }
+        let sourceImage: string | undefined
+        if (edit) {
+          const encoded = input.image
+          if (typeof encoded !== 'string' || !encoded.length || encoded.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3) || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+          const data = Buffer.from(encoded, 'base64')
+          if (!data.length || data.length > MAX_IMAGE_BYTES || data.toString('base64') !== encoded || !bitmapMatches(data, 'image/png')) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+          sourceImage = `data:image/png;base64,${encoded}`
+        }
         const model = input.model === undefined ? undefined : modelId(input.model)
         if (input.model !== undefined && !model) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
         if (batch && (input.parameterContractVersion !== undefined && input.parameterContractVersion !== 1 ||
           input.parameterRevision !== undefined && (typeof input.parameterRevision !== 'string' || !/^[a-f0-9]{64}$/.test(input.parameterRevision)) ||
           !Number.isSafeInteger(input.n) || (input.n as number) < 1 || (input.n as number) > 4)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
-        resolve({ prompt: input.prompt, ...(typeof input.size === 'string' ? { size: input.size } : {}), ...(model === undefined ? {} : { model }),
+        resolve({ prompt: input.prompt, ...(sourceImage ? { image: sourceImage } : {}), ...(typeof input.size === 'string' ? { size: input.size } : {}), ...(model === undefined ? {} : { model }),
           ...(compatibility ? { n: (input.n as number | undefined) ?? 1, ...(input.quality === undefined ? {} : { quality: input.quality as string }), ...(input.detail === undefined ? {} : { detail: input.detail as string }), ...(input.response_format === undefined ? {} : { response_format: input.response_format as string }) } : {}),
           ...(batch ? { n: input.n as number, parameterContractVersion: 1, parameterRevision: input.parameterRevision as string,
             ...(input.quality === undefined ? {} : { quality: input.quality as string }), ...(input.detail === undefined ? {} : { detail: input.detail as string }) } : {}) })
@@ -226,6 +234,151 @@ async function promptBody(req: IncomingMessage, limit: number, signal: AbortSign
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) abort()
   })
+}
+
+const MAX_EDIT_IMAGES = 5
+
+function rawBody(req: IncomingMessage, limit: number, signal: AbortSignal): Promise<Buffer> {
+  if (Number(req.headers['content-length'] ?? 0) > limit) return Promise.reject(new ImageFailure(413, 'IMAGE_TOO_LARGE'))
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    const cleanup = () => {
+      req.off('data', data)
+      req.off('end', end)
+      req.off('error', error)
+      signal.removeEventListener('abort', abort)
+    }
+    const error = (reason: unknown) => { cleanup(); reject(reason) }
+    const abort = () => error(signal.reason)
+    const data = (part: Buffer) => {
+      size += part.length
+      if (size > limit) { req.pause(); error(new ImageFailure(413, 'IMAGE_TOO_LARGE')); return }
+      chunks.push(part)
+    }
+    const end = () => { cleanup(); resolve(Buffer.concat(chunks)) }
+    req.on('data', data)
+    req.once('end', end)
+    req.once('error', error)
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+  })
+}
+
+/** Accept only inline raster data URLs. Compatibility edits never fetch caller URLs. */
+function editDataUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})$/.exec(value)
+  const type = match?.[1]
+  const encoded = match?.[2]
+  if (!type || encoded === undefined || encoded.length === 0 || encoded.length > Math.ceil(MAX_IMAGE_BYTES * 4 / 3) || encoded.length % 4 !== 0) return undefined
+  const bytes = Buffer.from(encoded, 'base64')
+  if (!bytes.length || bytes.length > MAX_IMAGE_BYTES || bytes.toString('base64') !== encoded || !bitmapMatches(bytes, type)) return undefined
+  return `data:${type};base64,${encoded}`
+}
+
+async function fileDataUrl(value: unknown): Promise<string | undefined> {
+  if (typeof value === 'string') return editDataUrl(value)
+  if (!value || typeof value !== 'object') return undefined
+  const file = value as { size?: unknown; type?: unknown; arrayBuffer?: unknown }
+  if (typeof file.size !== 'number' || file.size <= 0 || file.size > MAX_IMAGE_BYTES || typeof file.arrayBuffer !== 'function') return undefined
+  const type = file.type
+  if (type !== 'image/png' && type !== 'image/jpeg' && type !== 'image/webp') return undefined
+  const bytes = Buffer.from(await (file.arrayBuffer as () => Promise<ArrayBuffer>)())
+  if (!bytes.length || bytes.length > MAX_IMAGE_BYTES || !bitmapMatches(bytes, type)) return undefined
+  return `data:${type};base64,${bytes.toString('base64')}`
+}
+
+/**
+ * OpenAI-compatible image edits (`/v1/images/edits`). The image plugin posts
+ * multipart reference images; JSON variants carry data URLs directly. Only
+ * inline raster data crosses this boundary, and every field is bounded before
+ * it is forwarded to the configured OpenWebUI edit engine.
+ */
+async function editCompatibilityBody(req: IncomingMessage, limit: number, signal: AbortSignal): Promise<ImageInput> {
+  if (req.headers['content-encoding']) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  const raw = await rawBody(req, limit, signal)
+  const contentType = req.headers['content-type'] ?? ''
+  const media = contentType.split(';')[0]?.trim().toLowerCase()
+  let prompt: unknown
+  let model: unknown
+  let size: unknown
+  let quality: unknown
+  let detail: unknown
+  let n: unknown
+  const sources: unknown[] = []
+  if (media === 'multipart/form-data') {
+    let form: FormData
+    try {
+      form = await new Response(new Uint8Array(raw), { headers: { 'content-type': contentType } }).formData()
+    } catch { throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST') }
+    const field = (name: string) => {
+      const value = form.get(name)
+      return value === null ? undefined : value
+    }
+    prompt = field('prompt')
+    model = field('model')
+    size = field('size')
+    quality = field('quality')
+    detail = field('detail')
+    n = field('n')
+    sources.push(...form.getAll('image'), ...form.getAll('image[]'))
+    if (sources.length === 0) {
+      // Some clients send the reference image as a pre-encoded form field.
+      sources.push(...form.getAll('image_url'))
+    }
+  } else if (media === 'application/json') {
+    let input: Record<string, unknown> | undefined
+    try { input = record(JSON.parse(raw.toString('utf8')) as unknown) } catch { throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST') }
+    const allowed = ['prompt', 'model', 'image', 'images', 'size', 'quality', 'detail', 'n', 'response_format']
+    if (!input || Object.keys(input).some(key => !allowed.includes(key))) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+    if (input.response_format !== undefined && input.response_format !== 'b64_json') throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+    prompt = input.prompt
+    model = input.model
+    size = input.size
+    quality = input.quality
+    detail = input.detail
+    n = input.n
+    const push = (value: unknown) => {
+      if (typeof value === 'string') sources.push(value)
+      else if (record(value)?.url !== undefined) sources.push(record(value)?.url)
+    }
+    push(input.image)
+    if (Array.isArray(input.images)) input.images.forEach(push)
+  } else {
+    throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  }
+  const images: string[] = []
+  for (const source of sources) {
+    const data = await fileDataUrl(source)
+    if (!data) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+    images.push(data)
+    if (images.length > MAX_EDIT_IMAGES) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  }
+  if (!images.length) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  const selectedModel = model === undefined ? undefined : modelId(model)
+  if (model !== undefined && !selectedModel) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  if (size !== undefined) {
+    if (typeof size !== 'string' || size.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(size)) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+    if (/^[1-9]\d{0,3}x[1-9]\d{0,3}$/.test(size) && size !== 'auto') {
+      const [width = 0, height = 0] = size.split('x').map(Number)
+      if (width > 8192 || height > 8192 || width * height > 64_000_000) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+    }
+  }
+  if (n !== undefined && n !== '1' && n !== 1) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  for (const value of [quality, detail]) {
+    if (value !== undefined && (typeof value !== 'string' || value.length > 64 || /[\p{C}\p{Zl}\p{Zp}]/u.test(value))) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
+  }
+  return {
+    prompt,
+    image: images.length === 1 ? images[0]! : images,
+    n: 1,
+    ...(selectedModel === undefined ? {} : { model: selectedModel }),
+    ...(typeof size === 'string' && size !== 'auto' ? { size } : {}),
+    ...(typeof quality === 'string' && quality !== 'auto' ? { quality } : {}),
+    ...(typeof detail === 'string' && detail !== 'auto' ? { detail } : {})
+  }
 }
 
 function downloadPath(value: unknown): string {
@@ -275,7 +428,7 @@ export function createImageGateway(options: {
   maxConcurrent: number
   onFailure?: (failure: PengbaoImageFailure) => void
 }): { createLease: (scope?: ImageLeaseScope) => PengbaoImageLease; handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>; stop: () => void } {
-  type Lease = { credential: Buffer; models?: ReadonlySet<string>; capabilities?: ReadonlySet<'image.generate'>; compatibilityOnly: boolean; active: Set<AbortController>; revoked: boolean }
+  type Lease = { credential: Buffer; models?: ReadonlySet<string>; capabilities?: ReadonlySet<'image.generate' | 'image.edit'>; compatibilityOnly: boolean; active: Set<AbortController>; revoked: boolean }
   const leases = new Set<Lease>()
   let activeCount = 0
   let stopped = false
@@ -346,12 +499,12 @@ export function createImageGateway(options: {
     return response
   }
 
-  async function status(signal: AbortSignal): Promise<ImageReason> {
+  async function status(signal: AbortSignal, edit = false): Promise<ImageReason> {
     // Read only ordinary-user endpoints; /images/config contains administrator secrets.
     const session = record(await json(await upstream('/api/v1/auths/', signal), signal))
     if (!session) return 'unavailable'
     const config = record(await json(await upstream('/api/config', signal), signal))
-    const enabled = record(config?.features)?.enable_image_generation
+    const enabled = record(config?.features)?.[edit ? 'enable_image_edit' : 'enable_image_generation']
     if (enabled === false) return 'disabled'
     if (enabled !== true) return 'unavailable'
     if (session.role === 'admin') return 'available'
@@ -415,9 +568,14 @@ export function createImageGateway(options: {
       const isBatch = req.method === 'POST' && req.url === '/v1/image-generation/generate-many'
       const isGenerate = req.method === 'POST' && req.url === '/v1/image-generation/generate'
       const isCompatibility = req.method === 'POST' && req.url === '/v1/images/generations'
+      const isEditCompatibility = req.method === 'POST' && req.url === '/v1/images/edits'
       const imageCapability = lease.capabilities === undefined || lease.capabilities.has('image.generate')
-      if (!imageCapability) return fail(res, new ImageFailure(401, 'IMAGE_AUTH'))
-      if (lease.compatibilityOnly ? !isCompatibility : isCompatibility || (!isStatus && !isModels && !isGenerate && !isBatch)) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
+      const isEdit = req.method === 'POST' && req.url === '/v1/image-generation/edit'
+      // The built-in image lease has no explicit scopes; scoped model-service
+      // leases must opt into image.edit instead of inheriting it from generate.
+      const editCapability = lease.capabilities === undefined || lease.capabilities.has('image.edit')
+      if (isEdit || isEditCompatibility ? (!editCapability || lease.compatibilityOnly) : !imageCapability) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
+      if (lease.compatibilityOnly ? !isCompatibility : isCompatibility || (!isStatus && !isModels && !isGenerate && !isBatch && !isEdit && !isEditCompatibility)) return fail(res, new ImageFailure(404, 'IMAGE_INVALID_REQUEST'))
       if (activeCount >= options.maxConcurrent) return fail(res, new ImageFailure(429, 'IMAGE_BUSY'))
       const started = Date.now()
       const requestId = `pb-${randomBytes(16).toString('hex')}`
@@ -454,11 +612,13 @@ export function createImageGateway(options: {
           res.end(JSON.stringify({ available: reason === 'available', reason, serviceUrl: PENGBAO_PRODUCT.serverUrl, modelSelection: 'server-managed' }))
           return
         }
-        const input = isModels ? undefined : await promptBody(req, Math.min(options.maxBodyBytes, 65_536), controller.signal, isBatch, isCompatibility)
+        const input = isModels ? undefined :
+          isEditCompatibility ? await editCompatibilityBody(req, Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 2 * 1024 * 1024, controller.signal) :
+            await promptBody(req, isEdit ? Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 65_536 : Math.min(options.maxBodyBytes, 65_536), controller.signal, isBatch, isCompatibility, isEdit)
         if (isCompatibility && input?.model !== 'pengbao-default-image' && (!input?.model || !lease.models?.has(input.model))) throw new ImageFailure(403, 'IMAGE_MODEL_UNAVAILABLE')
         if (isCompatibility && input?.model === 'pengbao-default-image' && !lease.models?.has('pengbao-default-image')) throw new ImageFailure(403, 'IMAGE_MODEL_UNAVAILABLE')
         stage = 'status'
-        const reason = await status(controller.signal)
+        const reason = await status(controller.signal, isEdit || isEditCompatibility)
         if (reason !== 'available') throw new ImageFailure(reason === 'unauthenticated' ? 401 : reason === 'unavailable' ? 502 : 403,
           reason === 'disabled' ? 'IMAGE_DISABLED' : reason === 'forbidden' ? 'IMAGE_FORBIDDEN' : reason === 'unauthenticated' ? 'IMAGE_AUTH' : 'IMAGE_NETWORK')
         if (isModels) {
@@ -470,7 +630,7 @@ export function createImageGateway(options: {
           return
         }
         if (!input) throw new ImageFailure(400, 'IMAGE_INVALID_REQUEST')
-        if (input.model !== undefined || isBatch) {
+        if (!isEdit && !isEditCompatibility && (input.model !== undefined || isBatch)) {
           // Validate against a fresh catalog so revoked or stale selections never generate.
           stage = 'catalog'
           const catalog = await models(controller.signal)
@@ -494,7 +654,7 @@ export function createImageGateway(options: {
         }
         // Never retry a generation, including after a download failure: it may already have been billed.
         stage = 'generation'
-        const generated = await json(await upstream('/api/v1/images/generations', controller.signal, { ...input, n: isCompatibility ? input.n! : isBatch ? input.n! : 1 }), controller.signal,
+        const generated = await json(await upstream(isEdit || isEditCompatibility ? '/api/v1/images/edit' : '/api/v1/images/generations', controller.signal, { ...input, n: isEdit || isEditCompatibility ? 1 : isCompatibility ? input.n! : isBatch ? input.n! : 1 }), controller.signal,
           isCompatibility ? Math.ceil(Math.min(IMAGE_BATCH_BYTES, MAX_IMAGE_BYTES * input.n!) * 4 / 3) + 65_536 : MAX_JSON_BYTES)
         if (isCompatibility) {
           stage = 'descriptor'
@@ -589,7 +749,7 @@ export function createImageGateway(options: {
         if (!bitmapMatches(body, type)) throw new ImageFailure(502, 'IMAGE_RESPONSE')
         controller.signal.throwIfAborted()
         if (lease.revoked || stopped || res.destroyed) return
-        if (isCompatibility) {
+        if (isCompatibility || isEditCompatibility) {
           res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
           res.end(JSON.stringify({ data: [{ b64_json: body.toString('base64') }] }))
           return

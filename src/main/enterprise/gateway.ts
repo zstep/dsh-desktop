@@ -6,15 +6,11 @@ import { type ModelServiceCapability } from '../../shared/model-service'
 import { createImageGateway, IMAGE_GATEWAY_TIMEOUT_MS, type PengbaoImageLease, type PengbaoImageFailure } from './image-gateway'
 import { createNativeVideoGateway, type NativeVideoLease, type VideoCatalogRow } from './native-video-gateway'
 import { createPluginConfigurationGateway, type PluginConfigurationLease } from './plugin-configuration-gateway'
+import { clientAccessConfigured, entryClientAccess, type ClientAccess, type ClientSurface } from './client-access'
 export type { PluginConfigurationLease, PluginConfigurationPolicy } from './plugin-configuration-gateway'
 
 const TOP_LEVEL = ['model', 'messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'stream_options', 'temperature', 'max_tokens', 'max_completion_tokens', 'top_p', 'stop', 'frequency_penalty', 'presence_penalty', 'seed', 'response_format', 'reasoning_effort'] as const
 const FORBIDDEN = new Set(['chat_id', 'id', 'session_id', 'parent_id', 'tool_ids', 'metadata', 'files', 'filter_ids', 'function_call', 'functions'])
-// Conservative image-model name families, mirrored from open-webui's own
-// image_models._image_id. Used only as a name fallback when OpenWebUI declares
-// no generation capabilities, so a text model an aggregator merely lists under
-// /api/v1/images/metadata is never mistaken for an image-only model.
-const IMAGE_FAMILY = /^(?:gpt-image(?:-|$)|dall-e(?:-|$)|imagen(?:-|$)|flux(?:[.\-/]|$)|stable-diffusion(?:-|$)|gemini-[\w.-]*image(?:-|$))/i
 
 export interface PengbaoGatewayFailure {
   requestId: string
@@ -111,6 +107,11 @@ class BodySizeFailure extends RequestFailure {
 
 function displayText(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim() === value && !/[\p{C}\p{Zl}\p{Zp}]/u.test(value)
+}
+
+function modelEntryId(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !('id' in entry) || !displayText(entry.id)) return undefined
+  return entry.id
 }
 
 function catalogModels(value: unknown): Map<string, { alias?: string; name?: string }> {
@@ -417,35 +418,51 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
         if (ids.length > 256 || ids.some(id => id.length > 256 || /[\p{C}\p{Zl}\p{Zp}]/u.test(id) || /https?:\/\//i.test(id)) || new Set(ids).size !== ids.length) throw new RequestFailure(502)
         return [...new Set(ids)]
       }
-      const imageModelIds = async (): Promise<Set<string>> => {
+      type ClientIndex = { configured: boolean; models: Map<string, ClientAccess>; catalog: Record<string, unknown> }
+      let clientIndexPromise: Promise<ClientIndex> | undefined
+      const clientIndex = (): Promise<ClientIndex> => clientIndexPromise ??= (async () => {
+        const catalog = await metadata('/api/v1/models')
+        const rows = Array.isArray(catalog.data) ? catalog.data : []
+        const models = new Map<string, ClientAccess>()
+        for (const entry of rows) {
+          const id = modelEntryId(entry)
+          const access = entryClientAccess(entry)
+          if (id && access) models.set(id, access)
+        }
+        return { configured: clientAccessConfigured(rows), models, catalog }
+      })()
+      const visibleFor = (index: ClientIndex, model: string, surface: ClientSurface): boolean =>
+        !index.configured || (index.models.get(model)?.enabled === true && index.models.get(model)?.types.includes(surface) === true)
+      const taggedImageIds = async (): Promise<Set<string>> => {
+        const index = await clientIndex()
+        return index.configured
+          ? new Set([...index.models].filter(([, access]) => access.enabled && access.types.includes('image')).map(([id]) => id))
+          : new Set()
+      }
+      const imageCatalogIds = async (): Promise<Set<string>> => {
+        const index = await clientIndex()
+        if (index.configured) {
+          return new Set([...index.models].filter(([, access]) => access.enabled && access.types.includes('image')).map(([id]) => id))
+        }
+        // Before the first tag the server's own image catalog is authoritative.
+        // This is not a client-side type guess; it is the endpoint the server
+        // publishes for image surfaces.
         const value = await metadata('/api/v1/images/metadata')
         const record = value as Record<string, unknown>
-        // OpenWebUI's `.models` list is the authoritative image set only for
-        // non-openai engines. For the openai engine it over-includes every
-        // upstream model — text models included (open_webui.utils.image_models
-        // `_provider_entry` returns each row unless it explicitly denies image
-        // output) — so treating it as "image-only" misclassifies chat models.
-        // The reliable image-only signals are the operator-declared
-        // generation-parameter capabilities and the configured image default.
+        // The image endpoint's `.models` list is the server's own answer for
+        // "which models can this deployment generate images with". No name or
+        // capability heuristics are applied: a model is offered only when the
+        // operator listed it here and the plugin was configured with it.
         const ids = new Set<string>()
-        const generation = record.generationParameters
-        if (generation && typeof generation === 'object') {
-          const declared = (generation as Record<string, unknown>).models
-          if (Array.isArray(declared)) {
-            for (const item of declared) {
-              if (item && typeof item === 'object' && 'id' in item && typeof (item as Record<string, unknown>).id === 'string') ids.add((item as Record<string, unknown>).id as string)
+        if (Array.isArray(record.models)) {
+          for (const item of record.models) {
+            if (item && typeof item === 'object' && 'id' in item && typeof (item as Record<string, unknown>).id === 'string') {
+              ids.add((item as Record<string, unknown>).id as string)
             }
           }
         }
         const defaultModel = record.defaultModel
         if (defaultModel && typeof defaultModel === 'object' && 'id' in defaultModel && typeof (defaultModel as Record<string, unknown>).id === 'string') ids.add((defaultModel as Record<string, unknown>).id as string)
-        if (ids.size === 0 && Array.isArray(record.models)) {
-          for (const item of record.models) {
-            if (item && typeof item === 'object' && 'id' in item && typeof (item as Record<string, unknown>).id === 'string' && IMAGE_FAMILY.test((item as Record<string, unknown>).id as string)) {
-              ids.add((item as Record<string, unknown>).id as string)
-            }
-          }
-        }
         return ids
       }
       const diagnose = (reason: PengbaoModelDenial['reason'], route: PengbaoModelDenial['route'], model: string): void => {
@@ -476,44 +493,49 @@ export async function startPengbaoGateway(options: PengbaoGatewayOptions): Promi
           return content !== null && content !== undefined && typeof content !== 'string' &&
             (!Array.isArray(content) || content.some(part => !part || typeof part !== 'object' || part.type !== 'text' || typeof part.text !== 'string' || Object.keys(part).some(key => key !== 'type' && key !== 'text')))
         })) throw new RequestFailure(400)
-        const catalog = await metadata('/api/v1/models')
+        const index = await clientIndex()
+        const catalog = index.catalog
         if (!Array.isArray(catalog.data)) throw new RequestFailure(502)
         const catalogIds = new Set(catalog.data.flatMap((item: unknown) => item && typeof item === 'object' && 'id' in item && typeof item.id === 'string' ? [item.id] : []))
         const explicitAllowed = grant.models === undefined || grant.models.has(body.model as string)
         const isDefaultAlias = body.model === 'pengbao-default-chat' && grant.models?.has('pengbao-default-chat')
         if (isDefaultAlias) {
-          const current = (await defaults()).find(id => catalogIds.has(id))
+          const current = (await defaults()).find(id => catalogIds.has(id) && visibleFor(index, id, 'text'))
           if (!current) denyLocal('not-in-catalog', 'chat', body.model as string)
           body.model = current
         } else {
           if (!explicitAllowed) denyLocal('not-granted', 'chat', body.model as string)
           if (!catalogIds.has(body.model as string)) denyLocal('not-in-catalog', 'chat', body.model as string)
-          if (grant.models !== undefined && (await imageModelIds()).has(body.model as string)) denyLocal('image-classified', 'chat', body.model as string)
+          if (grant.models !== undefined && (await taggedImageIds()).has(body.model as string)) denyLocal('image-classified', 'chat', body.model as string)
         }
+        if (!visibleFor(index, body.model as string, 'text')) denyLocal('not-in-catalog', 'chat', body.model as string)
       }
       if (isPluginModels) {
         const allowed = [...(grant.models ?? [])]
         if (imageModelsOnly) {
           // Image plugins ask for their own catalog; returning chat or video
           // models here pollutes the image-model picker.
-          const imageIds = await imageModelIds()
+          const imageIds = await imageCatalogIds()
           res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ object: 'list', data: allowed.filter(model => imageIds.has(model)).map(id => ({ id, object: 'model', name: id })) }))
           return
         }
-        const chatCatalog = await metadata('/api/v1/models')
-        const catalog = catalogModels(chatCatalog.data)
-        const imageIds = await imageModelIds()
+        const index = await clientIndex()
+        const catalog = catalogModels(index.catalog.data)
+        const imageIds = await taggedImageIds()
+        const chatVisible = (model: string) => visibleFor(index, model, 'text')
         const defaultsForChat = allowed.includes('pengbao-default-chat') ? await defaults() : []
         const resolved = [...new Set([
           ...allowed.filter(model => {
             if (model === 'pengbao-default-chat' || model === 'pengbao-default-image') return false
             if (!catalog.has(model)) { diagnose('not-in-catalog', 'models', model); return false }
+            if (!chatVisible(model)) { diagnose('not-in-catalog', 'models', model); return false }
             if (imageIds.has(model)) { diagnose('image-classified', 'models', model); return false }
             return true
           }),
           ...defaultsForChat.filter(model => {
             if (!catalog.has(model)) { diagnose('not-in-catalog', 'models', model); return false }
+            if (!chatVisible(model)) { diagnose('not-in-catalog', 'models', model); return false }
             if (imageIds.has(model)) { diagnose('image-classified', 'models', model); return false }
             return true
           })

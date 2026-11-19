@@ -9,7 +9,7 @@ const gateways: PengbaoGateway[] = []
 afterEach(async () => { await Promise.all(gateways.splice(0).map(gateway => gateway.stop())) })
 
 function json(body: unknown, headers?: HeadersInit) { return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json', ...headers } }) }
-async function fixture(options: { generation?: () => Response | Promise<Response>; bitmap?: () => Response; timeout?: number; declared?: boolean; serverOnly?: boolean; overIncluded?: string[]; onModelDenial?: (denial: PengbaoModelDenial) => void } = {}) {
+async function fixture(options: { generation?: () => Response | Promise<Response>; bitmap?: () => Response; timeout?: number; declared?: boolean; serverOnly?: boolean; overIncluded?: string[]; client?: Record<string, { enabled: boolean; types: string[] }>; onModelDenial?: (denial: PengbaoModelDenial) => void } = {}) {
   let defaultChat = 'chat-one'
   let defaultImage = 'chosen'
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -19,13 +19,20 @@ async function fixture(options: { generation?: () => Response | Promise<Response
     expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-main-jwt')
     if (url.pathname === '/api/v1/auths/') return json({ role: 'user', permissions: { features: { image_generation: true } } })
     if (url.pathname === '/api/config') return json({ features: { enable_image_generation: true }, default_models: ` ${defaultChat},unavailable `, private: 'MAIN_SECRET' })
-    if (url.pathname === '/api/v1/models') return json({ data: [
-      { id: 'chat-one', alias: 'Chat One Alias', name: 'Chat One Name' },
-      { id: 'chat-two', alias: 'Bad\nalias', name: 'Chat Two Name' },
-      { id: 'chat-three', alias: { private: 'metadata' }, name: 'Bad\nname' },
-      { id: ' bad-id ', alias: 'Invalid ID Alias', name: 'Invalid ID Name' },
-      { id: 'chosen', alias: 'Image Alias', name: 'Image Name' }
-    ] })
+    if (url.pathname === '/api/v1/models') {
+      const client = options.client
+      const withClient = (entry: Record<string, unknown>) => {
+        const access = typeof entry.id === 'string' ? client?.[entry.id] : undefined
+        return access === undefined ? entry : { ...entry, info: { meta: { client: access } } }
+      }
+      return json({ data: [
+        { id: 'chat-one', alias: 'Chat One Alias', name: 'Chat One Name' },
+        { id: 'chat-two', alias: 'Bad\nalias', name: 'Chat Two Name' },
+        { id: 'chat-three', alias: { private: 'metadata' }, name: 'Bad\nname' },
+        { id: ' bad-id ', alias: 'Invalid ID Alias', name: 'Invalid ID Name' },
+        { id: 'chosen', alias: 'Image Alias', name: 'Image Name' }
+      ].map(withClient) })
+    }
     if (url.pathname === '/api/v1/chat/completions') return json({ model: JSON.parse(String(init?.body)).model, choices: [] })
     if (url.pathname === '/api/v1/images/metadata') return json({ models: [{ id: 'chosen', name: 'Chosen' }, { id: 'second', name: 'Second' }, ...(options.overIncluded ?? []).map(id => ({ id, name: id }))], defaultModel: { id: defaultImage, name: 'Default' }, selection: options.serverOnly ? 'server-only' : 'request-local', catalogStatus: 'available',
       ...(options.declared === false ? {} : { generationParameters: { contractVersion: 1, revision, models: ['chosen', 'second'].map(id => ({ id, maxImages: 4, qualities: ['auto', 'high'], details: ['', 'high'] })) } }) }, { 'x-image-model-selection': 'request-local-v1' })
@@ -76,6 +83,32 @@ describe('private per-plugin configuration gateway', () => {
     expect(response.status).toBe(200)
     const body = await response.json() as { data: { id: string }[] }
     expect(body.data.map(row => row.id)).toEqual(['chosen'])
+  })
+
+  it('uses the server image catalog verbatim before the first client tag', async () => {
+    const { gateway } = await fixture({ declared: false, overIncluded: ['claude-sonnet-5', 'gpt-image-2.6-flare', 'doubao-seedance-2-5'] })
+    const { child } = await issue(gateway, { ...policy, capabilities: ['image.generate', 'chat.completions'], models: ['chosen', 'claude-sonnet-5', 'gpt-image-2.6-flare', 'doubao-seedance-2-5'] })
+    const response = await fetch(`${gateway.url}/v1/models?kind=image`, { headers: { authorization: `Bearer ${child.capabilityToken}` } })
+    const text = await response.text()
+    expect(response.status, text).toBe(200)
+    const body = JSON.parse(text) as { data: { id: string }[] }
+    expect(body.data.map(row => row.id)).toEqual(['chosen', 'claude-sonnet-5', 'gpt-image-2.6-flare', 'doubao-seedance-2-5'])
+  })
+
+  it('lists only client-enabled models of the requested surface once tags exist', async () => {
+    const { gateway } = await fixture({ client: {
+      'chat-one': { enabled: true, types: ['text'] },
+      'chat-two': { enabled: false, types: ['text'] },
+      chosen: { enabled: true, types: ['image'] },
+      second: { enabled: false, types: ['image'] }
+    } })
+    const chat = await issue(gateway, { ...policy, capabilities: ['chat.completions'], models: ['chat-one', 'chat-two', 'chosen'] })
+    const chatList = await (await fetch(`${gateway.url}/v1/models`, { headers: { authorization: `Bearer ${chat.child.capabilityToken}` } })).json() as { data: { id: string }[] }
+    expect(chatList.data.map(row => row.id)).toEqual(['chat-one'])
+
+    const image = await issue(gateway, { ...policy, capabilities: ['image.generate', 'chat.completions'], models: ['chosen', 'second'] })
+    const imageList = await (await fetch(`${gateway.url}/v1/models?kind=image`, { headers: { authorization: `Bearer ${image.child.capabilityToken}` } })).json() as { data: { id: string }[] }
+    expect(imageList.data.map(row => row.id)).toEqual(['chosen'])
   })
 
   it('keeps broker/chat/image credentials separate, validates exact routes/models and denies browser origins', async () => {
@@ -210,7 +243,8 @@ describe('private per-plugin configuration gateway', () => {
     expect(await response.json()).toEqual({ object: 'list', data: [
       { id: 'chat-one', object: 'model', name: 'Chat One Alias' },
       { id: 'chat-two', object: 'model', name: 'Chat Two Name' },
-      { id: 'chat-three', object: 'model', name: 'chat-three' }
+      { id: 'chat-three', object: 'model', name: 'chat-three' },
+      { id: 'chosen', object: 'model', name: 'Image Alias' }
     ] })
   })
 
@@ -234,7 +268,10 @@ describe('private per-plugin configuration gateway', () => {
 
   it('reports the precise reason a plugin chat model is denied', async () => {
     const denials: PengbaoModelDenial[] = []
-    const { gateway } = await fixture({ onModelDenial: denial => denials.push(denial) })
+    const { gateway } = await fixture({ client: {
+      'chat-one': { enabled: true, types: ['text'] },
+      chosen: { enabled: true, types: ['image'] }
+    }, onModelDenial: denial => denials.push(denial) })
     const chatPolicy: PluginConfigurationPolicy = { ...policy, capabilities: ['chat.completions'], models: ['chat-one', 'chosen', 'unavailable'] }
     const { child } = await issue(gateway, chatPolicy)
     expect((await post(gateway, child.capabilityToken, '/v1/chat/completions', { model: 'chosen', messages: [{ role: 'user', content: 'hello' }] })).status).toBe(403)
@@ -252,9 +289,11 @@ describe('private per-plugin configuration gateway', () => {
     const { child } = await issue(gateway, chatPolicy)
     const response = await fetch(`${gateway.url}/v1/models`, { headers: { authorization: `Bearer ${child.capabilityToken}` } })
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ object: 'list', data: [{ id: 'chat-one', object: 'model', name: 'Chat One Alias' }] })
+    expect(await response.json()).toEqual({ object: 'list', data: [
+      { id: 'chat-one', object: 'model', name: 'Chat One Alias' },
+      { id: 'chosen', object: 'model', name: 'Image Alias' }
+    ] })
     expect(denials).toEqual([
-      { kind: 'model-denial', requestId: expect.any(String), route: 'models', model: 'chosen', reason: 'image-classified' },
       { kind: 'model-denial', requestId: expect.any(String), route: 'models', model: 'unavailable', reason: 'not-in-catalog' }
     ])
   })

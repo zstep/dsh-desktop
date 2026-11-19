@@ -1,4 +1,5 @@
 import { PENGBAO_PRODUCT } from './config'
+import { entryClientAccess, type ClientAccess, type ClientSurface } from './client-access'
 
 export const PENGBAO_SERVER = PENGBAO_PRODUCT.serverUrl
 export const PENGBAO_REQUEST_TIMEOUT_MS = 15_000
@@ -43,6 +44,8 @@ export interface PengbaoModel {
   /** Server-configured display alias, when present. */
   name?: string
   input?: readonly ('text' | 'image')[]
+  /** Pengbao desktop availability configured in the server's model manager. */
+  client?: ClientAccess
 }
 
 export class PengbaoError extends Error {
@@ -159,6 +162,12 @@ function parseUser(value: unknown): PengbaoUser {
   if (!result) throw new PengbaoError('Invalid response from Pengbao')
   return result
 }
+/** Filter a parsed catalog by one surface, while preserving legacy behaviour before any tag exists. */
+export function clientVisibleModels(models: readonly PengbaoModel[], surface: ClientSurface): PengbaoModel[] {
+  const configured = models.some(model => model.client !== undefined)
+  return configured ? models.filter(model => model.client?.enabled === true && model.client.types.includes(surface)) : [...models]
+}
+
 function parseModels(value: unknown): PengbaoModel[] {
   const list = isRecord(value) && Array.isArray(value.data) ? value.data : Array.isArray(value) ? value : []
   const models: PengbaoModel[] = []
@@ -172,10 +181,12 @@ function parseModels(value: unknown): PengbaoModel[] {
     const meta = isRecord(info?.meta) ? info.meta : undefined
     const capabilities = isRecord(meta?.capabilities) ? meta.capabilities : undefined
     const displayName = [entry.alias, entry.name].find(value => typeof value === 'string' && value.length > 0)
+    const client = entryClientAccess(entry)
     models.push({
       id,
       ...(typeof displayName === 'string' ? { name: displayName } : {}),
-      input: capabilities?.vision === true ? ['text', 'image'] : ['text']
+      input: capabilities?.vision === true ? ['text', 'image'] : ['text'],
+      ...(client === undefined ? {} : { client })
     })
   }
   return models
