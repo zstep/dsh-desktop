@@ -344,6 +344,46 @@ test('analyze, apply, and rollback keep markers in the profile layer and compare
       }
     })
     await t.test('model collections expose every authorized image model while scalar fields retain defaults', modelCollectionScenario)
+
+  await t.test('existing image channels are pruned to the tagged image catalog', async () => {
+    const { root, profileDir, entry, ctx, service, effects } = await fixture({ image: true, collections: true })
+    const catalog = await service.catalog()
+    catalog.models.push({ id: 'rig-image-fast', name: 'Fast Picture', capabilities: ['image.generate'] })
+    service.catalog = async () => catalog
+    entry.options.config = { channels: [{
+      id: 'legacy', name: 'Pengbao', apiUrl: 'https://legacy.invalid/v1', apiKey: 'fixture', protocol: 'rig-chat-literal',
+      models: [
+        { alias: 'rig-chat', id: 'rig-chat' },
+        { alias: 'rig-image', id: 'rig-image' },
+        { alias: 'rig-image-fast', id: 'rig-image-fast' },
+        { alias: 'seedance-fixture', id: 'seedance-fixture' }
+      ]
+    }] }
+    const mapping = { ...IMAGE_PROPOSAL, writes: [...IMAGE_PROPOSAL.writes, {
+      path: ['channels', '$append'], value: {
+        id: { $semantic: 'binding-id' }, name: { $semantic: 'label' }, apiUrl: { $semantic: 'endpoint' }, protocol: 'rig-chat-literal',
+        models: [{ alias: { $semantic: 'image-model' }, id: { $semantic: 'image-model' } }]
+      }, evidenceIds: ['e1']
+    }] }
+    ctx.llm.stream = () => (async function* () {
+      yield { type: 'text-delta', text: JSON.stringify(mapping) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })()
+    const controller = createPluginConfigurationController(ctx, service)
+    try {
+      await installPluginConfigurationRuntime(ctx)
+      const analysis = await controller.analyze({ entryId: 'fixture-chat' })
+      await controller.apply({ planId: analysis.planId })
+      assert.deepEqual(entry.options.config.channels[0].models, [
+        { alias: 'rig-image', id: 'rig-image' },
+        { alias: 'rig-image-fast', id: 'rig-image-fast' }
+      ])
+    } finally {
+      controller.dispose()
+      for (const cleanup of effects) await cleanup()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
     await t.test('large bundle changes inside or outside snippets invalidate approval without config writes', async t => {
       await staleApprovalTests(t, broker)
     })

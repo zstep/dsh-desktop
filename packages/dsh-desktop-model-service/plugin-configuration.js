@@ -37,6 +37,20 @@ function candidateConfig(current, writes) {
   if (Buffer.byteLength(JSON.stringify(next)) > 1024 * 1024) fail('INVALID_CONFIGURATION')
   return next
 }
+/**
+ * Existing image plugin configs may predate the model-manager tags and still
+ * list every server model in their channel catalog. Keep only image-capable
+ * ids so the panel picker cannot offer chat or video models as image models.
+ */
+function pruneImageChannelModels(config, imageModels) {
+  if (!plain(config) || !Array.isArray(config.channels) || !Array.isArray(imageModels) || imageModels.length === 0) return
+  const wanted = new Set(imageModels)
+  for (const channel of config.channels) {
+    if (!plain(channel) || !Array.isArray(channel.models)) continue
+    const kept = channel.models.filter(model => plain(model) && (wanted.has(model.alias) || wanted.has(model.id)))
+    channel.models = kept.length ? kept : imageModels.map(id => ({ alias: id, id }))
+  }
+}
 function catalogSnapshot(catalog) {
   return { defaults: catalog.defaults, imageDefaultModel: catalog.imageDefaultModel,
     imageSelection: catalog.imageSelection,
@@ -160,6 +174,7 @@ export function createPluginConfigurationController(ctx, service) {
         }
         const writes = materializeProposal(accepted, values)
         const candidate = candidateConfig(raw, writes)
+        if (accepted.capabilities.includes('image.generate')) pruneImageChannelModels(candidate, values.imageModels)
         const planId = randomUUID()
         const identity = { bindingId, entryId: input.entryId, namespace: input.entryId, packageName: evidence.identity.packageName,
           packageVersion: evidence.identity.packageVersion, revision: evidence.revision, schemaDigest: evidence.identity.schemaDigest, evidenceDigest: evidence.identity.evidenceDigest }
