@@ -47,6 +47,9 @@ test('protects runtime references from Loader persistence', async () => {
     const updateHook = listeners.get('internal/update')
     assert.ok(configHook)
     assert.ok(updateHook)
+    // Cordis global carriers may invoke these hooks with a null context.
+    assert.equal(configHook.call(null, raw, () => 'next'), 'next')
+    assert.equal(updateHook.call(null, {}, false, () => 'next'), 'next')
     const resolved = configHook.call(fiber, raw, () => raw)
     assert.deepEqual(resolved, { endpoint: `${gatewayUrl}/v1`, credential: leaseToken, model: 'chat-model' })
     let forwarded

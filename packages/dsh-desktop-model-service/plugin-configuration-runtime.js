@@ -245,13 +245,16 @@ export async function installPluginConfigurationRuntime(ctx) {
   let unhook = () => {}
   let unhookUpdate = () => {}
   unhook = ctx.on('internal/config', function (raw, next) {
-    if (!this.entry || carrier(this.entry) || this.parent?.fiber?.entry === this.entry) return next()
+    // Cordis may invoke global carriers (cordis:include/cordis:group) with a
+    // null hook context; those are never binding targets and must pass through.
+    const entry = this?.entry
+    if (!entry || carrier(entry) || this?.parent?.fiber?.entry === entry) return next()
     const resolved = next()
-    return controller.resolve(this.entry.options.id, raw, resolved)
+    return controller.resolve(entry.options.id, raw, resolved)
   }, { global: true, prepend: true })
   unhookUpdate = ctx.on('internal/update', function (config, noSave, next) {
-    if (!this.entry || carrier(this.entry) || this.parent?.fiber?.entry === this.entry) return next()
-    const entry = this.entry
+    const entry = this?.entry
+    if (!entry || carrier(entry) || this?.parent?.fiber?.entry === entry) return next()
     const guarded = controller.guardUpdate(entry.options.id, config, noSave)
     return next(guarded, noSave)
   }, { global: true, prepend: true })
